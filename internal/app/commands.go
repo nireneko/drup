@@ -8,16 +8,16 @@ import (
 	"runtime"
 	"strings"
 
-	"drup/internal/drupalorg"
-	drupexec "drup/internal/exec"
-	"drup/internal/gitops"
-	"drup/internal/installer"
-	"drup/internal/mcp"
-	"drup/internal/packaging"
-	"drup/internal/report"
-	"drup/internal/scan"
-	statepkg "drup/internal/state"
-	"drup/internal/update"
+	"github.com/nireneko/drup/internal/drupalorg"
+	drupexec "github.com/nireneko/drup/internal/exec"
+	"github.com/nireneko/drup/internal/gitops"
+	"github.com/nireneko/drup/internal/installer"
+	"github.com/nireneko/drup/internal/mcp"
+	"github.com/nireneko/drup/internal/packaging"
+	"github.com/nireneko/drup/internal/report"
+	"github.com/nireneko/drup/internal/scan"
+	statepkg "github.com/nireneko/drup/internal/state"
+	"github.com/nireneko/drup/internal/update"
 )
 
 // RunInit verifies the project is a valid Drupal project.

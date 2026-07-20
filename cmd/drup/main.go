@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"drup/internal/app"
+	"github.com/nireneko/drup/internal/app"
 )
 
 func main() {

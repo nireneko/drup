@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	drupexec "drup/internal/exec"
+	drupexec "github.com/nireneko/drup/internal/exec"
 )
 
 // httpClient is the HTTP client for patch downloads.

@@ -42,9 +42,12 @@ drup fix /ruta/al/proyecto-drupal
 # Opción 1: Go install
 go install github.com/nireneko/drup/cmd/drup@latest
 
-# Opción 2: Desde source
+# Opción 2: desde source
 git clone git@github.com:nireneko/drup.git
-cd drup && go build ./cmd/drup && sudo mv drup /usr/local/bin/
+cd drup && go build -o /usr/local/bin/drup ./cmd/drup
+
+# Opción 3: binario compilado (descarga directa)
+# Disponible en https://github.com/nireneko/drup/releases (próximamente)
 ```
 
 ### Configurar agentes de IA

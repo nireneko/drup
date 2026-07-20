@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	drupexec "drup/internal/exec"
+	drupexec "github.com/nireneko/drup/internal/exec"
 )
 
 // runCommand is the function used to execute git commands.

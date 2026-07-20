@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"drup/internal/drupalorg"
-	drupexec "drup/internal/exec"
-	"drup/internal/mcp"
-	"drup/internal/patch"
-	"drup/internal/scan"
+	"github.com/nireneko/drup/internal/drupalorg"
+	drupexec "github.com/nireneko/drup/internal/exec"
+	"github.com/nireneko/drup/internal/mcp"
+	"github.com/nireneko/drup/internal/patch"
+	"github.com/nireneko/drup/internal/scan"
 )
 
 // WireMCPTools registers real tool handlers on the MCP server, replacing placeholders.

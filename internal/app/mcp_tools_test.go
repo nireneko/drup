@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"drup/internal/mcp"
+	"github.com/nireneko/drup/internal/mcp"
 )
 
 func TestWireMCPTools_NoPanic(t *testing.T) {
