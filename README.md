@@ -67,6 +67,82 @@ drup sync         # re-aplica skills a los agentes (tras upgrade o cambio de tem
 
 ---
 
+## Integración con agentes de IA
+
+Al ejecutar `drup install`, el binario detecta qué agentes tenés instalados y escribe los archivos necesarios en sus directorios nativos.
+
+### Claude Code
+
+| Qué se instala | Ruta | Propósito |
+|---|---|---|
+| **Skill orquestador** | `~/.claude/skills/drup/SKILL.md` | Pipeline de 7 fases. Se invoca con `/drup <ruta>` |
+| **Sub-agentes** | `~/.claude/agents/drup-preflight.md` | Preflight: detecta entorno, instala dependencias |
+| | `~/.claude/agents/drup-contrib.md` | Módulos contrib: releases, parches, commits |
+| | `~/.claude/agents/drup-custom.md` | Código custom: refactor con reintento y escalado |
+| | `~/.claude/agents/drup-theme.md` | Temas: deprecaciones twig/.theme |
+| **MCP server** | `~/.claude/.mcp.json` | Registra `drup mcp` como servidor MCP con 7 tools |
+
+**Uso**: abrí Claude Code en el proyecto Drupal y ejecutá:
+
+```
+/drup /ruta/al/proyecto
+```
+
+Claude Code carga el SKILL.md, se conecta al MCP server, y ejecuta las 7 fases del pipeline. Los sub-agentes aíslan el trabajo por módulo/archivo para no saturar el contexto.
+
+**Modelo por defecto**: el skill usa el modelo activo de la sesión. Para forzar un modelo específico, configuralo en `~/.config/drup/config.yaml` (ver [Configuración](#configuración)).
+
+### OpenCode
+
+| Qué se instala | Ruta |
+|---|---|
+| **Skill orquestador** | `~/.config/opencode/skills/drup/SKILL.md` |
+| **Sub-agentes** | `~/.config/opencode/agents/drup-*.md` |
+| **MCP server** | `~/.config/opencode/mcp.json` |
+
+**Uso**: en OpenCode, ejecutá `/drup <ruta>` o dejá que el skill se cargue automáticamente cuando menciones "Drupal upgrade" o "migrar Drupal".
+
+### Codex
+
+| Qué se instala | Ruta |
+|---|---|
+| **Skill orquestador** | `~/.codex/skills/drup/SKILL.md` |
+| **Sub-agentes** | `~/.codex/agents/drup-*.md` |
+| **MCP server** | `~/.codex/mcp.json` |
+
+**Uso**: en Codex CLI, ejecutá `/drup <ruta>`.
+
+### El MCP server
+
+Los 3 agentes comparten la misma configuración MCP. El archivo `.mcp.json` (o `mcp.json`) registra el servidor:
+
+```json
+{
+  "mcpServers": {
+    "drup": {
+      "command": "/ruta/al/binario/drup",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+El servidor MCP se comunica por **stdio** (JSON-RPC 2.0). No necesita puerto, no necesita network — el agente lanza el proceso `drup mcp` y se comunica por stdin/stdout. Las 7 tools expuestas están documentadas en [MCP Tools](#mcp-tools).
+
+### Verificar la instalación
+
+```bash
+# Ver qué agentes detectó drup
+drup install
+# Output: Installing drup to claude... done
+#         Installing drup to opencode... done
+
+# Forzar re-sincronización (tras update del binario)
+drup sync
+```
+
+---
+
 ## Workflow completo: de Drupal 10 a Drupal 11
 
 ### Paso a paso con el CLI
