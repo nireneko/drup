@@ -62,9 +62,8 @@ func Run(args []string) error {
 }
 
 func printUsage() {
-	fmt.Println(`drup — Drupal Upgrade Automation
-
-Usage:
+	fmt.Printf("drup %s — Drupal Upgrade Automation\n\n", Version)
+	fmt.Println(`Usage:
   drup <command> [arguments]
 
 Commands:
