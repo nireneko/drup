@@ -1,6 +1,9 @@
 package app
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -316,6 +319,13 @@ func RunUpgrade() error {
 	}
 	defer os.Remove(tmpPath)
 
+	// Extract the binary from the downloaded archive.
+	extractedBin, err := extractUpdateBinary(tmpPath)
+	if err != nil {
+		return fmt.Errorf("extract update: %w", err)
+	}
+	defer os.RemoveAll(filepath.Dir(extractedBin))
+
 	// Atomic replace: get current binary path, rename tmp over it.
 	currentBin, err := os.Executable()
 	if err != nil {
@@ -362,7 +372,7 @@ func RunUpgrade() error {
 	// on the same filesystem replaces the directory entry while the old
 	// inode stays alive for the running process.
 	newPath := currentBin + ".new"
-	if err := copyFile(tmpPath, newPath); err != nil {
+	if err := copyFile(extractedBin, newPath); err != nil {
 		return fmt.Errorf("stage new binary: %w", err)
 	}
 	if err := os.Rename(newPath, currentBin); err != nil {
@@ -589,6 +599,123 @@ func detectDrupalVersion(projectPath string) string {
 		}
 	}
 	return ""
+}
+
+// extractUpdateBinary extracts the drup executable from a downloaded archive.
+func extractUpdateBinary(archivePath string) (string, error) {
+	tmpDir, err := os.MkdirTemp("", "drup-extract-*")
+	if err != nil {
+		return "", err
+	}
+
+	switch {
+	case strings.HasSuffix(archivePath, ".tar.gz"):
+		if err := extractTarGz(archivePath, tmpDir); err != nil {
+			os.RemoveAll(tmpDir)
+			return "", err
+		}
+	case strings.HasSuffix(archivePath, ".zip"):
+		if err := extractZip(archivePath, tmpDir); err != nil {
+			os.RemoveAll(tmpDir)
+			return "", err
+		}
+	default:
+		os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("unsupported archive format: %s", archivePath)
+	}
+
+	// Find the binary inside the extracted directory.
+	for _, name := range []string{"drup", "drup.exe"} {
+		binPath := filepath.Join(tmpDir, name)
+		if _, err := os.Stat(binPath); err == nil {
+			return binPath, nil
+		}
+	}
+
+	os.RemoveAll(tmpDir)
+	return "", fmt.Errorf("no drup binary found in archive")
+}
+
+func extractTarGz(archivePath, destDir string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	gzReader, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	defer gzReader.Close()
+
+	tarReader := tar.NewReader(gzReader)
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		target := filepath.Join(destDir, header.Name)
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			outFile, err := os.Create(target)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(outFile, tarReader); err != nil {
+				outFile.Close()
+				return err
+			}
+			outFile.Close()
+		}
+	}
+	return nil
+}
+
+func extractZip(archivePath, destDir string) error {
+	r, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		target := filepath.Join(destDir, f.Name)
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(target, 0o755)
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		outFile, err := os.Create(target)
+		if err != nil {
+			return err
+		}
+		rc, err := f.Open()
+		if err != nil {
+			outFile.Close()
+			return err
+		}
+		_, err = io.Copy(outFile, rc)
+		rc.Close()
+		outFile.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // copyFile copies src to dst, preserving executable permission if src has it.
