@@ -18,8 +18,6 @@ builds:
       - CGO_ENABLED=0
     goos:
       - linux
-      - darwin
-      - windows
     goarch:
       - amd64
       - arm64
@@ -28,9 +26,6 @@ archives:
   - id: default
     name_template: "drup_{{.Version}}_{{.Os}}_{{.Arch}}"
     format: tar.gz
-    format_overrides:
-      - goos: windows
-        format: zip
 
 checksum:
   name_template: "checksums.txt"
