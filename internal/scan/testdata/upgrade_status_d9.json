@@ -1,0 +1,15 @@
+{
+  "oldmodule": {
+    "project": "oldmodule",
+    "version": "7.x-1.0",
+    "path": "modules/contrib/oldmodule",
+    "errors": [
+      {
+        "message": "Use of deprecated function db_query().",
+        "file": "modules/contrib/oldmodule/oldmodule.module",
+        "line": 10,
+        "rule": "deprecation"
+      }
+    ]
+  }
+}
