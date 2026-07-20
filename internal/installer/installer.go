@@ -378,7 +378,7 @@ func isIdentical(sourceDir, backupPath string) bool {
 	// Extract backup to temp dir and compare contents.
 	// For simplicity, compare SHA256 of all files concatenated.
 	sourceHash := hashDir(sourceDir)
-	
+
 	tmpDir, err := os.MkdirTemp("", "drup-backup-check-*")
 	if err != nil {
 		return false

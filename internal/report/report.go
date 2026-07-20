@@ -8,10 +8,10 @@ import (
 
 // ReportData contains all data needed to generate upgrade reports.
 type ReportData struct {
-	ProjectPath    string          `json:"project_path"`
-	TotalErrors    int             `json:"total_errors"`
-	Resolved       []ResolvedItem  `json:"resolved"`
-	Pending        []PendingItem   `json:"pending"`
+	ProjectPath     string          `json:"project_path"`
+	TotalErrors     int             `json:"total_errors"`
+	Resolved        []ResolvedItem  `json:"resolved"`
+	Pending         []PendingItem   `json:"pending"`
 	TokenAccounting TokenAccounting `json:"token_accounting"`
 }
 

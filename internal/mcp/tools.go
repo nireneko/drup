@@ -7,13 +7,13 @@ import (
 // defaultTools returns the 7 MCP tool handlers.
 func defaultTools() map[string]ToolHandler {
 	return map[string]ToolHandler{
-		"scan":           handleScan,
-		"autofix":        handleAutofix,
-		"contrib_check":  handleContribCheck,
-		"issue_patches":  handleIssuePatches,
-		"apply_patch":    handleApplyPatch,
-		"validate":       handleValidate,
-		"create_patch":   handleCreatePatch,
+		"scan":          handleScan,
+		"autofix":       handleAutofix,
+		"contrib_check": handleContribCheck,
+		"issue_patches": handleIssuePatches,
+		"apply_patch":   handleApplyPatch,
+		"validate":      handleValidate,
+		"create_patch":  handleCreatePatch,
 	}
 }
 
@@ -59,9 +59,9 @@ func handleContribCheck(args json.RawMessage) (json.RawMessage, error) {
 
 	// Placeholder — would call drupalorg.CheckRelease.
 	result := map[string]interface{}{
-		"module":             params.Module,
-		"has_d11_release":    false,
-		"latest_version":     "",
+		"module":              params.Module,
+		"has_d11_release":     false,
+		"latest_version":      "",
 		"compatible_branches": []string{},
 	}
 	return json.Marshal(result)

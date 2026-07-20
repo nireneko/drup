@@ -375,8 +375,8 @@ func TestInstall_WritesFiles(t *testing.T) {
 	}
 
 	files := map[string]string{
-		"SKILL.md":  "# Test Orchestrator\n",
-		".mcp.json": `{"command":"drup","args":["mcp"]}`,
+		"SKILL.md":                 "# Test Orchestrator\n",
+		".mcp.json":                `{"command":"drup","args":["mcp"]}`,
 		"agents/drup-preflight.md": "# Test Preflight Agent\n",
 	}
 

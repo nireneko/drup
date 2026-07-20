@@ -37,10 +37,10 @@ type ReleaseInfo struct {
 
 // PatchInfo contains data about a patch/diff/MR from an issue.
 type PatchInfo struct {
-	URL     string `json:"url"`
-	Status  string `json:"status"`
-	Date    string `json:"date"`
-	IsPatch bool   `json:"is_patch"`
+	URL      string `json:"url"`
+	Status   string `json:"status"`
+	Date     string `json:"date"`
+	IsPatch  bool   `json:"is_patch"`
 	IssueNID string `json:"issue_nid"`
 }
 
@@ -317,5 +317,3 @@ func extractDate(line string) string {
 	}
 	return strings.TrimSpace(line[start : start+end])
 }
-
-
