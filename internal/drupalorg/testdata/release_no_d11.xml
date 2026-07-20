@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<project>
+  <name>oldmodule</name>
+  <type>module</type>
+  <api_version>1.0</api_version>
+  <recommended_major>1</recommended_major>
+  <releases>
+    <release>
+      <name>oldmodule 1.5.0</name>
+      <version>1.5.0</version>
+      <tag>1.5.0</tag>
+      <status>published</status>
+      <release_link>https://drupal.org/node/3200001</release_link>
+      <terms>
+        <term>
+          <name>Core compatibility</name>
+          <value>Drupal 9</value>
+        </term>
+      </terms>
+    </release>
+  </releases>
+</project>

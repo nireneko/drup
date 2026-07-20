@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<project>
+  <name>token</name>
+  <type>module</type>
+  <api_version>1.0</api_version>
+  <recommended_major>1</recommended_major>
+  <supported_majors>1</supported_majors>
+  <default_major>1</default_major>
+  <releases>
+    <release>
+      <name>token 1.13.0</name>
+      <version>1.13.0</version>
+      <tag>1.13.0</tag>
+      <status>published</status>
+      <release_link>https://drupal.org/node/3400001</release_link>
+      <terms>
+        <term>
+          <name>Release type</name>
+          <value>Bug fixes</value>
+        </term>
+        <term>
+          <name>Core compatibility</name>
+          <value>Drupal 11</value>
+        </term>
+      </terms>
+    </release>
+    <release>
+      <name>token 1.12.0</name>
+      <version>1.12.0</version>
+      <tag>1.12.0</tag>
+      <status>published</status>
+      <release_link>https://drupal.org/node/3300001</release_link>
+      <terms>
+        <term>
+          <name>Core compatibility</name>
+          <value>Drupal 10</value>
+        </term>
+      </terms>
+    </release>
+  </releases>
+</project>
