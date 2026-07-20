@@ -2,6 +2,9 @@ package app
 
 import "fmt"
 
+// Version is set at build time via ldflags.
+var Version = "dev"
+
 // Run dispatches CLI commands based on args[0].
 func Run(args []string) error {
 	if len(args) == 0 {
@@ -13,6 +16,44 @@ func Run(args []string) error {
 	case "help", "--help", "-h":
 		printUsage()
 		return nil
+	case "version", "--version", "-v":
+		fmt.Printf("drup %s\n", Version)
+		return nil
+	case "init":
+		return RunInit(args[1:])
+	case "scan":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: drup scan <path>")
+		}
+		return RunScan(args[1])
+	case "fix":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: drup fix <path>")
+		}
+		return RunFix(args[1])
+	case "contrib":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: drup contrib <module>")
+		}
+		return RunContrib(args[1])
+	case "issue":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: drup issue <module_or_nid>")
+		}
+		return RunIssue(args[1])
+	case "report":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: drup report <path>")
+		}
+		return RunReport(args[1])
+	case "mcp":
+		return RunMCP()
+	case "install":
+		return RunInstall()
+	case "sync":
+		return RunSync()
+	case "upgrade":
+		return RunUpgrade()
 	default:
 		return fmt.Errorf("unknown command %q — run 'drup help' for available commands", args[0])
 	}
