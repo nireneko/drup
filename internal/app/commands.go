@@ -357,8 +357,8 @@ func RunUpgrade() error {
 	src.Close()
 	dst.Close()
 
-	// Atomic replace: rename downloaded file over current binary.
-	if err := os.Rename(tmpPath, currentBin); err != nil {
+	// Copy downloaded file over current binary (os.Rename fails across devices).
+	if err := copyFile(tmpPath, currentBin); err != nil {
 		return fmt.Errorf("replace binary (may need sudo): %w", err)
 	}
 
@@ -581,4 +581,31 @@ func detectDrupalVersion(projectPath string) string {
 		}
 	}
 	return ""
+}
+
+// copyFile copies src to dst, preserving executable permission if src has it.
+// Uses read+write instead of os.Rename to work across filesystem boundaries.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+
+	// Preserve executable bits from source.
+	if fi, err := in.Stat(); err == nil {
+		_ = out.Chmod(fi.Mode())
+	}
+
+	return out.Close()
 }
