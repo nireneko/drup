@@ -85,7 +85,13 @@ func Download(url, checksumURL, expectedFilename string) (string, error) {
 
 	// Read and hash the binary.
 	h := sha256.New()
-	tmpFile, err := os.CreateTemp("", "drup-update-*")
+	tmpFilePattern := "drup-update-*"
+	if strings.HasSuffix(expectedFilename, ".tar.gz") {
+		tmpFilePattern += ".tar.gz"
+	} else if strings.HasSuffix(expectedFilename, ".zip") {
+		tmpFilePattern += ".zip"
+	}
+	tmpFile, err := os.CreateTemp("", tmpFilePattern)
 	if err != nil {
 		return "", fmt.Errorf("create temp file: %w", err)
 	}

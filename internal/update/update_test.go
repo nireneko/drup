@@ -160,6 +160,9 @@ func TestDownload_AndVerify(t *testing.T) {
 	if path == "" {
 		t.Error("path is empty")
 	}
+	if !strings.HasSuffix(path, ".tar.gz") {
+		t.Errorf("temp file = %q, want .tar.gz suffix", path)
+	}
 }
 
 func TestDownload_ChecksumMismatch(t *testing.T) {
