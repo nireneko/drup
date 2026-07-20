@@ -54,6 +54,8 @@ func Run(args []string) error {
 		return RunSync()
 	case "upgrade":
 		return RunUpgrade()
+	case "preflight":
+		return RunPreflight()
 	default:
 		return fmt.Errorf("unknown command %q — run 'drup help' for available commands", args[0])
 	}
@@ -76,6 +78,7 @@ Commands:
   install               Detect agents and write skill files
   sync                  Re-apply agent assets
   upgrade               Self-update binary
+  preflight             Check project readiness for upgrade automation
   version               Print version
   help                  Show this help message
 

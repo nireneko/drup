@@ -27,8 +27,10 @@ type ModuleStatus struct {
 
 // DepError is a single deprecation or compatibility error.
 type DepError struct {
-	File    string `json:"file"`
-	Line    int    `json:"line"`
-	Message string `json:"message"`
-	Rule    string `json:"rule"`
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Message  string `json:"message"`
+	Rule     string `json:"rule"`
+	Severity string `json:"severity"`
+	Source   string `json:"source"`
 }

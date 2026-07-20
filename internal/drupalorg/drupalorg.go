@@ -1,6 +1,7 @@
 package drupalorg
 
 import (
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -21,6 +22,10 @@ var releaseBaseURL = "https://updates.drupal.org/release-history/%s/current"
 // issueBaseURL is the template for issue queue scraping.
 // Package-level var for testability.
 var issueBaseURL = "https://www.drupal.org/project/issues/%s"
+
+// apiD7BaseURL is the template for api-d7 node queries.
+// Package-level var for testability.
+var apiD7BaseURL = "https://www.drupal.org/api-d7/node.json?field_project_machine_name=%s"
 
 // ReleaseInfo contains D11 compatibility data for a module.
 type ReleaseInfo struct {
@@ -56,6 +61,22 @@ type release struct {
 type term struct {
 	Name  string `xml:"name"`
 	Value string `xml:"value"`
+}
+
+// apiD7Response is the JSON response from api-d7 node listing.
+type apiD7Response struct {
+	Nodes []apiD7Node `json:"list"`
+	Next  string      `json:"next"`
+}
+
+type apiD7Node struct {
+	Node apiD7NodeDetail `json:"node"`
+}
+
+type apiD7NodeDetail struct {
+	NID    string `json:"nid"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
 }
 
 // CheckRelease fetches the release-history XML for a module and determines
@@ -116,10 +137,63 @@ func parseReleaseXML(module string, data []byte) (*ReleaseInfo, error) {
 	return info, nil
 }
 
+// SearchIssuesAPI queries the Drupal api-d7 endpoint for issue nodes.
+// Returns patch info entries extracted from the API response.
+func SearchIssuesAPI(module string) ([]PatchInfo, error) {
+	url := fmt.Sprintf(apiD7BaseURL, module)
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("fetch api-d7 issues for %s: %w", module, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("api-d7 for %s: HTTP %d", module, resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read api-d7 response: %w", err)
+	}
+
+	return parseAPI_D7(data)
+}
+
+func parseAPI_D7(data []byte) ([]PatchInfo, error) {
+	var resp apiD7Response
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("parse api-d7 JSON: %w", err)
+	}
+
+	var patches []PatchInfo
+	for _, item := range resp.Nodes {
+		nid := item.Node.NID
+		if nid == "" {
+			continue
+		}
+		patches = append(patches, PatchInfo{
+			URL:      fmt.Sprintf("https://www.drupal.org/node/%s", nid),
+			Status:   item.Node.Status,
+			IssueNID: nid,
+		})
+	}
+	return patches, nil
+}
+
 // SearchPatches searches Drupal.org for patches related to a module.
-// It scrapes the issue queue HTML and extracts .patch, .diff, and MR links.
+// It tries api-d7 as primary source, then falls back to HTML scraping.
 // Results are sorted by RTBC priority.
 func SearchPatches(query string) ([]PatchInfo, error) {
+	// Try api-d7 first.
+	patches, err := SearchIssuesAPI(query)
+	if err == nil && len(patches) > 0 {
+		sort.Slice(patches, func(i, j int) bool {
+			return priority(patches[i].Status) < priority(patches[j].Status)
+		})
+		return patches, nil
+	}
+
+	// Fall back to HTML scraping.
 	url := fmt.Sprintf(issueBaseURL, query)
 	resp, err := httpClient.Get(url)
 	if err != nil {
@@ -244,16 +318,4 @@ func extractDate(line string) string {
 	return strings.TrimSpace(line[start : start+end])
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

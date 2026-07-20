@@ -42,10 +42,12 @@ func Parse(r io.Reader) (*ScanResult, error) {
 		}
 		for _, e := range proj.Errors {
 			mod.Errors = append(mod.Errors, DepError{
-				File:    e.File,
-				Line:    e.Line,
-				Message: e.Message,
-				Rule:    e.Rule,
+				File:     e.File,
+				Line:     e.Line,
+				Message:  e.Message,
+				Rule:     e.Rule,
+				Severity: "warning",
+				Source:   "upgrade_status",
 			})
 		}
 		result.TotalErrs += len(mod.Errors)

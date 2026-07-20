@@ -1,8 +1,10 @@
 package installer
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -81,6 +83,102 @@ func TestClaudeAdapter_Paths(t *testing.T) {
 	skillsDir := adapter.SkillsDir()
 	if skillsDir == "" {
 		t.Error("SkillsDir is empty")
+	}
+}
+
+func TestBackupConfig_CreatesTarGz(t *testing.T) {
+	// Create a source config dir with some files.
+	srcDir := t.TempDir()
+	os.WriteFile(filepath.Join(srcDir, "mcp.json"), []byte(`{"test": true}`), 0o644)
+	os.MkdirAll(filepath.Join(srcDir, "skills"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "skills", "SKILL.md"), []byte("# skill"), 0o644)
+
+	// Set backup dir to a temp location.
+	bDir := t.TempDir()
+	orig := backupDir
+	backupDir = func() string { return bDir }
+	defer func() { backupDir = orig }()
+
+	if err := BackupConfig(srcDir); err != nil {
+		t.Fatalf("BackupConfig error: %v", err)
+	}
+
+	// Verify backup file exists.
+	entries, err := os.ReadDir(bDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 backup, got %d", len(entries))
+	}
+	if !strings.HasSuffix(entries[0].Name(), ".tar.gz") {
+		t.Errorf("backup file = %q, want .tar.gz suffix", entries[0].Name())
+	}
+}
+
+func TestBackupConfig_Retention5(t *testing.T) {
+	srcDir := t.TempDir()
+	os.WriteFile(filepath.Join(srcDir, "config.json"), []byte(`{"v": 1}`), 0o644)
+
+	bDir := t.TempDir()
+	orig := backupDir
+	backupDir = func() string { return bDir }
+	defer func() { backupDir = orig }()
+
+	// Create 6 backups with different content each time.
+	for i := 0; i < 6; i++ {
+		os.WriteFile(filepath.Join(srcDir, "config.json"), []byte(fmt.Sprintf(`{"v": %d}`, i)), 0o644)
+		if err := BackupConfig(srcDir); err != nil {
+			t.Fatalf("BackupConfig #%d error: %v", i, err)
+		}
+	}
+
+	// Should keep only 5.
+	entries, err := os.ReadDir(bDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 5 {
+		t.Errorf("expected 5 backups (retention), got %d", len(entries))
+	}
+}
+
+func TestBackupConfig_DeduplicatesIdentical(t *testing.T) {
+	srcDir := t.TempDir()
+	os.WriteFile(filepath.Join(srcDir, "config.json"), []byte(`{"same": true}`), 0o644)
+
+	bDir := t.TempDir()
+	orig := backupDir
+	backupDir = func() string { return bDir }
+	defer func() { backupDir = orig }()
+
+	// First backup.
+	if err := BackupConfig(srcDir); err != nil {
+		t.Fatal(err)
+	}
+	// Second backup with same content — should be skipped.
+	if err := BackupConfig(srcDir); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := os.ReadDir(bDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 backup (dedup), got %d", len(entries))
+	}
+}
+
+func TestBackupConfig_NoSourceDir(t *testing.T) {
+	bDir := t.TempDir()
+	orig := backupDir
+	backupDir = func() string { return bDir }
+	defer func() { backupDir = orig }()
+
+	// Non-existent source dir — should succeed silently.
+	if err := BackupConfig("/nonexistent/path"); err != nil {
+		t.Fatalf("BackupConfig should not error for missing dir: %v", err)
 	}
 }
 

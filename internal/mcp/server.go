@@ -54,6 +54,11 @@ func NewServer(out io.Writer) *Server {
 	}
 }
 
+// RegisterTool overrides or adds a tool handler by name.
+func (s *Server) RegisterTool(name string, handler ToolHandler) {
+	s.tools[name] = handler
+}
+
 // Run starts the server, reading from stdin and writing to stdout.
 func (s *Server) Run() error {
 	return s.run(os.Stdin)
