@@ -1,0 +1,70 @@
+# openspec/config.yaml
+schema: spec-driven
+
+context: |
+  Tech stack: Go 1.26.0, cobra CLI, OpenAI-compatible LLM client
+  Architecture: cmd/drup entrypoint, internal/ packages (exec, scan, drupalorg, patch, llm, heal, gitops, mcp, packaging, installer, update, state)
+  Reference project: gentle-ai (same author, same conventions)
+  Build: goreleaser, CI: GitHub Actions
+  Style: gofmt, go vet
+
+strict_tdd: true
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Identify affected internal/ packages
+  specs:
+    - Use Given/When/Then format for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for pipeline flows
+    - Document architecture decisions with rationale
+  tasks:
+    - Group tasks by phase (infrastructure, implementation, testing)
+    - Use hierarchical numbering (1.1, 1.2, etc.)
+    - Keep tasks small enough to complete in one session
+  apply:
+    - Follow existing code patterns in internal/ packages
+    - Load go-testing skill when writing tests
+  verify:
+    - Run: go test ./...
+    - Run: go vet ./...
+    - Compare implementation against every spec scenario
+  archive:
+    - Warn before merging destructive deltas (large removals)
+
+testing:
+  strict_tdd: true
+  detected: "2026-07-20"
+
+  runner:
+    command: "go test ./..."
+    framework: "Go standard testing"
+
+  layers:
+    unit:
+      available: true
+      tool: "go test"
+    integration:
+      available: true
+      tool: "net/http/httptest (built-in)"
+    e2e:
+      available: false
+      tool: "—"
+      note: "Not yet set up; Docker-based E2E planned for later phases"
+
+  coverage:
+    available: true
+    command: "go test -cover ./..."
+
+  quality:
+    linter:
+      available: false
+      note: "go vet available; golangci-lint not yet configured"
+    type_checker:
+      available: true
+      command: "go vet ./..."
+    formatter:
+      available: true
+      command: "gofmt"
