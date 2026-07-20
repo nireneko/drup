@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -28,15 +29,102 @@ func TestCheckLatest(t *testing.T) {
 	httpClient = srv.Client()
 	defer func() { httpClient = origClient }()
 
-	version, assetURL, err := CheckLatest("owner", "repo")
+	version, assetURL, err := CheckLatest("owner", "repo", "linux", "amd64")
 	if err != nil {
 		t.Fatalf("CheckLatest error: %v", err)
 	}
 	if version != "0.2.0" {
 		t.Errorf("version = %q, want %q", version, "0.2.0")
 	}
-	if assetURL == "" {
-		t.Error("assetURL is empty")
+	if assetURL != "http://example.com/drup_0.2.0_linux_amd64.tar.gz" {
+		t.Errorf("assetURL = %q, want linux_amd64 URL", assetURL)
+	}
+}
+
+func TestCheckLatest_PlatformFilter(t *testing.T) {
+	multiAssetJSON := `{
+		"tag_name": "v0.2.0",
+		"assets": [
+			{"name": "drup_0.2.0_linux_amd64.tar.gz", "browser_download_url": "http://example.com/drup_0.2.0_linux_amd64.tar.gz"},
+			{"name": "drup_0.2.0_linux_arm64.tar.gz", "browser_download_url": "http://example.com/drup_0.2.0_linux_arm64.tar.gz"},
+			{"name": "drup_0.2.0_darwin_amd64.tar.gz", "browser_download_url": "http://example.com/drup_0.2.0_darwin_amd64.tar.gz"},
+			{"name": "drup_0.2.0_darwin_arm64.tar.gz", "browser_download_url": "http://example.com/drup_0.2.0_darwin_arm64.tar.gz"},
+			{"name": "drup_0.2.0_windows_amd64.zip", "browser_download_url": "http://example.com/drup_0.2.0_windows_amd64.zip"},
+			{"name": "drup_0.2.0_windows_arm64.zip", "browser_download_url": "http://example.com/drup_0.2.0_windows_arm64.zip"}
+		]
+	}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(multiAssetJSON))
+	}))
+	defer srv.Close()
+
+	orig := releasesURL
+	releasesURL = srv.URL + "/repos/%s/%s/releases/latest"
+	defer func() { releasesURL = orig }()
+
+	origClient := httpClient
+	httpClient = srv.Client()
+	defer func() { httpClient = origClient }()
+
+	tests := []struct {
+		name        string
+		goos        string
+		goarch      string
+		wantURL     string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:    "linux/amd64 matches tar.gz",
+			goos:    "linux",
+			goarch:  "amd64",
+			wantURL: "http://example.com/drup_0.2.0_linux_amd64.tar.gz",
+		},
+		{
+			name:    "darwin/arm64 matches tar.gz",
+			goos:    "darwin",
+			goarch:  "arm64",
+			wantURL: "http://example.com/drup_0.2.0_darwin_arm64.tar.gz",
+		},
+		{
+			name:    "windows/amd64 matches zip",
+			goos:    "windows",
+			goarch:  "amd64",
+			wantURL: "http://example.com/drup_0.2.0_windows_amd64.zip",
+		},
+		{
+			name:        "no match returns error",
+			goos:        "freebsd",
+			goarch:      "mips",
+			wantErr:     true,
+			errContains: "no release asset found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			version, assetURL, err := CheckLatest("owner", "repo", tt.goos, tt.goarch)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("error = %q, want containing %q", err.Error(), tt.errContains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if version != "0.2.0" {
+				t.Errorf("version = %q, want %q", version, "0.2.0")
+			}
+			if assetURL != tt.wantURL {
+				t.Errorf("assetURL = %q, want %q", assetURL, tt.wantURL)
+			}
+		})
 	}
 }
 

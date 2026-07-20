@@ -32,8 +32,9 @@ type githubAsset struct {
 }
 
 // CheckLatest checks GitHub Releases for the latest version.
-// Returns version (without "v" prefix), asset URL, and error.
-func CheckLatest(owner, repo string) (version, assetURL string, err error) {
+// goos/goarch determine which asset to select (e.g. "linux", "amd64").
+// Returns version (without "v" prefix), asset download URL, and error.
+func CheckLatest(owner, repo, goos, goarch string) (version, assetURL string, err error) {
 	url := fmt.Sprintf(releasesURL, owner, repo)
 	resp, err := httpClient.Get(url)
 	if err != nil {
@@ -56,11 +57,16 @@ func CheckLatest(owner, repo string) (version, assetURL string, err error) {
 	}
 
 	version = strings.TrimPrefix(release.TagName, "v")
-	if len(release.Assets) > 0 {
-		assetURL = release.Assets[0].BrowserDownloadURL
+
+	// Filter assets by OS/arch pattern (infix: _{goos}_{goarch}.)
+	pattern := fmt.Sprintf("_%s_%s.", goos, goarch)
+	for _, asset := range release.Assets {
+		if strings.Contains(asset.Name, pattern) {
+			return version, asset.BrowserDownloadURL, nil
+		}
 	}
 
-	return version, assetURL, nil
+	return "", "", fmt.Errorf("no release asset found for %s/%s", goos, goarch)
 }
 
 // Download downloads a binary from url, verifies its SHA256 checksum against

@@ -266,7 +266,17 @@ func RunSync() error {
 
 // RunUpgrade self-updates the binary.
 func RunUpgrade() error {
-	version, assetURL, err := update.CheckLatest("gentleman-programming", "drup")
+	// Determine OS/arch for asset selection
+	goos := os.Getenv("GOOS")
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	goarch := os.Getenv("GOARCH")
+	if goarch == "" {
+		goarch = runtime.GOARCH
+	}
+
+	version, assetURL, err := update.CheckLatest("nireneko", "drup", goos, goarch)
 	if err != nil {
 		return fmt.Errorf("check for updates: %w", err)
 	}
@@ -278,16 +288,12 @@ func RunUpgrade() error {
 
 	fmt.Printf("New version available: %s (current: %s)\n", version, Version)
 
-	// Determine asset filename for current OS/arch.
-	goos := os.Getenv("GOOS")
-	if goos == "" {
-		goos = runtime.GOOS
+	// Determine archive extension based on OS
+	ext := ".tar.gz"
+	if goos == "windows" {
+		ext = ".zip"
 	}
-	goarch := os.Getenv("GOARCH")
-	if goarch == "" {
-		goarch = runtime.GOARCH
-	}
-	assetName := fmt.Sprintf("drup_%s_%s_%s.tar.gz", version, goos, goarch)
+	assetName := fmt.Sprintf("drup_%s_%s_%s%s", version, goos, goarch, ext)
 
 	// Build download and checksum URLs from the asset URL.
 	// assetURL is like https://github.com/.../drup_0.2.0_linux_amd64.tar.gz
@@ -321,8 +327,15 @@ func RunUpgrade() error {
 		return fmt.Errorf("resolve symlinks: %w", err)
 	}
 
+	// Create backup before replacing.
+	if err := os.Rename(currentBin, currentBin+".bak"); err != nil {
+		return fmt.Errorf("backup current binary: %w", err)
+	}
+
 	// Rename downloaded file to replace current binary.
 	if err := os.Rename(tmpPath, currentBin); err != nil {
+		// Restore from backup on failure.
+		os.Rename(currentBin+".bak", currentBin)
 		return fmt.Errorf("replace binary: %w", err)
 	}
 
@@ -442,8 +455,8 @@ func RunPreflight() error {
 
 	// 5. Install dev dependencies if missing.
 	devDeps := []struct {
-		Pkg  string
-		Dev  bool
+		Pkg string
+		Dev bool
 	}{
 		{"drupal/upgrade_status", true},
 		{"palantirnet/drupal-rector", true},
@@ -546,5 +559,3 @@ func detectDrupalVersion(projectPath string) string {
 	}
 	return ""
 }
-
-
