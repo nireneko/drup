@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -327,16 +328,38 @@ func RunUpgrade() error {
 		return fmt.Errorf("resolve symlinks: %w", err)
 	}
 
-	// Create backup before replacing.
-	if err := os.Rename(currentBin, currentBin+".bak"); err != nil {
-		return fmt.Errorf("backup current binary: %w", err)
+	// Save backup to ~/.drup/backups/ before replacing.
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("find home directory: %w", err)
 	}
+	backupDir := filepath.Join(homeDir, ".drup", "backups")
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		return fmt.Errorf("create backup directory: %w", err)
+	}
+	backupPath := filepath.Join(backupDir, filepath.Base(currentBin)+".bak")
 
-	// Rename downloaded file to replace current binary.
+	src, err := os.Open(currentBin)
+	if err != nil {
+		return fmt.Errorf("open current binary for backup: %w", err)
+	}
+	defer src.Close()
+
+	dst, err := os.Create(backupPath)
+	if err != nil {
+		return fmt.Errorf("create backup file: %w", err)
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		return fmt.Errorf("write backup: %w", err)
+	}
+	src.Close()
+	dst.Close()
+
+	// Atomic replace: rename downloaded file over current binary.
 	if err := os.Rename(tmpPath, currentBin); err != nil {
-		// Restore from backup on failure.
-		os.Rename(currentBin+".bak", currentBin)
-		return fmt.Errorf("replace binary: %w", err)
+		return fmt.Errorf("replace binary (may need sudo): %w", err)
 	}
 
 	// Ensure executable permission.
