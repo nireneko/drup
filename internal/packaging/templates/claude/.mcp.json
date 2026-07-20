@@ -1,8 +1,4 @@
 {
-  "mcpServers": {
-    "drup": {
-      "command": "{{BINARY_PATH}}",
-      "args": ["mcp"]
-    }
-  }
+  "command": "{{BINARY_PATH}}",
+  "args": ["mcp"]
 }

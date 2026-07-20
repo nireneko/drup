@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -46,7 +47,7 @@ func (a *ClaudeAdapter) SkillsDir() string {
 }
 
 func (a *ClaudeAdapter) MCPConfigPath() string {
-	return filepath.Join(a.homeDir, ".claude", ".mcp.json")
+	return filepath.Join(a.homeDir, ".claude", "mcp", "drup.json")
 }
 
 func (a *ClaudeAdapter) AgentsDir() string {
@@ -97,7 +98,7 @@ func (a *OpenCodeAdapter) SkillsDir() string {
 }
 
 func (a *OpenCodeAdapter) MCPConfigPath() string {
-	return filepath.Join(a.homeDir, ".config", "opencode", "mcp.json")
+	return filepath.Join(a.homeDir, ".config", "opencode", "opencode.json")
 }
 
 func (a *OpenCodeAdapter) AgentsDir() string {
@@ -122,11 +123,62 @@ func (a *OpenCodeAdapter) WriteAgent(name, content string) error {
 }
 
 func (a *OpenCodeAdapter) WriteMCPConfig(content string) error {
-	dir := filepath.Dir(a.MCPConfigPath())
+	configPath := a.MCPConfigPath()
+	dir := filepath.Dir(configPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(a.MCPConfigPath(), []byte(content), 0o644)
+
+	// Read existing config or start fresh.
+	var config map[string]any
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("read %s: %w", configPath, err)
+		}
+		config = make(map[string]any)
+	} else {
+		if err := json.Unmarshal(data, &config); err != nil {
+			return fmt.Errorf("corrupt config %s: %w", configPath, err)
+		}
+	}
+
+	// Parse the rendered snippet.
+	var snippet any
+	if err := json.Unmarshal([]byte(content), &snippet); err != nil {
+		return fmt.Errorf("invalid MCP snippet: %w", err)
+	}
+
+	// Ensure "mcp" key exists.
+	mcp, ok := config["mcp"].(map[string]any)
+	if !ok {
+		mcp = make(map[string]any)
+	}
+	mcp["drup"] = snippet
+	config["mcp"] = mcp
+
+	// Marshal with indent.
+	merged, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal merged config: %w", err)
+	}
+
+	// Atomic write: temp file + rename.
+	tmp, err := os.CreateTemp(dir, "opencode.json.*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(merged); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	return os.Rename(tmpName, configPath)
 }
 
 // CodexAdapter handles Codex installation.

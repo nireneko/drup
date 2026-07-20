@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -83,6 +84,184 @@ func TestClaudeAdapter_Paths(t *testing.T) {
 	skillsDir := adapter.SkillsDir()
 	if skillsDir == "" {
 		t.Error("SkillsDir is empty")
+	}
+
+	want := filepath.Join(home, ".claude", "mcp", "drup.json")
+	if got := adapter.MCPConfigPath(); got != want {
+		t.Errorf("MCPConfigPath() = %q, want %q", got, want)
+	}
+}
+
+func TestOpenCodeAdapter_Paths(t *testing.T) {
+	home := t.TempDir()
+	adapter := &OpenCodeAdapter{homeDir: home}
+
+	want := filepath.Join(home, ".config", "opencode", "opencode.json")
+	if got := adapter.MCPConfigPath(); got != want {
+		t.Errorf("MCPConfigPath() = %q, want %q", got, want)
+	}
+}
+
+func TestOpenCodeAdapter_WriteMCPConfig_MergesExisting(t *testing.T) {
+	home := t.TempDir()
+	adapter := &OpenCodeAdapter{homeDir: home}
+
+	// Pre-populate opencode.json with existing MCP servers and other keys.
+	configDir := filepath.Join(home, ".config", "opencode")
+	os.MkdirAll(configDir, 0o755)
+	existing := `{
+  "agent": {"default": "test"},
+  "mcp": {
+    "context7": {"type": "remote", "url": "https://example.com"},
+    "engram": {"type": "local", "command": ["engram", "mcp"]}
+  },
+  "permission": {"bash": {"*": "allow"}}
+}`
+	configPath := filepath.Join(configDir, "opencode.json")
+	os.WriteFile(configPath, []byte(existing), 0o644)
+
+	// Write MCP config with drup snippet.
+	snippet := `{"type": "local", "command": ["/usr/local/bin/drup", "mcp"]}`
+	if err := adapter.WriteMCPConfig(snippet); err != nil {
+		t.Fatalf("WriteMCPConfig error: %v", err)
+	}
+
+	// Read back and verify.
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+
+	// Existing top-level keys preserved.
+	if _, ok := result["agent"]; !ok {
+		t.Error("existing 'agent' key not preserved")
+	}
+	if _, ok := result["permission"]; !ok {
+		t.Error("existing 'permission' key not preserved")
+	}
+
+	// Existing MCP entries preserved.
+	mcp, ok := result["mcp"].(map[string]any)
+	if !ok {
+		t.Fatal("mcp key missing or not an object")
+	}
+	if _, ok := mcp["context7"]; !ok {
+		t.Error("existing 'context7' MCP entry not preserved")
+	}
+	if _, ok := mcp["engram"]; !ok {
+		t.Error("existing 'engram' MCP entry not preserved")
+	}
+
+	// Drup entry added.
+	drup, ok := mcp["drup"].(map[string]any)
+	if !ok {
+		t.Fatal("drup MCP entry missing or not an object")
+	}
+	if drup["type"] != "local" {
+		t.Errorf("drup type = %v, want 'local'", drup["type"])
+	}
+}
+
+func TestOpenCodeAdapter_WriteMCPConfig_CreatesNew(t *testing.T) {
+	home := t.TempDir()
+	adapter := &OpenCodeAdapter{homeDir: home}
+
+	snippet := `{"type": "local", "command": ["/usr/local/bin/drup", "mcp"]}`
+	if err := adapter.WriteMCPConfig(snippet); err != nil {
+		t.Fatalf("WriteMCPConfig error: %v", err)
+	}
+
+	configPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("config file not created: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+
+	mcp, ok := result["mcp"].(map[string]any)
+	if !ok {
+		t.Fatal("mcp key missing or not an object")
+	}
+	drup, ok := mcp["drup"].(map[string]any)
+	if !ok {
+		t.Fatal("drup entry missing or not an object")
+	}
+	if drup["type"] != "local" {
+		t.Errorf("drup type = %v, want 'local'", drup["type"])
+	}
+}
+
+func TestOpenCodeAdapter_WriteMCPConfig_CorruptFile(t *testing.T) {
+	home := t.TempDir()
+	adapter := &OpenCodeAdapter{homeDir: home}
+
+	configDir := filepath.Join(home, ".config", "opencode")
+	os.MkdirAll(configDir, 0o755)
+	configPath := filepath.Join(configDir, "opencode.json")
+	corruptContent := `{this is not valid json!!!`
+	os.WriteFile(configPath, []byte(corruptContent), 0o644)
+
+	snippet := `{"type": "local", "command": ["/usr/local/bin/drup", "mcp"]}`
+	err := adapter.WriteMCPConfig(snippet)
+	if err == nil {
+		t.Fatal("expected error for corrupt JSON, got nil")
+	}
+
+	// Verify file was NOT overwritten.
+	data, _ := os.ReadFile(configPath)
+	if string(data) != corruptContent {
+		t.Error("corrupt file was overwritten — it should have been left untouched")
+	}
+}
+
+func TestOpenCodeAdapter_WriteMCPConfig_OverwritesExistingDrup(t *testing.T) {
+	home := t.TempDir()
+	adapter := &OpenCodeAdapter{homeDir: home}
+
+	configDir := filepath.Join(home, ".config", "opencode")
+	os.MkdirAll(configDir, 0o755)
+	configPath := filepath.Join(configDir, "opencode.json")
+	existing := `{
+  "mcp": {
+    "drup": {"type": "local", "command": ["/old/path/drup", "mcp"]},
+    "engram": {"type": "local", "command": ["engram", "mcp"]}
+  }
+}`
+	os.WriteFile(configPath, []byte(existing), 0o644)
+
+	snippet := `{"type": "local", "command": ["/usr/local/bin/drup", "mcp"]}`
+	if err := adapter.WriteMCPConfig(snippet); err != nil {
+		t.Fatalf("WriteMCPConfig error: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+
+	mcp := result["mcp"].(map[string]any)
+	drup := mcp["drup"].(map[string]any)
+	cmd := drup["command"].([]any)
+	if cmd[0] != "/usr/local/bin/drup" {
+		t.Errorf("drup command[0] = %v, want '/usr/local/bin/drup'", cmd[0])
+	}
+	// Other MCP entries preserved.
+	if _, ok := mcp["engram"]; !ok {
+		t.Error("existing 'engram' entry not preserved during drup overwrite")
 	}
 }
 
@@ -197,7 +376,7 @@ func TestInstall_WritesFiles(t *testing.T) {
 
 	files := map[string]string{
 		"SKILL.md":  "# Test Orchestrator\n",
-		".mcp.json": `{"mcpServers":{"drup":{"command":"drup","args":["mcp"]}}}`,
+		".mcp.json": `{"command":"drup","args":["mcp"]}`,
 		"agents/drup-preflight.md": "# Test Preflight Agent\n",
 	}
 
