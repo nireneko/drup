@@ -357,8 +357,16 @@ func RunUpgrade() error {
 	src.Close()
 	dst.Close()
 
-	// Copy downloaded file over current binary (os.Rename fails across devices).
-	if err := copyFile(tmpPath, currentBin); err != nil {
+	// Copy to a temp file in the same directory, then rename atomically.
+	// Direct overwrite fails with ETXTBSY on the running binary; rename
+	// on the same filesystem replaces the directory entry while the old
+	// inode stays alive for the running process.
+	newPath := currentBin + ".new"
+	if err := copyFile(tmpPath, newPath); err != nil {
+		return fmt.Errorf("stage new binary: %w", err)
+	}
+	if err := os.Rename(newPath, currentBin); err != nil {
+		os.Remove(newPath)
 		return fmt.Errorf("replace binary (may need sudo): %w", err)
 	}
 
