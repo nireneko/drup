@@ -7,8 +7,13 @@ import (
 	"path/filepath"
 
 	"drup/internal/drupalorg"
+	"drup/internal/installer"
+	"drup/internal/mcp"
+	"drup/internal/packaging"
 	"drup/internal/report"
 	"drup/internal/scan"
+	statepkg "drup/internal/state"
+	"drup/internal/update"
 )
 
 // RunInit verifies the project is a valid Drupal project.
@@ -127,25 +132,102 @@ func RunReport(path string) error {
 
 // RunMCP starts the MCP stdio server.
 func RunMCP() error {
-	fmt.Fprintln(os.Stderr, "mcp: not yet implemented")
-	return nil
+	server := mcp.NewServer(os.Stdout)
+	return server.Run()
 }
 
 // RunInstall detects agents and writes skill files.
 func RunInstall() error {
-	fmt.Fprintln(os.Stderr, "install: not yet implemented")
+	agents := installer.DetectAgents()
+	if len(agents) == 0 {
+		return fmt.Errorf("no agents detected — install Claude Code, OpenCode, or Codex first")
+	}
+
+	binaryPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("get binary path: %w", err)
+	}
+
+	// Render templates for each detected agent.
+	for _, agent := range agents {
+		files, err := packaging.Render(agent.ID(), binaryPath)
+		if err != nil {
+			return fmt.Errorf("render templates for %s: %w", agent.ID(), err)
+		}
+		if err := installer.Install([]installer.AgentAdapter{agent}, binaryPath, files); err != nil {
+			return fmt.Errorf("install to %s: %w", agent.ID(), err)
+		}
+		fmt.Printf("Installed drup to %s\n", agent.ID())
+	}
+
+	// Update state.
+	s, _ := statepkg.Load()
+	agentIDs := make([]string, len(agents))
+	for i, a := range agents {
+		agentIDs[i] = a.ID()
+	}
+	s.InstalledAgents = agentIDs
+	s.Version = Version
+	if err := statepkg.Save(s); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+
 	return nil
 }
 
 // RunSync re-applies agent assets.
 func RunSync() error {
-	fmt.Fprintln(os.Stderr, "sync: not yet implemented")
+	s, err := statepkg.Load()
+	if err != nil {
+		return fmt.Errorf("load state: %w", err)
+	}
+
+	if len(s.InstalledAgents) == 0 {
+		return fmt.Errorf("no agents installed — run 'drup install' first")
+	}
+
+	binaryPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("get binary path: %w", err)
+	}
+
+	// Re-install to all previously installed agents.
+	agents := installer.DetectAgents()
+	for _, agent := range agents {
+		files, err := packaging.Render(agent.ID(), binaryPath)
+		if err != nil {
+			return fmt.Errorf("render templates for %s: %w", agent.ID(), err)
+		}
+		if err := installer.Install([]installer.AgentAdapter{agent}, binaryPath, files); err != nil {
+			return fmt.Errorf("sync to %s: %w", agent.ID(), err)
+		}
+		fmt.Printf("Synced drup to %s\n", agent.ID())
+	}
+
+	// Clear PendingSync flag.
+	s.PendingSync = false
+	if err := statepkg.Save(s); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+
 	return nil
 }
 
 // RunUpgrade self-updates the binary.
 func RunUpgrade() error {
-	fmt.Fprintln(os.Stderr, "upgrade: not yet implemented")
+	version, assetURL, err := update.CheckLatest("gentleman-programming", "drup")
+	if err != nil {
+		return fmt.Errorf("check for updates: %w", err)
+	}
+
+	if version == Version {
+		fmt.Println("Already up to date.")
+		return nil
+	}
+
+	fmt.Printf("New version available: %s (current: %s)\n", version, Version)
+	fmt.Printf("Download: %s\n", assetURL)
+	// Full download + replace would go here.
 	return nil
 }
 
