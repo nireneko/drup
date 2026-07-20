@@ -196,16 +196,30 @@ func TestInstall_WritesFiles(t *testing.T) {
 	}
 
 	files := map[string]string{
-		"SKILL.md": "# Test Skill\n",
+		"SKILL.md":  "# Test Orchestrator\n",
+		".mcp.json": `{"mcpServers":{"drup":{"command":"drup","args":["mcp"]}}}`,
+		"agents/drup-preflight.md": "# Test Preflight Agent\n",
 	}
 
 	if err := Install(agents, "/usr/local/bin/drup", files); err != nil {
 		t.Fatalf("Install error: %v", err)
 	}
 
-	// Verify file was written.
-	skillPath := filepath.Join(agents[0].SkillsDir(), "SKILL.md")
+	// Orchestrator skill: SKILL.md → skills/drup/SKILL.md (directory + file)
+	skillPath := filepath.Join(agents[0].SkillsDir(), "drup", "SKILL.md")
 	if _, err := os.Stat(skillPath); os.IsNotExist(err) {
-		t.Errorf("skill file not written to %s", skillPath)
+		t.Errorf("orchestrator skill not written to %s", skillPath)
+	}
+
+	// Sub-agent: agents/drup-preflight.md → agents/drup-preflight.md
+	agentPath := filepath.Join(agents[0].AgentsDir(), "drup-preflight.md")
+	if _, err := os.Stat(agentPath); os.IsNotExist(err) {
+		t.Errorf("agent file not written to %s", agentPath)
+	}
+
+	// MCP config: .mcp.json
+	mcpPath := agents[0].MCPConfigPath()
+	if _, err := os.Stat(mcpPath); os.IsNotExist(err) {
+		t.Errorf("MCP config not written to %s", mcpPath)
 	}
 }

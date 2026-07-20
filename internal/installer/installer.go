@@ -21,9 +21,11 @@ type AgentAdapter interface {
 	ID() string
 	Detect() bool
 	SkillsDir() string
+	AgentsDir() string
 	MCPConfigPath() string
 	WriteSkill(name, content string) error
-	WriteMCPConfig(binaryPath string) error
+	WriteAgent(name, content string) error
+	WriteMCPConfig(content string) error
 }
 
 // ClaudeAdapter handles Claude Code installation.
@@ -44,31 +46,37 @@ func (a *ClaudeAdapter) SkillsDir() string {
 }
 
 func (a *ClaudeAdapter) MCPConfigPath() string {
-	return filepath.Join(a.homeDir, ".claude", "mcp.json")
+	return filepath.Join(a.homeDir, ".claude", ".mcp.json")
+}
+
+func (a *ClaudeAdapter) AgentsDir() string {
+	return filepath.Join(a.homeDir, ".claude", "agents")
 }
 
 func (a *ClaudeAdapter) WriteSkill(name, content string) error {
-	dir := a.SkillsDir()
+	// Claude Code skills are directories: ~/.claude/skills/<name>/SKILL.md
+	// The directory name becomes the slash command: /drup
+	dir := filepath.Join(a.SkillsDir(), name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644)
+}
+
+func (a *ClaudeAdapter) WriteAgent(name, content string) error {
+	dir := a.AgentsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644)
 }
 
-func (a *ClaudeAdapter) WriteMCPConfig(binaryPath string) error {
+func (a *ClaudeAdapter) WriteMCPConfig(content string) error {
 	dir := filepath.Dir(a.MCPConfigPath())
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	config := fmt.Sprintf(`{
-  "mcpServers": {
-    "drup": {
-      "command": "%s",
-      "args": ["mcp"]
-    }
-  }
-}`, binaryPath)
-	return os.WriteFile(a.MCPConfigPath(), []byte(config), 0o644)
+	return os.WriteFile(a.MCPConfigPath(), []byte(content), 0o644)
 }
 
 // OpenCodeAdapter handles OpenCode installation.
@@ -92,28 +100,33 @@ func (a *OpenCodeAdapter) MCPConfigPath() string {
 	return filepath.Join(a.homeDir, ".config", "opencode", "mcp.json")
 }
 
+func (a *OpenCodeAdapter) AgentsDir() string {
+	return filepath.Join(a.homeDir, ".config", "opencode", "agents")
+}
+
 func (a *OpenCodeAdapter) WriteSkill(name, content string) error {
-	dir := a.SkillsDir()
+	// OpenCode skills are directories: ~/.config/opencode/skills/<name>/SKILL.md
+	dir := filepath.Join(a.SkillsDir(), name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644)
+}
+
+func (a *OpenCodeAdapter) WriteAgent(name, content string) error {
+	dir := a.AgentsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644)
 }
 
-func (a *OpenCodeAdapter) WriteMCPConfig(binaryPath string) error {
+func (a *OpenCodeAdapter) WriteMCPConfig(content string) error {
 	dir := filepath.Dir(a.MCPConfigPath())
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	config := fmt.Sprintf(`{
-  "mcpServers": {
-    "drup": {
-      "command": "%s",
-      "args": ["mcp"]
-    }
-  }
-}`, binaryPath)
-	return os.WriteFile(a.MCPConfigPath(), []byte(config), 0o644)
+	return os.WriteFile(a.MCPConfigPath(), []byte(content), 0o644)
 }
 
 // CodexAdapter handles Codex installation.
@@ -137,28 +150,32 @@ func (a *CodexAdapter) MCPConfigPath() string {
 	return filepath.Join(a.homeDir, ".codex", "mcp.json")
 }
 
+func (a *CodexAdapter) AgentsDir() string {
+	return filepath.Join(a.homeDir, ".codex", "agents")
+}
+
 func (a *CodexAdapter) WriteSkill(name, content string) error {
-	dir := a.SkillsDir()
+	dir := filepath.Join(a.SkillsDir(), name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644)
+}
+
+func (a *CodexAdapter) WriteAgent(name, content string) error {
+	dir := a.AgentsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644)
 }
 
-func (a *CodexAdapter) WriteMCPConfig(binaryPath string) error {
+func (a *CodexAdapter) WriteMCPConfig(content string) error {
 	dir := filepath.Dir(a.MCPConfigPath())
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	config := fmt.Sprintf(`{
-  "mcpServers": {
-    "drup": {
-      "command": "%s",
-      "args": ["mcp"]
-    }
-  }
-}`, binaryPath)
-	return os.WriteFile(a.MCPConfigPath(), []byte(config), 0o644)
+	return os.WriteFile(a.MCPConfigPath(), []byte(content), 0o644)
 }
 
 // DetectAgents returns all detected agent adapters.
@@ -404,8 +421,9 @@ func pruneBackups(bDir string, keep int) {
 	}
 }
 
-// Install writes skill files and MCP config to all detected agents.
+// Install writes skill files, agent definitions, and MCP config to all detected agents.
 // It creates a backup of existing configs before overwriting.
+// The files map uses paths from packaging.Render (e.g. "SKILL.md", "agents/drup-preflight.md", ".mcp.json").
 func Install(agents []AgentAdapter, binaryPath string, files map[string]string) error {
 	// Backup existing configs before overwriting.
 	for _, agent := range agents {
@@ -416,13 +434,30 @@ func Install(agents []AgentAdapter, binaryPath string, files map[string]string) 
 	}
 
 	for _, agent := range agents {
-		for name, content := range files {
-			if err := agent.WriteSkill(name, content); err != nil {
-				return fmt.Errorf("write skill %s to %s: %w", name, agent.ID(), err)
+		for path, content := range files {
+			switch {
+			case path == "SKILL.md":
+				// Main orchestrator skill → skills/drup/SKILL.md (command: /drup)
+				if err := agent.WriteSkill("drup", content); err != nil {
+					return fmt.Errorf("write orchestrator skill to %s: %w", agent.ID(), err)
+				}
+			case strings.HasPrefix(path, "agents/"):
+				// Sub-agent definitions → agents/<name>.md
+				agentName := strings.TrimPrefix(path, "agents/")
+				if err := agent.WriteAgent(agentName, content); err != nil {
+					return fmt.Errorf("write agent %s to %s: %w", agentName, agent.ID(), err)
+				}
+			case path == ".mcp.json":
+				// MCP config — use pre-rendered template content
+				if err := agent.WriteMCPConfig(content); err != nil {
+					return fmt.Errorf("write MCP config to %s: %w", agent.ID(), err)
+				}
+			default:
+				// Legacy: write unknown files as flat skills (backward compat)
+				if err := agent.WriteSkill(path, content); err != nil {
+					return fmt.Errorf("write %s to %s: %w", path, agent.ID(), err)
+				}
 			}
-		}
-		if err := agent.WriteMCPConfig(binaryPath); err != nil {
-			return fmt.Errorf("write MCP config to %s: %w", agent.ID(), err)
 		}
 	}
 	return nil
