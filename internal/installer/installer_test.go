@@ -68,7 +68,7 @@ func TestDetectAgents_None(t *testing.T) {
 
 func TestClaudeAdapter_Paths(t *testing.T) {
 	home := t.TempDir()
-	adapter := &ClaudeAdapter{homeDir: home}
+	adapter := &ClaudeAdapter{HomeDir: home}
 
 	if adapter.ID() != "claude" {
 		t.Errorf("ID = %q, want %q", adapter.ID(), "claude")
@@ -94,7 +94,7 @@ func TestClaudeAdapter_Paths(t *testing.T) {
 
 func TestOpenCodeAdapter_Paths(t *testing.T) {
 	home := t.TempDir()
-	adapter := &OpenCodeAdapter{homeDir: home}
+	adapter := &OpenCodeAdapter{HomeDir: home}
 
 	want := filepath.Join(home, ".config", "opencode", "opencode.json")
 	if got := adapter.MCPConfigPath(); got != want {
@@ -104,7 +104,7 @@ func TestOpenCodeAdapter_Paths(t *testing.T) {
 
 func TestOpenCodeAdapter_WriteMCPConfig_MergesExisting(t *testing.T) {
 	home := t.TempDir()
-	adapter := &OpenCodeAdapter{homeDir: home}
+	adapter := &OpenCodeAdapter{HomeDir: home}
 
 	// Pre-populate opencode.json with existing MCP servers and other keys.
 	configDir := filepath.Join(home, ".config", "opencode")
@@ -169,7 +169,7 @@ func TestOpenCodeAdapter_WriteMCPConfig_MergesExisting(t *testing.T) {
 
 func TestOpenCodeAdapter_WriteMCPConfig_CreatesNew(t *testing.T) {
 	home := t.TempDir()
-	adapter := &OpenCodeAdapter{homeDir: home}
+	adapter := &OpenCodeAdapter{HomeDir: home}
 
 	snippet := `{"type": "local", "command": ["/usr/local/bin/drup", "mcp"]}`
 	if err := adapter.WriteMCPConfig(snippet); err != nil {
@@ -202,7 +202,7 @@ func TestOpenCodeAdapter_WriteMCPConfig_CreatesNew(t *testing.T) {
 
 func TestOpenCodeAdapter_WriteMCPConfig_CorruptFile(t *testing.T) {
 	home := t.TempDir()
-	adapter := &OpenCodeAdapter{homeDir: home}
+	adapter := &OpenCodeAdapter{HomeDir: home}
 
 	configDir := filepath.Join(home, ".config", "opencode")
 	os.MkdirAll(configDir, 0o755)
@@ -225,7 +225,7 @@ func TestOpenCodeAdapter_WriteMCPConfig_CorruptFile(t *testing.T) {
 
 func TestOpenCodeAdapter_WriteMCPConfig_OverwritesExistingDrup(t *testing.T) {
 	home := t.TempDir()
-	adapter := &OpenCodeAdapter{homeDir: home}
+	adapter := &OpenCodeAdapter{HomeDir: home}
 
 	configDir := filepath.Join(home, ".config", "opencode")
 	os.MkdirAll(configDir, 0o755)
@@ -401,4 +401,553 @@ func TestInstall_WritesFiles(t *testing.T) {
 	if _, err := os.Stat(mcpPath); os.IsNotExist(err) {
 		t.Errorf("MCP config not written to %s", mcpPath)
 	}
+}
+
+// Phase 1: Adapter Remove* methods tests
+
+func TestClaudeAdapter_RemoveSkill(t *testing.T) {
+	home := t.TempDir()
+	adapter := &ClaudeAdapter{HomeDir: home}
+
+	// Create skill directory.
+	skillDir := filepath.Join(home, ".claude", "skills", "drup")
+	os.MkdirAll(skillDir, 0o755)
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# skill"), 0o644)
+
+	// Remove it.
+	path, err := adapter.RemoveSkill("drup", false)
+	if err != nil {
+		t.Fatalf("RemoveSkill error: %v", err)
+	}
+	if path == "" {
+		t.Error("expected path returned, got empty")
+	}
+
+	// Verify deleted.
+	if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
+		t.Error("skill directory still exists after RemoveSkill")
+	}
+
+	// Idempotent: remove again should succeed.
+	path2, err := adapter.RemoveSkill("drup", false)
+	if err != nil {
+		t.Fatalf("second RemoveSkill error: %v", err)
+	}
+	if path2 != "" {
+		t.Errorf("second RemoveSkill should return empty path, got %q", path2)
+	}
+}
+
+func TestClaudeAdapter_RemoveAgent(t *testing.T) {
+	home := t.TempDir()
+	adapter := &ClaudeAdapter{HomeDir: home}
+
+	// Create agent files.
+	agentsDir := filepath.Join(home, ".claude", "agents")
+	os.MkdirAll(agentsDir, 0o755)
+	os.WriteFile(filepath.Join(agentsDir, "drup-preflight.md"), []byte("# preflight"), 0o644)
+	os.WriteFile(filepath.Join(agentsDir, "drup-contrib.md"), []byte("# contrib"), 0o644)
+	os.WriteFile(filepath.Join(agentsDir, "other-agent.md"), []byte("# other"), 0o644)
+
+	// Remove all drup agents using glob pattern.
+	path, err := adapter.RemoveAgent("drup-*.md", false)
+	if err != nil {
+		t.Fatalf("RemoveAgent error: %v", err)
+	}
+	if path == "" {
+		t.Error("expected path returned, got empty")
+	}
+
+	// Verify drup agents deleted.
+	if _, err := os.Stat(filepath.Join(agentsDir, "drup-preflight.md")); !os.IsNotExist(err) {
+		t.Error("drup-preflight.md still exists")
+	}
+	if _, err := os.Stat(filepath.Join(agentsDir, "drup-contrib.md")); !os.IsNotExist(err) {
+		t.Error("drup-contrib.md still exists")
+	}
+
+	// Other agent preserved.
+	if _, err := os.Stat(filepath.Join(agentsDir, "other-agent.md")); os.IsNotExist(err) {
+		t.Error("other-agent.md was deleted — should be preserved")
+	}
+
+	// Idempotent.
+	path2, err := adapter.RemoveAgent("drup-*.md", false)
+	if err != nil {
+		t.Fatalf("second RemoveAgent error: %v", err)
+	}
+	if path2 != "" {
+		t.Errorf("second RemoveAgent should return empty path, got %q", path2)
+	}
+}
+
+func TestClaudeAdapter_RemoveMCPConfig(t *testing.T) {
+	home := t.TempDir()
+	adapter := &ClaudeAdapter{HomeDir: home}
+
+	// Create MCP config.
+	mcpDir := filepath.Join(home, ".claude", "mcp")
+	os.MkdirAll(mcpDir, 0o755)
+	mcpPath := filepath.Join(mcpDir, "drup.json")
+	os.WriteFile(mcpPath, []byte(`{"command":"drup"}`), 0o644)
+
+	// Remove it.
+	path, err := adapter.RemoveMCPConfig(false)
+	if err != nil {
+		t.Fatalf("RemoveMCPConfig error: %v", err)
+	}
+	if path == "" {
+		t.Error("expected path returned, got empty")
+	}
+
+	// Verify deleted.
+	if _, err := os.Stat(mcpPath); !os.IsNotExist(err) {
+		t.Error("MCP config still exists after RemoveMCPConfig")
+	}
+
+	// Idempotent.
+	path2, err := adapter.RemoveMCPConfig(false)
+	if err != nil {
+		t.Fatalf("second RemoveMCPConfig error: %v", err)
+	}
+	if path2 != "" {
+		t.Errorf("second RemoveMCPConfig should return empty path, got %q", path2)
+	}
+}
+
+func TestOpenCodeAdapter_RemoveSkill(t *testing.T) {
+	home := t.TempDir()
+	adapter := &OpenCodeAdapter{HomeDir: home}
+
+	// Create skill directory.
+	skillDir := filepath.Join(home, ".config", "opencode", "skills", "drup")
+	os.MkdirAll(skillDir, 0o755)
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# skill"), 0o644)
+
+	// Remove it.
+	path, err := adapter.RemoveSkill("drup", false)
+	if err != nil {
+		t.Fatalf("RemoveSkill error: %v", err)
+	}
+	if path == "" {
+		t.Error("expected path returned, got empty")
+	}
+
+	// Verify deleted.
+	if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
+		t.Error("skill directory still exists after RemoveSkill")
+	}
+
+	// Idempotent.
+	path2, err := adapter.RemoveSkill("drup", false)
+	if err != nil {
+		t.Fatalf("second RemoveSkill error: %v", err)
+	}
+	if path2 != "" {
+		t.Errorf("second RemoveSkill should return empty path, got %q", path2)
+	}
+}
+
+func TestOpenCodeAdapter_RemoveAgent(t *testing.T) {
+	home := t.TempDir()
+	adapter := &OpenCodeAdapter{HomeDir: home}
+
+	// Create agent files.
+	agentsDir := filepath.Join(home, ".config", "opencode", "agents")
+	os.MkdirAll(agentsDir, 0o755)
+	os.WriteFile(filepath.Join(agentsDir, "drup-preflight.md"), []byte("# preflight"), 0o644)
+	os.WriteFile(filepath.Join(agentsDir, "drup-contrib.md"), []byte("# contrib"), 0o644)
+	os.WriteFile(filepath.Join(agentsDir, "other-agent.md"), []byte("# other"), 0o644)
+
+	// Remove all drup agents using glob pattern.
+	path, err := adapter.RemoveAgent("drup-*.md", false)
+	if err != nil {
+		t.Fatalf("RemoveAgent error: %v", err)
+	}
+	if path == "" {
+		t.Error("expected path returned, got empty")
+	}
+
+	// Verify drup agents deleted.
+	if _, err := os.Stat(filepath.Join(agentsDir, "drup-preflight.md")); !os.IsNotExist(err) {
+		t.Error("drup-preflight.md still exists")
+	}
+	if _, err := os.Stat(filepath.Join(agentsDir, "drup-contrib.md")); !os.IsNotExist(err) {
+		t.Error("drup-contrib.md still exists")
+	}
+
+	// Other agent preserved.
+	if _, err := os.Stat(filepath.Join(agentsDir, "other-agent.md")); os.IsNotExist(err) {
+		t.Error("other-agent.md was deleted — should be preserved")
+	}
+
+	// Idempotent.
+	path2, err := adapter.RemoveAgent("drup-*.md", false)
+	if err != nil {
+		t.Fatalf("second RemoveAgent error: %v", err)
+	}
+	if path2 != "" {
+		t.Errorf("second RemoveAgent should return empty path, got %q", path2)
+	}
+}
+
+func TestOpenCodeAdapter_RemoveMCPConfig_PreservesOtherKeys(t *testing.T) {
+	home := t.TempDir()
+	adapter := &OpenCodeAdapter{HomeDir: home}
+
+	// Pre-populate opencode.json with multiple MCP servers.
+	configDir := filepath.Join(home, ".config", "opencode")
+	os.MkdirAll(configDir, 0o755)
+	configPath := filepath.Join(configDir, "opencode.json")
+	existing := `{
+  "agent": {"default": "test"},
+  "mcp": {
+    "context7": {"type": "remote", "url": "https://example.com"},
+    "engram": {"type": "local", "command": ["engram", "mcp"]},
+    "drup": {"type": "local", "command": ["/usr/local/bin/drup", "mcp"]}
+  },
+  "permission": {"bash": {"*": "allow"}}
+}`
+	os.WriteFile(configPath, []byte(existing), 0o644)
+
+	// Remove drup MCP config.
+	path, err := adapter.RemoveMCPConfig(false)
+	if err != nil {
+		t.Fatalf("RemoveMCPConfig error: %v", err)
+	}
+	if path == "" {
+		t.Error("expected path returned, got empty")
+	}
+
+	// Read back and verify.
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+
+	// Other top-level keys preserved.
+	if _, ok := result["agent"]; !ok {
+		t.Error("existing 'agent' key not preserved")
+	}
+	if _, ok := result["permission"]; !ok {
+		t.Error("existing 'permission' key not preserved")
+	}
+
+	// Other MCP entries preserved.
+	mcp, ok := result["mcp"].(map[string]any)
+	if !ok {
+		t.Fatal("mcp key missing or not an object")
+	}
+	if _, ok := mcp["context7"]; !ok {
+		t.Error("existing 'context7' MCP entry not preserved")
+	}
+	if _, ok := mcp["engram"]; !ok {
+		t.Error("existing 'engram' MCP entry not preserved")
+	}
+
+	// Drup entry removed.
+	if _, ok := mcp["drup"]; ok {
+		t.Error("drup MCP entry still exists after RemoveMCPConfig")
+	}
+}
+
+func TestOpenCodeAdapter_RemoveMCPConfig_RemovesEmptyMCP(t *testing.T) {
+	home := t.TempDir()
+	adapter := &OpenCodeAdapter{HomeDir: home}
+
+	// Config with only drup in mcp.
+	configDir := filepath.Join(home, ".config", "opencode")
+	os.MkdirAll(configDir, 0o755)
+	configPath := filepath.Join(configDir, "opencode.json")
+	existing := `{
+  "mcp": {
+    "drup": {"type": "local", "command": ["/usr/local/bin/drup", "mcp"]}
+  }
+}`
+	os.WriteFile(configPath, []byte(existing), 0o644)
+
+	// Remove drup MCP config.
+	_, err := adapter.RemoveMCPConfig(false)
+	if err != nil {
+		t.Fatalf("RemoveMCPConfig error: %v", err)
+	}
+
+	// Read back and verify mcp key removed.
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+
+	// mcp key should be removed when empty.
+	if _, ok := result["mcp"]; ok {
+		t.Error("mcp key should be removed when empty")
+	}
+}
+
+func TestOpenCodeAdapter_RemoveMCPConfig_Idempotent(t *testing.T) {
+	home := t.TempDir()
+	adapter := &OpenCodeAdapter{HomeDir: home}
+
+	// No config file exists.
+	path, err := adapter.RemoveMCPConfig(false)
+	if err != nil {
+		t.Fatalf("RemoveMCPConfig error: %v", err)
+	}
+	if path != "" {
+		t.Errorf("RemoveMCPConfig on missing file should return empty path, got %q", path)
+	}
+}
+
+func TestCodexAdapter_RemoveSkill(t *testing.T) {
+	home := t.TempDir()
+	adapter := &CodexAdapter{HomeDir: home}
+
+	// Create skill directory.
+	skillDir := filepath.Join(home, ".codex", "skills", "drup")
+	os.MkdirAll(skillDir, 0o755)
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# skill"), 0o644)
+
+	// Remove it.
+	path, err := adapter.RemoveSkill("drup", false)
+	if err != nil {
+		t.Fatalf("RemoveSkill error: %v", err)
+	}
+	if path == "" {
+		t.Error("expected path returned, got empty")
+	}
+
+	// Verify deleted.
+	if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
+		t.Error("skill directory still exists after RemoveSkill")
+	}
+
+	// Idempotent.
+	path2, err := adapter.RemoveSkill("drup", false)
+	if err != nil {
+		t.Fatalf("second RemoveSkill error: %v", err)
+	}
+	if path2 != "" {
+		t.Errorf("second RemoveSkill should return empty path, got %q", path2)
+	}
+}
+
+func TestCodexAdapter_RemoveAgent(t *testing.T) {
+	home := t.TempDir()
+	adapter := &CodexAdapter{HomeDir: home}
+
+	// Create agent files.
+	agentsDir := filepath.Join(home, ".codex", "agents")
+	os.MkdirAll(agentsDir, 0o755)
+	os.WriteFile(filepath.Join(agentsDir, "drup-preflight.md"), []byte("# preflight"), 0o644)
+	os.WriteFile(filepath.Join(agentsDir, "drup-contrib.md"), []byte("# contrib"), 0o644)
+	os.WriteFile(filepath.Join(agentsDir, "other-agent.md"), []byte("# other"), 0o644)
+
+	// Remove all drup agents using glob pattern.
+	path, err := adapter.RemoveAgent("drup-*.md", false)
+	if err != nil {
+		t.Fatalf("RemoveAgent error: %v", err)
+	}
+	if path == "" {
+		t.Error("expected path returned, got empty")
+	}
+
+	// Verify drup agents deleted.
+	if _, err := os.Stat(filepath.Join(agentsDir, "drup-preflight.md")); !os.IsNotExist(err) {
+		t.Error("drup-preflight.md still exists")
+	}
+	if _, err := os.Stat(filepath.Join(agentsDir, "drup-contrib.md")); !os.IsNotExist(err) {
+		t.Error("drup-contrib.md still exists")
+	}
+
+	// Other agent preserved.
+	if _, err := os.Stat(filepath.Join(agentsDir, "other-agent.md")); os.IsNotExist(err) {
+		t.Error("other-agent.md was deleted — should be preserved")
+	}
+
+	// Idempotent.
+	path2, err := adapter.RemoveAgent("drup-*.md", false)
+	if err != nil {
+		t.Fatalf("second RemoveAgent error: %v", err)
+	}
+	if path2 != "" {
+		t.Errorf("second RemoveAgent should return empty path, got %q", path2)
+	}
+}
+
+func TestCodexAdapter_RemoveMCPConfig(t *testing.T) {
+	home := t.TempDir()
+	adapter := &CodexAdapter{HomeDir: home}
+
+	// Create MCP config.
+	mcpPath := filepath.Join(home, ".codex", "mcp.json")
+	os.MkdirAll(filepath.Dir(mcpPath), 0o755)
+	os.WriteFile(mcpPath, []byte(`{"command":"drup"}`), 0o644)
+
+	// Remove it.
+	path, err := adapter.RemoveMCPConfig(false)
+	if err != nil {
+		t.Fatalf("RemoveMCPConfig error: %v", err)
+	}
+	if path == "" {
+		t.Error("expected path returned, got empty")
+	}
+
+	// Verify deleted.
+	if _, err := os.Stat(mcpPath); !os.IsNotExist(err) {
+		t.Error("MCP config still exists after RemoveMCPConfig")
+	}
+
+	// Idempotent.
+	path2, err := adapter.RemoveMCPConfig(false)
+	if err != nil {
+		t.Fatalf("second RemoveMCPConfig error: %v", err)
+	}
+	if path2 != "" {
+		t.Errorf("second RemoveMCPConfig should return empty path, got %q", path2)
+	}
+}
+
+// Phase 2: Uninstall orchestration tests
+
+func TestUninstall_CallsAllRemoveMethods(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
+
+	orig := homeDir
+	homeDir = func() (string, error) { return home, nil }
+	defer func() { homeDir = orig }()
+
+	agents := DetectAgents()
+	if len(agents) == 0 {
+		t.Fatal("no agents detected")
+	}
+
+	// Install something first.
+	files := map[string]string{
+		"SKILL.md":                 "# Test\n",
+		".mcp.json":                `{"command":"drup"}`,
+		"agents/drup-preflight.md": "# Preflight\n",
+		"agents/drup-contrib.md":   "# Contrib\n",
+	}
+	if err := Install(agents, "/usr/local/bin/drup", files); err != nil {
+		t.Fatalf("Install error: %v", err)
+	}
+
+	// Verify files exist.
+	skillDir := filepath.Join(home, ".claude", "skills", "drup")
+	if _, err := os.Stat(skillDir); os.IsNotExist(err) {
+		t.Fatal("skill dir not created")
+	}
+
+	// Uninstall.
+	paths, err := Uninstall(agents, false)
+	if err != nil {
+		t.Fatalf("Uninstall error: %v", err)
+	}
+
+	// Verify paths returned.
+	if len(paths) == 0 {
+		t.Error("expected paths returned, got empty")
+	}
+
+	// Verify files deleted.
+	if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
+		t.Error("skill directory still exists after Uninstall")
+	}
+	agentsDir := filepath.Join(home, ".claude", "agents")
+	if _, err := os.Stat(filepath.Join(agentsDir, "drup-preflight.md")); !os.IsNotExist(err) {
+		t.Error("drup-preflight.md still exists after Uninstall")
+	}
+	if _, err := os.Stat(filepath.Join(agentsDir, "drup-contrib.md")); !os.IsNotExist(err) {
+		t.Error("drup-contrib.md still exists after Uninstall")
+	}
+	mcpPath := filepath.Join(home, ".claude", "mcp", "drup.json")
+	if _, err := os.Stat(mcpPath); !os.IsNotExist(err) {
+		t.Error("MCP config still exists after Uninstall")
+	}
+}
+
+func TestUninstall_DryRun(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
+
+	orig := homeDir
+	homeDir = func() (string, error) { return home, nil }
+	defer func() { homeDir = orig }()
+
+	agents := DetectAgents()
+	if len(agents) == 0 {
+		t.Fatal("no agents detected")
+	}
+
+	// Install something first.
+	files := map[string]string{
+		"SKILL.md":                 "# Test\n",
+		".mcp.json":                `{"command":"drup"}`,
+		"agents/drup-preflight.md": "# Preflight\n",
+	}
+	if err := Install(agents, "/usr/local/bin/drup", files); err != nil {
+		t.Fatalf("Install error: %v", err)
+	}
+
+	// Uninstall with dry-run.
+	paths, err := Uninstall(agents, true)
+	if err != nil {
+		t.Fatalf("Uninstall error: %v", err)
+	}
+
+	// Verify paths returned.
+	if len(paths) == 0 {
+		t.Error("expected paths returned, got empty")
+	}
+
+	// Verify files NOT deleted (dry-run).
+	skillDir := filepath.Join(home, ".claude", "skills", "drup")
+	if _, err := os.Stat(skillDir); os.IsNotExist(err) {
+		t.Error("skill directory deleted in dry-run mode — should be preserved")
+	}
+	agentsDir := filepath.Join(home, ".claude", "agents")
+	if _, err := os.Stat(filepath.Join(agentsDir, "drup-preflight.md")); os.IsNotExist(err) {
+		t.Error("drup-preflight.md deleted in dry-run mode — should be preserved")
+	}
+}
+
+func TestUninstall_Idempotent(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
+
+	orig := homeDir
+	homeDir = func() (string, error) { return home, nil }
+	defer func() { homeDir = orig }()
+
+	agents := DetectAgents()
+	if len(agents) == 0 {
+		t.Fatal("no agents detected")
+	}
+
+	// First uninstall (nothing installed).
+	paths1, err := Uninstall(agents, false)
+	if err != nil {
+		t.Fatalf("first Uninstall error: %v", err)
+	}
+
+	// Second uninstall (should be idempotent).
+	paths2, err := Uninstall(agents, false)
+	if err != nil {
+		t.Fatalf("second Uninstall error: %v", err)
+	}
+
+	// Both should succeed without error.
+	_ = paths1
+	_ = paths2
 }

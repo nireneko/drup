@@ -2,6 +2,7 @@ package state
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -69,4 +70,31 @@ func Save(s *State) error {
 		return err
 	}
 	return os.Rename(tmpPath, path)
+}
+
+// Remove removes the state directory (~/.config/drup/) and legacy directory (~/.drup/).
+// It is idempotent — missing directories are silently skipped.
+func Remove() error {
+	base, err := configDir()
+	if err != nil {
+		return err
+	}
+
+	// Remove ~/.config/drup/
+	drupDir := filepath.Join(base, "drup")
+	if _, err := os.Stat(drupDir); err == nil {
+		if err := os.RemoveAll(drupDir); err != nil {
+			return fmt.Errorf("remove %s: %w", drupDir, err)
+		}
+	}
+
+	// Remove legacy ~/.drup/
+	legacyDir := filepath.Join(base, ".drup")
+	if _, err := os.Stat(legacyDir); err == nil {
+		if err := os.RemoveAll(legacyDir); err != nil {
+			return fmt.Errorf("remove %s: %w", legacyDir, err)
+		}
+	}
+
+	return nil
 }

@@ -27,31 +27,34 @@ type AgentAdapter interface {
 	WriteSkill(name, content string) error
 	WriteAgent(name, content string) error
 	WriteMCPConfig(content string) error
+	RemoveSkill(name string, dryRun bool) (string, error)
+	RemoveAgent(name string, dryRun bool) (string, error)
+	RemoveMCPConfig(dryRun bool) (string, error)
 }
 
 // ClaudeAdapter handles Claude Code installation.
 type ClaudeAdapter struct {
-	homeDir string
+	HomeDir string
 }
 
 func (a *ClaudeAdapter) ID() string { return "claude" }
 
 func (a *ClaudeAdapter) Detect() bool {
-	dir := filepath.Join(a.homeDir, ".claude")
+	dir := filepath.Join(a.HomeDir, ".claude")
 	_, err := os.Stat(dir)
 	return err == nil
 }
 
 func (a *ClaudeAdapter) SkillsDir() string {
-	return filepath.Join(a.homeDir, ".claude", "skills")
+	return filepath.Join(a.HomeDir, ".claude", "skills")
 }
 
 func (a *ClaudeAdapter) MCPConfigPath() string {
-	return filepath.Join(a.homeDir, ".claude", "mcp", "drup.json")
+	return filepath.Join(a.HomeDir, ".claude", "mcp", "drup.json")
 }
 
 func (a *ClaudeAdapter) AgentsDir() string {
-	return filepath.Join(a.homeDir, ".claude", "agents")
+	return filepath.Join(a.HomeDir, ".claude", "agents")
 }
 
 func (a *ClaudeAdapter) WriteSkill(name, content string) error {
@@ -80,29 +83,75 @@ func (a *ClaudeAdapter) WriteMCPConfig(content string) error {
 	return os.WriteFile(a.MCPConfigPath(), []byte(content), 0o644)
 }
 
+func (a *ClaudeAdapter) RemoveSkill(name string, dryRun bool) (string, error) {
+	dir := filepath.Join(a.SkillsDir(), name)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return "", nil
+	}
+	if !dryRun {
+		if err := os.RemoveAll(dir); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
+func (a *ClaudeAdapter) RemoveAgent(name string, dryRun bool) (string, error) {
+	// Support glob patterns like "drup-*.md"
+	pattern := filepath.Join(a.AgentsDir(), name)
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return "", err
+	}
+	if len(matches) == 0 {
+		return "", nil
+	}
+	if !dryRun {
+		for _, match := range matches {
+			if err := os.Remove(match); err != nil {
+				return "", err
+			}
+		}
+	}
+	return matches[0], nil
+}
+
+func (a *ClaudeAdapter) RemoveMCPConfig(dryRun bool) (string, error) {
+	path := a.MCPConfigPath()
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return "", nil
+	}
+	if !dryRun {
+		if err := os.Remove(path); err != nil {
+			return "", err
+		}
+	}
+	return path, nil
+}
+
 // OpenCodeAdapter handles OpenCode installation.
 type OpenCodeAdapter struct {
-	homeDir string
+	HomeDir string
 }
 
 func (a *OpenCodeAdapter) ID() string { return "opencode" }
 
 func (a *OpenCodeAdapter) Detect() bool {
-	dir := filepath.Join(a.homeDir, ".config", "opencode")
+	dir := filepath.Join(a.HomeDir, ".config", "opencode")
 	_, err := os.Stat(dir)
 	return err == nil
 }
 
 func (a *OpenCodeAdapter) SkillsDir() string {
-	return filepath.Join(a.homeDir, ".config", "opencode", "skills")
+	return filepath.Join(a.HomeDir, ".config", "opencode", "skills")
 }
 
 func (a *OpenCodeAdapter) MCPConfigPath() string {
-	return filepath.Join(a.homeDir, ".config", "opencode", "opencode.json")
+	return filepath.Join(a.HomeDir, ".config", "opencode", "opencode.json")
 }
 
 func (a *OpenCodeAdapter) AgentsDir() string {
-	return filepath.Join(a.homeDir, ".config", "opencode", "agents")
+	return filepath.Join(a.HomeDir, ".config", "opencode", "agents")
 }
 
 func (a *OpenCodeAdapter) WriteSkill(name, content string) error {
@@ -181,29 +230,123 @@ func (a *OpenCodeAdapter) WriteMCPConfig(content string) error {
 	return os.Rename(tmpName, configPath)
 }
 
+func (a *OpenCodeAdapter) RemoveSkill(name string, dryRun bool) (string, error) {
+	dir := filepath.Join(a.SkillsDir(), name)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return "", nil
+	}
+	if !dryRun {
+		if err := os.RemoveAll(dir); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
+func (a *OpenCodeAdapter) RemoveAgent(name string, dryRun bool) (string, error) {
+	// Support glob patterns like "drup-*.md"
+	pattern := filepath.Join(a.AgentsDir(), name)
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return "", err
+	}
+	if len(matches) == 0 {
+		return "", nil
+	}
+	if !dryRun {
+		for _, match := range matches {
+			if err := os.Remove(match); err != nil {
+				return "", err
+			}
+		}
+	}
+	return matches[0], nil
+}
+
+func (a *OpenCodeAdapter) RemoveMCPConfig(dryRun bool) (string, error) {
+	configPath := a.MCPConfigPath()
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		return "", nil
+	}
+
+	if dryRun {
+		return configPath, nil
+	}
+
+	// Read existing config.
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", configPath, err)
+	}
+
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		return "", fmt.Errorf("corrupt config %s: %w", configPath, err)
+	}
+
+	// Delete drup key from mcp.
+	mcp, ok := config["mcp"].(map[string]any)
+	if !ok {
+		return "", nil // no mcp key, nothing to remove
+	}
+	delete(mcp, "drup")
+
+	// If mcp is now empty, remove the mcp key too.
+	if len(mcp) == 0 {
+		delete(config, "mcp")
+	}
+
+	// Marshal with indent.
+	updated, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal updated config: %w", err)
+	}
+
+	// Atomic write: temp file + rename.
+	dir := filepath.Dir(configPath)
+	tmp, err := os.CreateTemp(dir, "opencode.json.*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(updated); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return "", fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return "", fmt.Errorf("close temp file: %w", err)
+	}
+	if err := os.Rename(tmpName, configPath); err != nil {
+		return "", err
+	}
+	return configPath, nil
+}
+
 // CodexAdapter handles Codex installation.
 type CodexAdapter struct {
-	homeDir string
+	HomeDir string
 }
 
 func (a *CodexAdapter) ID() string { return "codex" }
 
 func (a *CodexAdapter) Detect() bool {
-	dir := filepath.Join(a.homeDir, ".codex")
+	dir := filepath.Join(a.HomeDir, ".codex")
 	_, err := os.Stat(dir)
 	return err == nil
 }
 
 func (a *CodexAdapter) SkillsDir() string {
-	return filepath.Join(a.homeDir, ".codex", "skills")
+	return filepath.Join(a.HomeDir, ".codex", "skills")
 }
 
 func (a *CodexAdapter) MCPConfigPath() string {
-	return filepath.Join(a.homeDir, ".codex", "mcp.json")
+	return filepath.Join(a.HomeDir, ".codex", "mcp.json")
 }
 
 func (a *CodexAdapter) AgentsDir() string {
-	return filepath.Join(a.homeDir, ".codex", "agents")
+	return filepath.Join(a.HomeDir, ".codex", "agents")
 }
 
 func (a *CodexAdapter) WriteSkill(name, content string) error {
@@ -230,6 +373,52 @@ func (a *CodexAdapter) WriteMCPConfig(content string) error {
 	return os.WriteFile(a.MCPConfigPath(), []byte(content), 0o644)
 }
 
+func (a *CodexAdapter) RemoveSkill(name string, dryRun bool) (string, error) {
+	dir := filepath.Join(a.SkillsDir(), name)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return "", nil
+	}
+	if !dryRun {
+		if err := os.RemoveAll(dir); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
+func (a *CodexAdapter) RemoveAgent(name string, dryRun bool) (string, error) {
+	// Support glob patterns like "drup-*.md"
+	pattern := filepath.Join(a.AgentsDir(), name)
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return "", err
+	}
+	if len(matches) == 0 {
+		return "", nil
+	}
+	if !dryRun {
+		for _, match := range matches {
+			if err := os.Remove(match); err != nil {
+				return "", err
+			}
+		}
+	}
+	return matches[0], nil
+}
+
+func (a *CodexAdapter) RemoveMCPConfig(dryRun bool) (string, error) {
+	path := a.MCPConfigPath()
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return "", nil
+	}
+	if !dryRun {
+		if err := os.Remove(path); err != nil {
+			return "", err
+		}
+	}
+	return path, nil
+}
+
 // DetectAgents returns all detected agent adapters.
 func DetectAgents() []AgentAdapter {
 	home, err := homeDir()
@@ -238,9 +427,9 @@ func DetectAgents() []AgentAdapter {
 	}
 
 	adapters := []AgentAdapter{
-		&ClaudeAdapter{homeDir: home},
-		&OpenCodeAdapter{homeDir: home},
-		&CodexAdapter{homeDir: home},
+		&ClaudeAdapter{HomeDir: home},
+		&OpenCodeAdapter{HomeDir: home},
+		&CodexAdapter{HomeDir: home},
 	}
 
 	var detected []AgentAdapter
@@ -513,4 +702,35 @@ func Install(agents []AgentAdapter, binaryPath string, files map[string]string) 
 		}
 	}
 	return nil
+}
+
+// Uninstall removes skill files, agent definitions, and MCP config from all provided agents.
+// It returns the list of paths removed (or would-be-removed in dry-run mode).
+func Uninstall(agents []AgentAdapter, dryRun bool) ([]string, error) {
+	var paths []string
+
+	for _, agent := range agents {
+		// Remove skill directory.
+		if path, err := agent.RemoveSkill("drup", dryRun); err != nil {
+			return paths, fmt.Errorf("remove skill from %s: %w", agent.ID(), err)
+		} else if path != "" {
+			paths = append(paths, path)
+		}
+
+		// Remove agent files using glob pattern.
+		if path, err := agent.RemoveAgent("drup-*.md", dryRun); err != nil {
+			return paths, fmt.Errorf("remove agents from %s: %w", agent.ID(), err)
+		} else if path != "" {
+			paths = append(paths, path)
+		}
+
+		// Remove MCP config.
+		if path, err := agent.RemoveMCPConfig(dryRun); err != nil {
+			return paths, fmt.Errorf("remove MCP config from %s: %w", agent.ID(), err)
+		} else if path != "" {
+			paths = append(paths, path)
+		}
+	}
+
+	return paths, nil
 }

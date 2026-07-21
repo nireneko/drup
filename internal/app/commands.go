@@ -549,3 +549,111 @@ func extractZip(archivePath, destDir string) error {
 	}
 	return nil
 }
+
+// RunUninstall removes drup from all installed agents.
+func RunUninstall(args []string) error {
+	// Parse flags manually (matching existing pattern).
+	dryRun := false
+	force := false
+	for _, arg := range args {
+		switch arg {
+		case "--dry-run":
+			dryRun = true
+		case "--force":
+			force = true
+		}
+	}
+
+	// Load state.
+	s, err := statepkg.Load()
+	if err != nil {
+		if force {
+			fmt.Fprintf(os.Stderr, "Warning: could not load state: %v\n", err)
+			fmt.Fprintln(os.Stderr, "Proceeding with --force...")
+			s = &statepkg.State{}
+		} else {
+			return fmt.Errorf("load state: %w (use --force to override)", err)
+		}
+	}
+
+	// Check if state is empty.
+	if len(s.InstalledAgents) == 0 {
+		if force {
+			fmt.Fprintln(os.Stderr, "Warning: no agents in state, but proceeding with --force...")
+		} else {
+			return fmt.Errorf("no agents installed — state is empty (use --force to override)")
+		}
+	}
+
+	// Build adapter list from state.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("get home directory: %w", err)
+	}
+
+	var adapters []installer.AgentAdapter
+	for _, agentID := range s.InstalledAgents {
+		switch agentID {
+		case "claude":
+			adapters = append(adapters, &installer.ClaudeAdapter{HomeDir: home})
+		case "opencode":
+			adapters = append(adapters, &installer.OpenCodeAdapter{HomeDir: home})
+		case "codex":
+			adapters = append(adapters, &installer.CodexAdapter{HomeDir: home})
+		}
+	}
+
+	if len(adapters) == 0 && !force {
+		return fmt.Errorf("no valid adapters found in state")
+	}
+
+	// Confirmation prompt (skip in dry-run or force mode).
+	if !dryRun && !force {
+		fmt.Println("This will remove drup from the following agents:")
+		for _, agent := range adapters {
+			fmt.Printf("  - %s\n", agent.ID())
+		}
+		fmt.Println("\nState directory (~/.config/drup/) will be removed.")
+		fmt.Print("\nContinue? [y/N] ")
+
+		var response string
+		fmt.Scanln(&response)
+		if response != "y" && response != "Y" {
+			fmt.Println("Uninstall cancelled.")
+			return nil
+		}
+	}
+
+	// Uninstall from adapters.
+	paths, err := installer.Uninstall(adapters, dryRun)
+	if err != nil {
+		return fmt.Errorf("uninstall: %w", err)
+	}
+
+	if dryRun {
+		fmt.Println("Dry-run mode — the following would be removed:")
+		for _, path := range paths {
+			fmt.Printf("  %s\n", path)
+		}
+		return nil
+	}
+
+	// Remove state directory.
+	if err := statepkg.Remove(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not remove state directory: %v\n", err)
+	}
+
+	// Attempt binary self-removal.
+	executable, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not determine executable path: %v\n", err)
+	} else {
+		if err := os.Remove(executable); err != nil {
+			fmt.Fprintf(os.Stderr, "Could not remove binary %s: %v\n", executable, err)
+			fmt.Fprintf(os.Stderr, "Please remove it manually: rm %s\n", executable)
+		}
+	}
+
+	fmt.Println("Uninstall complete.")
+	return nil
+}

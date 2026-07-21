@@ -50,6 +50,8 @@ func Run(args []string) error {
 		return RunMCP()
 	case "install":
 		return RunInstall()
+	case "uninstall":
+		return RunUninstall(args[1:])
 	case "sync":
 		return RunSync()
 	case "upgrade":
@@ -75,6 +77,7 @@ Commands:
   report <path>         Generate JSON and markdown reports
   mcp                   Start MCP stdio server
   install               Detect agents and write skill files
+  uninstall             Remove drup from all installed agents
   sync                  Re-apply agent assets
   upgrade               Self-update binary
   preflight             Check project readiness for upgrade automation

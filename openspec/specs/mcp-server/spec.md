@@ -2,7 +2,7 @@
 
 ## Purpose
 
-MCP stdio server wrapping all internal packages as 7 tools for AI agent consumption.
+MCP stdio server wrapping all internal packages as 17 tools for AI agent consumption.
 
 ## Requirements
 
@@ -118,6 +118,227 @@ The system SHALL expose a `create_patch` MCP tool for generating patches from de
 - GIVEN a tool call `create_patch({module_name: "mymodule", deprecation_details: "..."})`
 - WHEN the system can generate a fix
 - THEN the system SHALL return `{patch_path: "/path/to/patch", applied: true}`
+
+### Requirement: detect_env Tool
+
+The system SHALL expose a `detect_env` MCP tool that detects the Drupal development environment (ddev, lando, docker4drupal, direct) for a given project path and caches the result for all subsequent tool calls.
+
+#### Scenario: detect_env with ddev project
+
+- GIVEN a tool call `detect_env({project_path: "/path/to/ddev/project"})`
+- WHEN the project contains a `.ddev/` directory
+- THEN the system SHALL return `{environment: "ddev", command_prefix: ["ddev"], detected_at: "<timestamp>"}`
+
+#### Scenario: detect_env with lando project
+
+- GIVEN a tool call `detect_env({project_path: "/path/to/lando/project"})`
+- WHEN the project contains a `.lando.yml` file
+- THEN the system SHALL return `{environment: "lando", command_prefix: ["lando"], detected_at: "<timestamp>"}`
+
+#### Scenario: detect_env with direct installation
+
+- GIVEN a tool call `detect_env({project_path: "/path/to/drupal"})`
+- WHEN the project contains `composer.json` but no environment markers
+- THEN the system SHALL return `{environment: "direct", command_prefix: [], detected_at: "<timestamp>"}`
+
+#### Scenario: detect_env with unknown environment
+
+- GIVEN a tool call `detect_env({project_path: "/nonexistent"})`
+- WHEN the path does not exist or is not a directory
+- THEN the system SHALL return `{environment: "unknown", command_prefix: []}` with an error message
+
+#### Scenario: detect_env cache bypass
+
+- GIVEN a tool call `detect_env({project_path: "/path", force_detect: true})`
+- WHEN `force_detect` is true
+- THEN the system SHALL bypass the cache and re-run detection
+
+### Requirement: composer_require Tool
+
+The system SHALL expose a `composer_require` MCP tool that safely wraps `composer require` with input validation, dry-run pre-check for conflicts, timeout handling, and structured output parsing.
+
+#### Scenario: composer_require success
+
+- GIVEN a tool call `composer_require({project_path: "/path", package: "drupal/token:^1.0"})`
+- WHEN the package installs successfully
+- THEN the system SHALL return `{success: true, installed_version: "1.0.0", stdout: "...", stderr: "", exit_code: 0}`
+
+#### Scenario: composer_require conflict
+
+- GIVEN a tool call `composer_require({project_path: "/path", package: "drupal/incompatible"})`
+- WHEN the dry-run detects a conflict
+- THEN the system SHALL return `{success: false, installed_version: "", stdout: "", stderr: "conflict details", exit_code: 1}`
+
+#### Scenario: composer_require invalid package format
+
+- GIVEN a tool call `composer_require({project_path: "/path", package: "invalid;package"})`
+- WHEN the package name fails validation
+- THEN the system SHALL return an error before executing any command
+
+### Requirement: drush_exec Tool
+
+The system SHALL expose a `drush_exec` MCP tool that safely wraps drush execution with command blocklist, automatic environment-aware prefixing, `--root` flag injection, and structured output parsing.
+
+#### Scenario: drush_exec success
+
+- GIVEN a tool call `drush_exec({project_path: "/path", command: "status", format: "json"})`
+- WHEN the command executes successfully
+- THEN the system SHALL return `{success: true, output: {...}, stderr: "", exit_code: 0}`
+
+#### Scenario: drush_exec blocked command
+
+- GIVEN a tool call `drush_exec({project_path: "/path", command: "sql-drop"})`
+- WHEN the command is in the blocklist
+- THEN the system SHALL return `{success: false, error: "command 'sql-drop' is blocked for safety", exit_code: -1}`
+
+#### Scenario: drush_exec shell metacharacters rejected
+
+- GIVEN a tool call `drush_exec({project_path: "/path", command: "status; rm -rf /"})`
+- WHEN the command contains shell metacharacters
+- THEN the system SHALL return an error before executing
+
+### Requirement: upgrade_scan Tool
+
+The system SHALL expose an `upgrade_scan` MCP tool that performs one-call upgrade_status analysis: install upgrade_status (if missing), enable it (if disabled), run analysis, and return filtered results.
+
+#### Scenario: upgrade_scan full lifecycle
+
+- GIVEN a tool call `upgrade_scan({project_path: "/path"})`
+- WHEN upgrade_status is not installed
+- THEN the system SHALL install it via composer, enable it, run analysis, and return `{total_errors: N, modules: [...], upgrade_status_installed: true, upgrade_status_enabled: true}`
+
+#### Scenario: upgrade_scan idempotent
+
+- GIVEN a tool call `upgrade_scan({project_path: "/path"})`
+- WHEN upgrade_status is already installed and enabled
+- THEN the system SHALL skip install/enable steps and return analysis results
+
+### Requirement: contrib_upgrade_path Tool
+
+The system SHALL expose a `contrib_upgrade_path` MCP tool that resolves the recommended contrib module version for a target Drupal major version.
+
+#### Scenario: contrib_upgrade_path finds stable release
+
+- GIVEN a tool call `contrib_upgrade_path({module_machine_name: "token", current_drupal_version: "10", target_drupal_version: "11"})`
+- WHEN a stable release compatible with D11 exists
+- THEN the system SHALL return `{module: "token", recommended_upgrade: {version: "...", is_stable: true, ...}, alternative_versions: [...]}`
+
+#### Scenario: contrib_upgrade_path no compatible releases
+
+- GIVEN a tool call `contrib_upgrade_path({module_machine_name: "old_module", current_drupal_version: "10", target_drupal_version: "11"})`
+- WHEN no releases are compatible with D11
+- THEN the system SHALL return `{module: "old_module", recommended_upgrade: null, alternative_versions: []}`
+
+### Requirement: patch_status Tool
+
+The system SHALL expose a `patch_status` MCP tool that checks whether a specific patch is already applied by inspecting `composer.json` `extra.patches` and git history.
+
+#### Scenario: patch_status applied patch
+
+- GIVEN a tool call `patch_status({project_path: "/path", patch_url: "https://..."})`
+- WHEN the patch is registered in composer.json and found in git log
+- THEN the system SHALL return `{is_applied: true, commit_hash: "abc123", registered_in_composer: true, patch_info: {...}}`
+
+#### Scenario: patch_status not applied
+
+- GIVEN a tool call `patch_status({project_path: "/path", patch_url: "https://..."})`
+- WHEN the patch is not registered and not in git log
+- THEN the system SHALL return `{is_applied: false, commit_hash: "", registered_in_composer: false, patch_info: null}`
+
+### Requirement: patch_rollback Tool
+
+The system SHALL expose a `patch_rollback` MCP tool that cleanly reverts a previously applied patch: git-revert the commit, remove from `composer.json`, and run `composer update`.
+
+#### Scenario: patch_rollback success
+
+- GIVEN a tool call `patch_rollback({project_path: "/path", patch_url: "https://...", composer_package: "drupal/token"})`
+- WHEN the patch is applied and working tree is clean
+- THEN the system SHALL revert the commit, remove from composer.json, run composer update, and return `{success: true, reverted_commit: "...", removed_from_composer: true}`
+
+#### Scenario: patch_rollback dirty working tree
+
+- GIVEN a tool call `patch_rollback({project_path: "/path", patch_url: "https://...", composer_package: "drupal/token"})`
+- WHEN the working tree has uncommitted changes
+- THEN the system SHALL return `{success: false, error: "working tree is dirty"}`
+
+### Requirement: generate_report Tool
+
+The system SHALL expose a `generate_report` MCP tool that generates upgrade reports in JSON and/or Markdown format by wrapping the existing `internal/report` package.
+
+#### Scenario: generate_report both formats
+
+- GIVEN a tool call `generate_report({project_path: "/path", report_type: "both"})`
+- WHEN the report is generated
+- THEN the system SHALL write `drup-report.json` and `drup-report.md` to project_path and return `{success: true, json_report_path: "...", markdown_report_path: "...", summary: {...}}`
+
+### Requirement: module_info Tool
+
+The system SHALL expose a `module_info` MCP tool that fetches module metadata and health indicators from Drupal.org for decision support.
+
+#### Scenario: module_info fetches metadata
+
+- GIVEN a tool call `module_info({module_machine_name: "token"})`
+- WHEN the module exists on Drupal.org
+- THEN the system SHALL return `{module: "token", title: "Token", maintainers: [...], downloads: N, last_release: "...", open_issues: N}`
+
+#### Scenario: module_info not found
+
+- GIVEN a tool call `module_info({module_machine_name: "nonexistent"})`
+- WHEN the module does not exist on Drupal.org
+- THEN the system SHALL return an error `"module 'nonexistent' not found"`
+
+### Requirement: drupal_version_matrix Tool
+
+The system SHALL expose a `drupal_version_matrix` MCP tool that provides a Drupal/PHP version compatibility matrix for preflight validation using static data.
+
+#### Scenario: drupal_version_matrix lookup by Drupal version
+
+- GIVEN a tool call `drupal_version_matrix({drupal_version: "11"})`
+- WHEN the version is in the static map
+- THEN the system SHALL return `{drupal_version: "11", php_requirements: {minimum: "8.3", recommended: "8.4"}, supported_until: "TBA", upgrade_path: {next_major: ""}}`
+
+#### Scenario: drupal_version_matrix unknown version
+
+- GIVEN a tool call `drupal_version_matrix({drupal_version: "99"})`
+- WHEN the version is not in the static map
+- THEN the system SHALL return an error `"unknown Drupal version: 99"`
+
+### Requirement: New Tool Registration
+
+The system SHALL register 10 new MCP tool handlers in addition to the existing 7 tools, for a total of 17 tools.
+
+#### Scenario: All 10 new tools are callable
+
+- GIVEN the MCP server starts with the new handlers registered
+- WHEN an agent calls any of: `detect_env`, `upgrade_scan`, `composer_require`, `drush_exec`, `contrib_upgrade_path`, `patch_status`, `patch_rollback`, `generate_report`, `module_info`, `drupal_version_matrix`
+- THEN the system SHALL route the call to the correct handler and return a valid JSON-RPC response
+
+#### Scenario: New tools validate input schemas
+
+- GIVEN a tool call to any new tool with missing required parameters
+- THEN the system SHALL return a JSON-RPC error with code -32602 (invalid params) before executing the handler
+
+#### Scenario: Existing tools unchanged
+
+- GIVEN the 10 new tools are registered
+- WHEN an agent calls any of the original 7 tools
+- THEN the behavior SHALL be identical to before this change
+
+### Requirement: Tool Handler Registration Points
+
+The system SHALL register new tool handlers in both `internal/mcp/tools.go` (placeholder/schema definitions) and `internal/app/mcp_tools.go` (real handler wiring).
+
+#### Scenario: Schema definitions
+
+- GIVEN the MCP server initialization
+- WHEN tool schemas are built for the `tools/list` response
+- THEN all 10 new tools SHALL appear with correct input schemas as defined above
+
+#### Scenario: Handler wiring
+
+- GIVEN a tool call arrives for a new tool
+- WHEN the handler dispatch runs
+- THEN the system SHALL invoke the correct internal package function
 
 ### Requirement: Tool Schema Validation
 

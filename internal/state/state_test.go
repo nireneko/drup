@@ -85,3 +85,69 @@ func TestSave_CreatesDirectory(t *testing.T) {
 		t.Error("drup directory not created")
 	}
 }
+
+func TestRemove_RemovesDirectory(t *testing.T) {
+	dir := t.TempDir()
+
+	orig := configDir
+	configDir = func() (string, error) { return dir, nil }
+	defer func() { configDir = orig }()
+
+	// Create state directory with files.
+	drupDir := filepath.Join(dir, "drup")
+	os.MkdirAll(drupDir, 0o755)
+	os.WriteFile(filepath.Join(drupDir, "state.json"), []byte(`{}`), 0o644)
+	os.MkdirAll(filepath.Join(drupDir, "backups"), 0o755)
+	os.WriteFile(filepath.Join(drupDir, "backups", "test.tar.gz"), []byte("test"), 0o644)
+
+	// Remove it.
+	if err := Remove(); err != nil {
+		t.Fatalf("Remove error: %v", err)
+	}
+
+	// Verify directory removed.
+	if _, err := os.Stat(drupDir); !os.IsNotExist(err) {
+		t.Error("drup directory still exists after Remove")
+	}
+}
+
+func TestRemove_RemovesLegacyDirectory(t *testing.T) {
+	dir := t.TempDir()
+
+	orig := configDir
+	configDir = func() (string, error) { return dir, nil }
+	defer func() { configDir = orig }()
+
+	// Create legacy ~/.drup/ directory.
+	legacyDir := filepath.Join(dir, ".drup")
+	os.MkdirAll(legacyDir, 0o755)
+	os.WriteFile(filepath.Join(legacyDir, "state.json"), []byte(`{}`), 0o644)
+
+	// Remove it.
+	if err := Remove(); err != nil {
+		t.Fatalf("Remove error: %v", err)
+	}
+
+	// Verify legacy directory removed.
+	if _, err := os.Stat(legacyDir); !os.IsNotExist(err) {
+		t.Error("legacy .drup directory still exists after Remove")
+	}
+}
+
+func TestRemove_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+
+	orig := configDir
+	configDir = func() (string, error) { return dir, nil }
+	defer func() { configDir = orig }()
+
+	// First remove (nothing exists).
+	if err := Remove(); err != nil {
+		t.Fatalf("first Remove error: %v", err)
+	}
+
+	// Second remove (should be idempotent).
+	if err := Remove(); err != nil {
+		t.Fatalf("second Remove error: %v", err)
+	}
+}
