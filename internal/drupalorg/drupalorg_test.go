@@ -222,3 +222,239 @@ func TestSearchPatches_FixtureHTML(t *testing.T) {
 		}
 	}
 }
+
+func TestUpgradePath_FindsStableRelease(t *testing.T) {
+	xmlData := `<?xml version="1.0" encoding="utf-8"?>
+<project>
+  <name>token</name>
+  <releases>
+    <release>
+      <version>1.13.0</version>
+      <status>published</status>
+      <release_date>2024-06-01T00:00:00Z</release_date>
+      <terms>
+        <term><name>Core compatibility</name><value>Drupal 11</value></term>
+      </terms>
+    </release>
+    <release>
+      <version>1.12.0</version>
+      <status>published</status>
+      <release_date>2024-01-01T00:00:00Z</release_date>
+      <terms>
+        <term><name>Core compatibility</name><value>Drupal 11</value></term>
+      </terms>
+    </release>
+    <release>
+      <version>1.14.0-beta1</version>
+      <status>unstable</status>
+      <release_date>2024-07-01T00:00:00Z</release_date>
+      <terms>
+        <term><name>Core compatibility</name><value>Drupal 11</value></term>
+      </terms>
+    </release>
+  </releases>
+</project>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write([]byte(xmlData))
+	}))
+	defer srv.Close()
+
+	orig := httpClient
+	httpClient = srv.Client()
+	defer func() { httpClient = orig }()
+
+	origURL := releaseHistoryVersionURL
+	releaseHistoryVersionURL = srv.URL + "/release-history/%s/%s"
+	defer func() { releaseHistoryVersionURL = origURL }()
+
+	rec, err := UpgradePath("token", "10", "11")
+	if err != nil {
+		t.Fatalf("UpgradePath error: %v", err)
+	}
+	if rec.Recommended == nil {
+		t.Fatal("expected recommended release, got nil")
+	}
+	if rec.Recommended.Version != "1.13.0" {
+		t.Errorf("Recommended.Version = %q, want %q", rec.Recommended.Version, "1.13.0")
+	}
+	if !rec.Recommended.IsStable {
+		t.Error("expected recommended to be stable")
+	}
+	if len(rec.Alternatives) != 2 {
+		t.Errorf("len(Alternatives) = %d, want 2", len(rec.Alternatives))
+	}
+}
+
+func TestUpgradePath_NoCompatibleReleases(t *testing.T) {
+	xmlData := `<?xml version="1.0" encoding="utf-8"?>
+<project>
+  <name>oldmod</name>
+  <releases>
+    <release>
+      <version>1.0.0</version>
+      <status>published</status>
+      <release_date>2020-01-01T00:00:00Z</release_date>
+      <terms>
+        <term><name>Core compatibility</name><value>Drupal 9</value></term>
+      </terms>
+    </release>
+  </releases>
+</project>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write([]byte(xmlData))
+	}))
+	defer srv.Close()
+
+	orig := httpClient
+	httpClient = srv.Client()
+	defer func() { httpClient = orig }()
+
+	origURL := releaseHistoryVersionURL
+	releaseHistoryVersionURL = srv.URL + "/release-history/%s/%s"
+	defer func() { releaseHistoryVersionURL = origURL }()
+
+	rec, err := UpgradePath("oldmod", "9", "11")
+	if err != nil {
+		t.Fatalf("UpgradePath error: %v", err)
+	}
+	if rec.Recommended != nil {
+		t.Errorf("expected nil recommended for no compatible releases, got %v", rec.Recommended)
+	}
+}
+
+func TestUpgradePath_FallbackToCurrentVersion(t *testing.T) {
+	callCount := 0
+	xmlD10 := `<?xml version="1.0" encoding="utf-8"?>
+<project>
+  <name>crossmod</name>
+  <releases>
+    <release>
+      <version>2.0.0</version>
+      <status>published</status>
+      <release_date>2024-05-01T00:00:00Z</release_date>
+      <terms>
+        <term><name>Core compatibility</name><value>Drupal 10</value></term>
+        <term><name>Core compatibility</name><value>Drupal 11</value></term>
+      </terms>
+    </release>
+  </releases>
+</project>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if strings.Contains(r.URL.Path, "/11") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write([]byte(xmlD10))
+	}))
+	defer srv.Close()
+
+	orig := httpClient
+	httpClient = srv.Client()
+	defer func() { httpClient = orig }()
+
+	origURL := releaseHistoryVersionURL
+	releaseHistoryVersionURL = srv.URL + "/release-history/%s/%s"
+	defer func() { releaseHistoryVersionURL = origURL }()
+
+	rec, err := UpgradePath("crossmod", "10", "11")
+	if err != nil {
+		t.Fatalf("UpgradePath error: %v", err)
+	}
+	if rec.Recommended == nil {
+		t.Fatal("expected recommended from fallback, got nil")
+	}
+	if rec.Recommended.Version != "2.0.0" {
+		t.Errorf("Version = %q, want %q", rec.Recommended.Version, "2.0.0")
+	}
+}
+
+func TestModuleInfo_FetchesMetadata(t *testing.T) {
+	nodeJSON := `{
+		"nid": "100",
+		"title": "Token",
+		"field_download_count": 15000000,
+		"maintainers": [{"name": "admin"}, {"name": "dev1"}]
+	}`
+
+	releaseXML := `<?xml version="1.0" encoding="utf-8"?>
+<project>
+  <name>token</name>
+  <releases>
+    <release>
+      <version>1.13.0</version>
+      <status>published</status>
+      <release_date>2024-06-01T00:00:00Z</release_date>
+    </release>
+  </releases>
+</project>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "api-d7") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(nodeJSON))
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write([]byte(releaseXML))
+	}))
+	defer srv.Close()
+
+	orig := httpClient
+	httpClient = srv.Client()
+	defer func() { httpClient = orig }()
+
+	origNode := moduleNodeURL
+	moduleNodeURL = srv.URL + "/api-d7/node.json?name=%s"
+	defer func() { moduleNodeURL = origNode }()
+
+	origHist := releaseHistoryVersionURL
+	releaseHistoryVersionURL = srv.URL + "/release-history/%s/%s"
+	defer func() { releaseHistoryVersionURL = origHist }()
+
+	meta, err := ModuleInfo("token")
+	if err != nil {
+		t.Fatalf("ModuleInfo error: %v", err)
+	}
+	if meta.Title != "Token" {
+		t.Errorf("Title = %q, want %q", meta.Title, "Token")
+	}
+	if meta.Downloads != 15000000 {
+		t.Errorf("Downloads = %d, want 15000000", meta.Downloads)
+	}
+	if len(meta.Maintainers) != 2 {
+		t.Errorf("len(Maintainers) = %d, want 2", len(meta.Maintainers))
+	}
+	if meta.LastRelease != "1.13.0" {
+		t.Errorf("LastRelease = %q, want %q", meta.LastRelease, "1.13.0")
+	}
+}
+
+func TestModuleInfo_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	orig := httpClient
+	httpClient = srv.Client()
+	defer func() { httpClient = orig }()
+
+	origNode := moduleNodeURL
+	moduleNodeURL = srv.URL + "/api-d7/node.json?name=%s"
+	defer func() { moduleNodeURL = origNode }()
+
+	_, err := ModuleInfo("nonexistent_module")
+	if err == nil {
+		t.Error("expected error for nonexistent module, got nil")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %q, want it to contain 'not found'", err.Error())
+	}
+}

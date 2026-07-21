@@ -5,7 +5,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.25.10+-00ADD8?logo=go&logoColor=white" alt="Go">
   <img src="https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey" alt="Platform">
-  <img src="https://img.shields.io/badge/tests-72%2F72-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-163%20passing-brightgreen" alt="Tests">
 </p>
 
 ---
@@ -80,7 +80,7 @@ When running `drup install`, the binary detects which agents you have installed 
 | | `~/.claude/agents/drup-contrib.md` | Contrib modules: releases, patches, commits |
 | | `~/.claude/agents/drup-custom.md` | Custom code: refactor with retry and escalation |
 | | `~/.claude/agents/drup-theme.md` | Themes: twig/.theme deprecations |
-| **MCP server** | `~/.claude/.mcp.json` | Registers `drup mcp` as an MCP server with 7 tools |
+| **MCP server** | `~/.claude/.mcp.json` | Registers `drup mcp` as an MCP server with 17 tools |
 
 **Usage**: open Claude Code in the Drupal project and run:
 
@@ -127,7 +127,7 @@ All 3 agents share the same MCP configuration. The `.mcp.json` (or `mcp.json`) f
 }
 ```
 
-The MCP server communicates over **stdio** (JSON-RPC 2.0). No port needed, no network needed — the agent launches the `drup mcp` process and communicates via stdin/stdout. The 7 exposed tools are documented in [MCP Tools](#mcp-tools).
+The MCP server communicates over **stdio** (JSON-RPC 2.0). No port needed, no network needed — the agent launches the `drup mcp` process and communicates via stdin/stdout. The 17 exposed tools are documented in [MCP Tools](#mcp-tools) and in [`docs/mcp-tools.md`](docs/mcp-tools.md).
 
 ### Verifying the installation
 
@@ -244,6 +244,7 @@ The orchestrator NEVER trusts a sub-agent's self-declaration:
 cmd/drup/main.go              # entrypoint
 internal/
   app/          # CLI dispatch (11 commands) + MCP tool handlers
+  envdetect/    # Drupal dev environment detection (ddev, lando, docker, direct)
   exec/         # subprocess runner (composer, drush, rector, phpstan, git)
   scan/         # upgrade_status:analyze JSON parser
   drupalorg/    # release-history XML + api-d7 + issue scraper
@@ -266,7 +267,7 @@ The binary only does deterministic work. The full flow is executed by an **AI ag
 
 ### The bridge (MCP)
 
-`drup`'s MCP server exposes 7 tools with JSON types and schemas. It's the standard protocol that connects the binary with any compatible agent:
+`drup`'s MCP server exposes 17 tools with JSON types and schemas. It's the standard protocol that connects the binary with any compatible agent:
 
 ```
 Claude Code ───┐
@@ -278,15 +279,32 @@ Codex ─────────┘
 
 ## MCP Tools
 
-| Tool | Input | Output |
-|---|---|---|
-| `scan` | `project_path` | JSON: classified errors (contrib/custom/theme/core) |
-| `autofix` | `project_path` | JSON: rector summary + remaining errors |
-| `contrib_check` | `module_machine_name` | `{ has_d11_release, latest_version, compatible_branches }` |
-| `issue_patches` | `issue_nid` or `module_name` | `[{ url, status (RTBC/NR), date, is_patch }]` |
-| `apply_patch` | `patch_url, project_path` | `{ applied, commit_hash, error }` |
-| `validate` | `project_path` | `{ total_errors, errors[] }` |
-| `create_patch` | `module_name, deprecation_details` | `{ patch_path, applied }` |
+### Core Tools (7 original)
+
+| Tool | Input | Output | Purpose |
+|---|---|---|---|
+| `scan` | `project_path` | Classified errors | Initial deprecation analysis via `upgrade_status:analyze` |
+| `autofix` | `project_path` | Rector summary + remaining errors | Runs `drupal-rector` on custom code |
+| `contrib_check` | `module_machine_name` | `{ has_d11_release, latest_version, compatible_branches }` | Checks Drupal.org releases for a module |
+| `issue_patches` | `issue_nid` or `module_name` | `[{ url, status, date, is_patch }]` | Searches Drupal.org issues for patches |
+| `apply_patch` | `patch_url, project_path` | `{ applied, commit_hash, error }` | Downloads and applies a .patch safely |
+| `validate` | `project_path, scope, module, file` | `{ total_errors, errors[] }` | Re-runs analysis with scope filtering |
+| `create_patch` | `module_name, deprecation_details` | `{ patch_path, applied }` | Generates a .patch from deprecation analysis |
+
+### New Tools (10 added)
+
+| Tool | Input | Output | Purpose |
+|---|---|---|---|
+| `detect_env` | `project_path, force_detect?` | `{ environment, command_prefix, detected_at }` | Detects ddev/lando/docker/direct env |
+| `composer_require` | `project_path, package, dev?, no_update?` | `{ success, installed_version, stdout, stderr }` | Safe `composer require` with dry-run |
+| `drush_exec` | `project_path, command, args?, format?` | `{ success, output, stderr, exit_code }` | Safe drush execution with blocklist |
+| `upgrade_scan` | `project_path, scope?, module?` | `{ total_errors, modules[], install_status }` | Atomic install→enable→analyze→filter |
+| `contrib_upgrade_path` | `module, current_drupal, target_drupal` | `{ recommended_upgrade, alternative_versions[] }` | Finds recommended version for next major |
+| `patch_status` | `project_path, patch_url?, package?` | `{ is_applied, commit_hash, registered_in_composer }` | Checks if a patch is already applied |
+| `patch_rollback` | `project_path, patch_url, package` | `{ success, reverted_commit, error }` | Reverts a patch cleanly |
+| `generate_report` | `project_path, report_type?, include_*?` | `{ json_path, markdown_path, summary }` | Generates JSON + Markdown upgrade report |
+| `module_info` | `module, include_maintainers?, include_deps?` | `{ title, downloads, last_release, maintainers, deps }` | Module metadata from Drupal.org |
+| `drupal_version_matrix` | `drupal_version?, php_version?` | `{ php_requirements, supported_until, upgrade_path }` | Drupal/PHP compatibility lookup |
 
 ---
 
@@ -354,7 +372,7 @@ git clone git@github.com:nireneko/drup.git
 cd drup
 
 go build ./cmd/drup     # build
-go test ./...           # 72 tests
+go test ./...           # all tests (163+)
 go vet ./...            # static analysis
 ```
 

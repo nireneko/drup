@@ -45,3 +45,18 @@ func (r *realCmd) Output() (stdout, stderr string, exitCode int, err error) {
 func Run(cmd string, args ...string) (stdout, stderr string, exitCode int, err error) {
 	return execCommand(cmd, args...).Output()
 }
+
+// RunWithEnv prepends prefix tokens to cmd.
+// Example: RunWithEnv([]string{"ddev"}, "composer", "require", "pkg")
+// executes: ddev composer require pkg
+// Empty prefix falls through to the same path as Run().
+func RunWithEnv(prefix []string, cmd string, args ...string) (stdout, stderr string, exitCode int, err error) {
+	if len(prefix) == 0 {
+		return execCommand(cmd, args...).Output()
+	}
+	fullArgs := make([]string, 0, len(prefix)+1+len(args))
+	fullArgs = append(fullArgs, prefix...)
+	fullArgs = append(fullArgs, cmd)
+	fullArgs = append(fullArgs, args...)
+	return execCommand(fullArgs[0], fullArgs[1:]...).Output()
+}

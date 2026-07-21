@@ -317,3 +317,222 @@ func extractDate(line string) string {
 	}
 	return strings.TrimSpace(line[start : start+end])
 }
+
+// Release represents a single release from Drupal.org release-history XML.
+type Release struct {
+	Version      string   `json:"version"`
+	DrupalCompat []string `json:"drupal_compatibility"`
+	ReleaseDate  string   `json:"release_date"`
+	IsStable     bool     `json:"is_stable"`
+}
+
+// UpgradeRecommendation is the recommended version for a target Drupal major.
+type UpgradeRecommendation struct {
+	Module       string    `json:"module"`
+	Recommended  *Release  `json:"recommended_upgrade"`
+	Alternatives []Release `json:"alternative_versions"`
+}
+
+// releaseHistoryFull includes status and date for upgrade path parsing.
+type releaseHistoryFull struct {
+	XMLName  xml.Name       `xml:"project"`
+	Name     string         `xml:"name"`
+	Releases []releaseFull  `xml:"releases>release"`
+}
+
+type releaseFull struct {
+	Name        string `xml:"name"`
+	Version     string `xml:"version"`
+	Tag         string `xml:"tag"`
+	Status      string `xml:"status"`
+	ReleaseDate string `xml:"release_date"`
+	Terms       []term `xml:"terms>term"`
+}
+
+// releaseHistoryVersionURL is the template for version-specific release-history lookups.
+var releaseHistoryVersionURL = "https://updates.drupal.org/release-history/%s/%s"
+
+// FetchReleaseHistory fetches the full release-history XML for a module at a specific Drupal version.
+func FetchReleaseHistory(module, drupalVersion string) (*releaseHistoryFull, error) {
+	url := fmt.Sprintf(releaseHistoryVersionURL, module, drupalVersion)
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("fetch release history for %s/%s: %w", module, drupalVersion, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("release history for %s/%s: HTTP %d", module, drupalVersion, resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read release history: %w", err)
+	}
+
+	var rh releaseHistoryFull
+	if err := xml.Unmarshal(data, &rh); err != nil {
+		return nil, fmt.Errorf("parse release XML: %w", err)
+	}
+	return &rh, nil
+}
+
+// UpgradePath finds the recommended version for target Drupal major.
+func UpgradePath(module, currentDrupal, targetDrupal string) (*UpgradeRecommendation, error) {
+	rec := &UpgradeRecommendation{
+		Module:       module,
+		Alternatives: []Release{},
+	}
+
+	rh, err := FetchReleaseHistory(module, targetDrupal)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fallback: try current version if target returns nothing.
+	if rh == nil || len(rh.Releases) == 0 {
+		rh, err = FetchReleaseHistory(module, currentDrupal)
+		if err != nil {
+			return nil, err
+		}
+		if rh == nil {
+			return rec, nil
+		}
+	}
+
+	var allReleases []Release
+	for _, rel := range rh.Releases {
+		r := Release{
+			Version:     rel.Version,
+			ReleaseDate: rel.ReleaseDate,
+			IsStable:    rel.Status == "published",
+		}
+		for _, t := range rel.Terms {
+			if t.Name == "Core compatibility" {
+				r.DrupalCompat = append(r.DrupalCompat, t.Value)
+			}
+		}
+		// Filter: must be compatible with target Drupal version.
+		compatible := false
+		targetKey := "Drupal " + targetDrupal
+		for _, c := range r.DrupalCompat {
+			if c == targetKey {
+				compatible = true
+				break
+			}
+		}
+		if !compatible {
+			continue
+		}
+		allReleases = append(allReleases, r)
+	}
+
+	if len(allReleases) == 0 {
+		return rec, nil
+	}
+
+	// Sort by date descending (latest first).
+	sort.Slice(allReleases, func(i, j int) bool {
+		return allReleases[i].ReleaseDate > allReleases[j].ReleaseDate
+	})
+
+	// Prefer latest stable.
+	for i, r := range allReleases {
+		if r.IsStable {
+			rec.Recommended = &allReleases[i]
+			break
+		}
+	}
+	// If no stable, use latest.
+	if rec.Recommended == nil {
+		rec.Recommended = &allReleases[0]
+	}
+
+	// Alternatives: up to 5, excluding the recommended.
+	for _, r := range allReleases {
+		if rec.Recommended != nil && r.Version == rec.Recommended.Version {
+			continue
+		}
+		if len(rec.Alternatives) >= 5 {
+			break
+		}
+		rec.Alternatives = append(rec.Alternatives, r)
+	}
+
+	return rec, nil
+}
+
+// ModuleMetadata holds module info from Drupal.org.
+type ModuleMetadata struct {
+	Module      string   `json:"module"`
+	Title       string   `json:"title"`
+	Maintainers []string `json:"maintainers"`
+	Downloads   int      `json:"downloads"`
+	LastRelease string   `json:"last_release"`
+	OpenIssues  int      `json:"open_issues"`
+}
+
+// apiD7NodeFull is the full node detail from api-d7.
+type apiD7NodeFull struct {
+	NID              string        `json:"nid"`
+	Title            string        `json:"title"`
+	FieldDownloads   int           `json:"field_download_count"`
+	Maintainers      []maintainer  `json:"maintainers"`
+}
+
+type maintainer struct {
+	Name string `json:"name"`
+}
+
+// moduleNodeURL is the template for api-d7 node lookup by name.
+var moduleNodeURL = "https://www.drupal.org/api-d7/node.json?name=%s"
+
+// ModuleInfo fetches module metadata from Drupal.org.
+func ModuleInfo(module string) (*ModuleMetadata, error) {
+	meta := &ModuleMetadata{
+		Module:      module,
+		Maintainers: []string{},
+	}
+
+	// Fetch node data.
+	url := fmt.Sprintf(moduleNodeURL, module)
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("fetch module info for %s: %w", module, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("module %q not found", module)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("module info for %s: HTTP %d", module, resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read module info: %w", err)
+	}
+
+	var node apiD7NodeFull
+	if err := json.Unmarshal(data, &node); err != nil {
+		return nil, fmt.Errorf("parse module info JSON: %w", err)
+	}
+
+	meta.Title = node.Title
+	meta.Downloads = node.FieldDownloads
+	for _, m := range node.Maintainers {
+		meta.Maintainers = append(meta.Maintainers, m.Name)
+	}
+
+	// Fetch latest release from release-history.
+	rh, err := FetchReleaseHistory(module, "current")
+	if err == nil && rh != nil && len(rh.Releases) > 0 {
+		meta.LastRelease = rh.Releases[0].Version
+	}
+
+	return meta, nil
+}

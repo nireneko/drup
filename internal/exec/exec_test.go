@@ -65,6 +65,102 @@ func (m *mockRunner) Output() (string, string, int, error) {
 	return m.stdout, m.stderr, m.exitCode, m.err
 }
 
+func TestRunWithEnv_PrefixPrepended(t *testing.T) {
+	orig := execCommand
+	defer func() { execCommand = orig }()
+
+	var calledCmd string
+	var calledArgs []string
+	execCommand = func(cmd string, args ...string) commandRunner {
+		calledCmd = cmd
+		calledArgs = args
+		return &mockRunner{stdout: "ok\n", stderr: "", exitCode: 0}
+	}
+
+	stdout, _, exitCode, err := RunWithEnv([]string{"ddev"}, "composer", "require", "drupal/token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calledCmd != "ddev" {
+		t.Errorf("called cmd = %q, want %q", calledCmd, "ddev")
+	}
+	wantArgs := []string{"composer", "require", "drupal/token"}
+	if len(calledArgs) != len(wantArgs) {
+		t.Fatalf("called args len = %d, want %d", len(calledArgs), len(wantArgs))
+	}
+	for i, a := range wantArgs {
+		if calledArgs[i] != a {
+			t.Errorf("calledArgs[%d] = %q, want %q", i, calledArgs[i], a)
+		}
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	if exitCode != 0 {
+		t.Errorf("exit code = %d, want 0", exitCode)
+	}
+}
+
+func TestRunWithEnv_EmptyPrefix(t *testing.T) {
+	orig := execCommand
+	defer func() { execCommand = orig }()
+
+	var calledCmd string
+	var calledArgs []string
+	execCommand = func(cmd string, args ...string) commandRunner {
+		calledCmd = cmd
+		calledArgs = args
+		return &mockRunner{stdout: "direct\n", stderr: "", exitCode: 0}
+	}
+
+	stdout, _, exitCode, err := RunWithEnv(nil, "git", "status")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calledCmd != "git" {
+		t.Errorf("called cmd = %q, want %q", calledCmd, "git")
+	}
+	if len(calledArgs) != 1 || calledArgs[0] != "status" {
+		t.Errorf("called args = %v, want [status]", calledArgs)
+	}
+	if stdout != "direct\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "direct\n")
+	}
+	if exitCode != 0 {
+		t.Errorf("exit code = %d, want 0", exitCode)
+	}
+}
+
+func TestRunWithEnv_MultiTokenPrefix(t *testing.T) {
+	orig := execCommand
+	defer func() { execCommand = orig }()
+
+	var calledCmd string
+	var calledArgs []string
+	execCommand = func(cmd string, args ...string) commandRunner {
+		calledCmd = cmd
+		calledArgs = args
+		return &mockRunner{stdout: "", stderr: "", exitCode: 0}
+	}
+
+	_, _, _, err := RunWithEnv([]string{"docker", "compose", "exec", "php"}, "drush", "status")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calledCmd != "docker" {
+		t.Errorf("called cmd = %q, want %q", calledCmd, "docker")
+	}
+	wantArgs := []string{"compose", "exec", "php", "drush", "status"}
+	if len(calledArgs) != len(wantArgs) {
+		t.Fatalf("called args len = %d, want %d", len(calledArgs), len(wantArgs))
+	}
+	for i, a := range wantArgs {
+		if calledArgs[i] != a {
+			t.Errorf("calledArgs[%d] = %q, want %q", i, calledArgs[i], a)
+		}
+	}
+}
+
 func TestRun_OverriddenExecCommand(t *testing.T) {
 	orig := execCommand
 	defer func() { execCommand = orig }()
