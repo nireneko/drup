@@ -335,9 +335,9 @@ type UpgradeRecommendation struct {
 
 // releaseHistoryFull includes status and date for upgrade path parsing.
 type releaseHistoryFull struct {
-	XMLName  xml.Name       `xml:"project"`
-	Name     string         `xml:"name"`
-	Releases []releaseFull  `xml:"releases>release"`
+	XMLName  xml.Name      `xml:"project"`
+	Name     string        `xml:"name"`
+	Releases []releaseFull `xml:"releases>release"`
 }
 
 type releaseFull struct {
@@ -477,10 +477,10 @@ type ModuleMetadata struct {
 
 // apiD7NodeFull is the full node detail from api-d7.
 type apiD7NodeFull struct {
-	NID              string        `json:"nid"`
-	Title            string        `json:"title"`
-	FieldDownloads   int           `json:"field_download_count"`
-	Maintainers      []maintainer  `json:"maintainers"`
+	NID            string       `json:"nid"`
+	Title          string       `json:"title"`
+	FieldDownloads int          `json:"field_download_count"`
+	Maintainers    []maintainer `json:"maintainers"`
 }
 
 type maintainer struct {

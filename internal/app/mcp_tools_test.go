@@ -225,9 +225,9 @@ func TestPatchRollback_NonGitDir(t *testing.T) {
 
 func TestDrupalVersionMatrix_LookupByDrupalVersion(t *testing.T) {
 	tests := []struct {
-		version     string
-		wantPHPMin  string
-		wantPHPRec  string
+		version    string
+		wantPHPMin string
+		wantPHPRec string
 	}{
 		{"9", "7.3", "8.1"},
 		{"10", "8.1", "8.3"},

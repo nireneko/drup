@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/nireneko/drup/internal/drupalorg"
-	drupexec "github.com/nireneko/drup/internal/exec"
 	"github.com/nireneko/drup/internal/envdetect"
+	drupexec "github.com/nireneko/drup/internal/exec"
 	"github.com/nireneko/drup/internal/mcp"
 	"github.com/nireneko/drup/internal/patch"
 	"github.com/nireneko/drup/internal/report"
@@ -23,11 +23,11 @@ var defaultEnvDetector = envdetect.NewDetector()
 
 // drushBlocklist contains commands that must not be executed via drush_exec.
 var drushBlocklist = map[string]bool{
-	"sql-drop":        true,
-	"site-install":    true,
-	"site:install":    true,
-	"sql-sanitize":    true,
-	"php-eval":        true,
+	"sql-drop":         true,
+	"site-install":     true,
+	"site:install":     true,
+	"sql-sanitize":     true,
+	"php-eval":         true,
 	"core:execute-cli": true,
 }
 
@@ -337,11 +337,11 @@ func realHandleComposerRequire(args json.RawMessage) (json.RawMessage, error) {
 	}
 	if !composerPackagePattern.MatchString(params.Package) {
 		result := map[string]interface{}{
-			"success":          false,
+			"success":           false,
 			"installed_version": "",
-			"stdout":           "",
-			"stderr":           fmt.Sprintf("invalid package name format: %s", params.Package),
-			"exit_code":        -1,
+			"stdout":            "",
+			"stderr":            fmt.Sprintf("invalid package name format: %s", params.Package),
+			"exit_code":         -1,
 		}
 		return json.Marshal(result)
 	}
@@ -372,11 +372,11 @@ func realHandleComposerRequire(args json.RawMessage) (json.RawMessage, error) {
 	}
 	if dryExit != 0 {
 		result := map[string]interface{}{
-			"success":          false,
+			"success":           false,
 			"installed_version": "",
-			"stdout":           "",
-			"stderr":           dryStderr,
-			"exit_code":        dryExit,
+			"stdout":            "",
+			"stderr":            dryStderr,
+			"exit_code":         dryExit,
 		}
 		return json.Marshal(result)
 	}
@@ -398,11 +398,11 @@ func realHandleComposerRequire(args json.RawMessage) (json.RawMessage, error) {
 	installedVersion := parseInstalledVersion(stdout, pkgName)
 
 	result := map[string]interface{}{
-		"success":          exitCode == 0,
+		"success":           exitCode == 0,
 		"installed_version": installedVersion,
-		"stdout":           stdout,
-		"stderr":           stderr,
-		"exit_code":        exitCode,
+		"stdout":            stdout,
+		"stderr":            stderr,
+		"exit_code":         exitCode,
 	}
 	return json.Marshal(result)
 }
@@ -536,8 +536,8 @@ func realHandleContribUpgradePath(args json.RawMessage) (json.RawMessage, error)
 func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectPath string `json:"project_path"`
-		Scope       string  `json:"scope"`
-		Module      string  `json:"module"`
+		Scope       string `json:"scope"`
+		Module      string `json:"module"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, err
@@ -801,10 +801,10 @@ func realHandlePatchRollback(args json.RawMessage) (json.RawMessage, error) {
 	_, _, gitExit, _ := drupexec.Run("git", "-C", params.ProjectPath, "rev-parse", "--git-dir")
 	if gitExit != 0 {
 		result := map[string]interface{}{
-			"success":              false,
-			"reverted_commit":      "",
+			"success":               false,
+			"reverted_commit":       "",
 			"removed_from_composer": false,
-			"error":                "not a git repository",
+			"error":                 "not a git repository",
 		}
 		return json.Marshal(result)
 	}
@@ -813,10 +813,10 @@ func realHandlePatchRollback(args json.RawMessage) (json.RawMessage, error) {
 	statusStdout, _, _, _ := drupexec.Run("git", "-C", params.ProjectPath, "status", "--porcelain")
 	if strings.TrimSpace(statusStdout) != "" {
 		result := map[string]interface{}{
-			"success":              false,
-			"reverted_commit":      "",
+			"success":               false,
+			"reverted_commit":       "",
 			"removed_from_composer": false,
-			"error":                "working tree is dirty; commit or stash changes first",
+			"error":                 "working tree is dirty; commit or stash changes first",
 		}
 		return json.Marshal(result)
 	}
@@ -839,20 +839,20 @@ func realHandlePatchRollback(args json.RawMessage) (json.RawMessage, error) {
 
 	if !status.IsApplied {
 		result := map[string]interface{}{
-			"success":              false,
-			"reverted_commit":      "",
+			"success":               false,
+			"reverted_commit":       "",
 			"removed_from_composer": false,
-			"error":                "patch is not applied",
+			"error":                 "patch is not applied",
 		}
 		return json.Marshal(result)
 	}
 
 	if status.CommitHash == "" {
 		result := map[string]interface{}{
-			"success":              false,
-			"reverted_commit":      "",
+			"success":               false,
+			"reverted_commit":       "",
 			"removed_from_composer": false,
-			"error":                "cannot find patch commit to revert",
+			"error":                 "cannot find patch commit to revert",
 		}
 		return json.Marshal(result)
 	}
@@ -864,10 +864,10 @@ func realHandlePatchRollback(args json.RawMessage) (json.RawMessage, error) {
 	}
 	if revertExit != 0 {
 		result := map[string]interface{}{
-			"success":              false,
-			"reverted_commit":      "",
+			"success":               false,
+			"reverted_commit":       "",
 			"removed_from_composer": false,
-			"error":                fmt.Sprintf("revert conflict: %s", revertStderr),
+			"error":                 fmt.Sprintf("revert conflict: %s", revertStderr),
 		}
 		return json.Marshal(result)
 	}
@@ -894,10 +894,10 @@ func realHandlePatchRollback(args json.RawMessage) (json.RawMessage, error) {
 	composerData, err := os.ReadFile(composerPath)
 	if err != nil {
 		result := map[string]interface{}{
-			"success":              true,
-			"reverted_commit":      revertedCommit,
+			"success":               true,
+			"reverted_commit":       revertedCommit,
 			"removed_from_composer": false,
-			"error":                "warning: could not read composer.json",
+			"error":                 "warning: could not read composer.json",
 		}
 		return json.Marshal(result)
 	}
@@ -905,10 +905,10 @@ func realHandlePatchRollback(args json.RawMessage) (json.RawMessage, error) {
 	var composerMap map[string]json.RawMessage
 	if err := json.Unmarshal(composerData, &composerMap); err != nil {
 		result := map[string]interface{}{
-			"success":              true,
-			"reverted_commit":      revertedCommit,
+			"success":               true,
+			"reverted_commit":       revertedCommit,
 			"removed_from_composer": false,
-			"error":                "warning: could not parse composer.json",
+			"error":                 "warning: could not parse composer.json",
 		}
 		return json.Marshal(result)
 	}
@@ -956,8 +956,8 @@ func realHandlePatchRollback(args json.RawMessage) (json.RawMessage, error) {
 	_, compStderr, compExit, _ := drupexec.RunWithEnv(detection.CommandPrefix, "composer", "update", params.ComposerPackage)
 
 	result := map[string]interface{}{
-		"success":              true,
-		"reverted_commit":      revertedCommit,
+		"success":               true,
+		"reverted_commit":       revertedCommit,
 		"removed_from_composer": true,
 	}
 	if compExit != 0 {
@@ -1015,8 +1015,8 @@ func realHandleGenerateReport(args json.RawMessage) (json.RawMessage, error) {
 		"markdown_report_path": "",
 		"summary": map[string]interface{}{
 			"total_modules_checked": 0,
-			"patches_applied":      data.TokenAccounting.Total,
-			"errors_remaining":     data.TotalErrors,
+			"patches_applied":       data.TokenAccounting.Total,
+			"errors_remaining":      data.TotalErrors,
 		},
 	}
 
@@ -1074,10 +1074,10 @@ func realHandleModuleInfo(args json.RawMessage) (json.RawMessage, error) {
 
 // versionMatrixData holds static Drupal/PHP compatibility data.
 var versionMatrixData = map[string]struct {
-	PHPMin        string `json:"minimum"`
+	PHPMin         string `json:"minimum"`
 	PHPRecommended string `json:"recommended"`
 	SupportedUntil string `json:"supported_until"`
-	NextMajor     string `json:"next_major"`
+	NextMajor      string `json:"next_major"`
 }{
 	"9":  {PHPMin: "7.3", PHPRecommended: "8.1", SupportedUntil: "2024-06", NextMajor: "10"},
 	"10": {PHPMin: "8.1", PHPRecommended: "8.3", SupportedUntil: "2026-06", NextMajor: "11"},
@@ -1123,20 +1123,20 @@ func realHandleDrupalVersionMatrix(args json.RawMessage) (json.RawMessage, error
 		// Find the latest Drupal version compatible with this PHP version.
 		var latestVersion string
 		var latestEntry struct {
-			PHPMin        string
+			PHPMin         string
 			PHPRecommended string
 			SupportedUntil string
-			NextMajor     string
+			NextMajor      string
 		}
 		for ver, entry := range versionMatrixData {
 			if isPHPCompatible(params.PHPVersion, entry.PHPMin, entry.PHPRecommended) {
 				if ver > latestVersion {
 					latestVersion = ver
 					latestEntry = struct {
-						PHPMin        string
+						PHPMin         string
 						PHPRecommended string
 						SupportedUntil string
-						NextMajor     string
+						NextMajor      string
 					}{entry.PHPMin, entry.PHPRecommended, entry.SupportedUntil, entry.NextMajor}
 				}
 			}

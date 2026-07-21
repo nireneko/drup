@@ -8,10 +8,10 @@ import (
 
 func TestDetect(t *testing.T) {
 	tests := []struct {
-		name        string
-		setup       func(t *testing.T, dir string)
-		wantEnv     Environment
-		wantPrefix  []string
+		name       string
+		setup      func(t *testing.T, dir string)
+		wantEnv    Environment
+		wantPrefix []string
 	}{
 		{
 			name: "ddev environment",
