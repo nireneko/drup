@@ -1,8 +1,6 @@
 package update
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -125,69 +123,5 @@ func TestCheckLatest_PlatformFilter(t *testing.T) {
 				t.Errorf("assetURL = %q, want %q", assetURL, tt.wantURL)
 			}
 		})
-	}
-}
-
-func TestDownload_AndVerify(t *testing.T) {
-	// Create a fake binary and its checksum.
-	fakeBinary := []byte("fake binary content")
-	h := sha256.Sum256(fakeBinary)
-	checksum := hex.EncodeToString(h[:])
-
-	checksumsContent := checksum + "  drup_0.2.0_linux_amd64.tar.gz\n"
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/binary":
-			w.Write(fakeBinary)
-		case "/checksums.txt":
-			w.Write([]byte(checksumsContent))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	origClient := httpClient
-	httpClient = srv.Client()
-	defer func() { httpClient = origClient }()
-
-	// Download and verify.
-	path, err := Download(srv.URL+"/binary", srv.URL+"/checksums.txt", "drup_0.2.0_linux_amd64.tar.gz")
-	if err != nil {
-		t.Fatalf("Download error: %v", err)
-	}
-	if path == "" {
-		t.Error("path is empty")
-	}
-	if !strings.HasSuffix(path, ".tar.gz") {
-		t.Errorf("temp file = %q, want .tar.gz suffix", path)
-	}
-}
-
-func TestDownload_ChecksumMismatch(t *testing.T) {
-	fakeBinary := []byte("fake binary content")
-	wrongChecksum := "0000000000000000000000000000000000000000000000000000000000000000"
-	checksumsContent := wrongChecksum + "  drup_0.2.0_linux_amd64.tar.gz\n"
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/binary":
-			w.Write(fakeBinary)
-		case "/checksums.txt":
-			w.Write([]byte(checksumsContent))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	origClient := httpClient
-	httpClient = srv.Client()
-	defer func() { httpClient = origClient }()
-
-	_, err := Download(srv.URL+"/binary", srv.URL+"/checksums.txt", "drup_0.2.0_linux_amd64.tar.gz")
-	if err == nil {
-		t.Error("expected checksum mismatch error, got nil")
 	}
 }

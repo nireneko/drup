@@ -1,10 +1,6 @@
-# Self-Update Specification
+# Delta for Self-Update
 
-## Purpose
-
-Binary upgrade via GitHub Releases with checksum verification and deferred sync pattern.
-
-## Requirements
+## ADDED Requirements
 
 ### Requirement: Platform Detection Correctness
 
@@ -44,43 +40,7 @@ The system MUST locate the target binary inside a downloaded tar.gz archive by m
 - WHEN extraction runs
 - THEN the system SHALL abort with an error and leave no partially written destination file
 
-### Requirement: Version Check
-
-The system SHALL check GitHub Releases for newer versions of the `drup` binary.
-
-#### Scenario: Newer version available
-
-- GIVEN the current binary is v0.1.0 and GitHub has v0.2.0
-- WHEN `drup upgrade` runs
-- THEN the system SHALL report the available version and prompt for confirmation
-
-#### Scenario: Already up to date
-
-- GIVEN the current binary matches the latest GitHub release
-- WHEN `drup upgrade` runs
-- THEN the system SHALL report "already up to date" and exit 0
-
-#### Scenario: GitHub unreachable
-
-- GIVEN GitHub API is unreachable
-- WHEN `drup upgrade` runs
-- THEN the system SHALL report the connection error and exit 1
-
-### Requirement: Checksum Verification
-
-The system SHALL verify the downloaded binary's checksum before replacing the current binary.
-
-#### Scenario: Valid checksum
-
-- GIVEN a downloaded binary with matching SHA256 checksum
-- WHEN verification runs
-- THEN the system SHALL proceed with binary replacement
-
-#### Scenario: Invalid checksum
-
-- GIVEN a downloaded binary with mismatched checksum
-- WHEN verification runs
-- THEN the system SHALL abort the update, delete the downloaded file, and report a security warning
+## MODIFIED Requirements
 
 ### Requirement: Binary Replacement
 
@@ -107,18 +67,19 @@ The system SHALL replace the current binary with the new version atomically. If 
 - THEN the system SHALL report both the original replacement error and the restore failure
 - AND the system SHALL NOT report success or silently leave the binary path in an ambiguous state
 
-### Requirement: Deferred Sync
+### Requirement: Checksum Verification
 
-The system SHALL trigger a deferred sync after binary upgrade to update agent skill files and MCP config.
+The system SHALL verify the downloaded binary's checksum before replacing the current binary. This requirement is unchanged by the extraction rewrite and MUST continue to hold.
+(Previously: identical behavior; restated here as a regression guard since the extraction path is being rewritten in this change.)
 
-#### Scenario: Post-upgrade sync
+#### Scenario: Valid checksum
 
-- GIVEN a successful binary upgrade from v0.1.0 to v0.2.0
-- WHEN the new binary runs for the first time
-- THEN the system SHALL detect the version mismatch in state.json and run the installer to sync assets
+- GIVEN a downloaded binary with matching SHA256 checksum
+- WHEN verification runs
+- THEN the system SHALL proceed with binary replacement
 
-#### Scenario: Sync skipped when up to date
+#### Scenario: Invalid checksum
 
-- GIVEN state.json matches the current binary version
-- WHEN the binary starts
-- THEN the system SHALL skip the sync and proceed normally
+- GIVEN a downloaded binary with mismatched checksum
+- WHEN verification runs
+- THEN the system SHALL abort the update, delete the downloaded file, and report a security warning

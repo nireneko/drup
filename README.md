@@ -1,6 +1,6 @@
 # drup — Drupal Upgrade Automation
 
-**CLI + MCP harness que automatiza la migración de Drupal 8/9/10 → 11 combinando análisis determinista con agentes de IA.**
+**CLI + MCP harness that automates Drupal 8/9/10 → 11 migration, combining deterministic analysis with AI agents.**
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.25.10+-00ADD8?logo=go&logoColor=white" alt="Go">
@@ -10,267 +10,267 @@
 
 ---
 
-## Qué hace
+## What it does
 
-Migrar un sitio Drupal a la siguiente versión major es un proceso **mecánico pero manual** que se repite proyecto tras proyecto:
+Migrating a Drupal site to the next major version is a **mechanical but manual** process that repeats project after project:
 
-1. Instalar `upgrade_status` y `drupal-rector`
-2. Correr análisis de deprecaciones
-3. Revisar releases de cada módulo contrib en Drupal.org
-4. Buscar parches en issues para los que no tienen release compatible
-5. Refactorizar código custom (módulos y temas)
-6. Validar que todo compile
-7. Generar reporte
+1. Install `upgrade_status` and `drupal-rector`
+2. Run deprecation analysis
+3. Check releases for each contrib module on Drupal.org
+4. Look for patches in issues for modules without a compatible release
+5. Refactor custom code (modules and themes)
+6. Validate that everything compiles
+7. Generate a report
 
-`drup` automatiza todo esto. **El 80% del trabajo es determinista** (rector, releases, parches) y se resuelve sin consumir un solo token de IA. El 20% restante (código custom complejo) lo resuelve un agente de IA con herramientas de validación y reintento.
+`drup` automates all of this. **80% of the work is deterministic** (rector, releases, patches) and is resolved without spending a single AI token. The remaining 20% (complex custom code) is handled by an AI agent with validation and retry tooling.
 
 ```bash
-# Pipeline completo con un solo comando:
-drup fix /ruta/al/proyecto-drupal
+# Full pipeline with a single command:
+drup fix /path/to/drupal-project
 
-# O paso a paso desde Claude Code:
-/drup /ruta/al/proyecto-drupal
+# Or step by step from Claude Code:
+/drup /path/to/drupal-project
 ```
 
 ---
 
 ## Quick Start
 
-### Instalación
+### Installation
 
 ```bash
-# Opción 1: Go install
+# Option 1: Go install
 go install github.com/nireneko/drup/cmd/drup@latest
 
-# Opción 2: desde source
+# Option 2: from source
 git clone git@github.com:nireneko/drup.git
 cd drup && go build -o /usr/local/bin/drup ./cmd/drup
 
-# Opción 3: binario compilado (descarga directa)
-# Disponible en https://github.com/nireneko/drup/releases (próximamente)
+# Option 3: prebuilt binary (direct download)
+# Available at https://github.com/nireneko/drup/releases (coming soon)
 ```
 
-### Configurar agentes de IA
+### Set up AI agents
 
 ```bash
 drup install
 ```
 
-Esto detecta qué agentes tenés instalados (Claude Code, OpenCode, Codex) y escribe las skills, sub-agentes y configuración MCP en sus directorios nativos.
+This detects which agents you have installed (Claude Code, OpenCode, Codex) and writes the skills, sub-agents, and MCP configuration into their native directories.
 
-### Actualizar
+### Update
 
 ```bash
-drup upgrade      # actualiza el binario
-drup sync         # re-aplica skills a los agentes (tras upgrade o cambio de templates)
+drup upgrade      # updates the binary
+drup sync         # re-applies skills to agents (after upgrade or template changes)
 ```
 
 ---
 
-## Integración con agentes de IA
+## Integration with AI agents
 
-Al ejecutar `drup install`, el binario detecta qué agentes tenés instalados y escribe los archivos necesarios en sus directorios nativos.
+When running `drup install`, the binary detects which agents you have installed and writes the necessary files into their native directories.
 
 ### Claude Code
 
-| Qué se instala | Ruta | Propósito |
+| What gets installed | Path | Purpose |
 |---|---|---|
-| **Skill orquestador** | `~/.claude/skills/drup/SKILL.md` | Pipeline de 7 fases. Se invoca con `/drup <ruta>` |
-| **Sub-agentes** | `~/.claude/agents/drup-preflight.md` | Preflight: detecta entorno, instala dependencias |
-| | `~/.claude/agents/drup-contrib.md` | Módulos contrib: releases, parches, commits |
-| | `~/.claude/agents/drup-custom.md` | Código custom: refactor con reintento y escalado |
-| | `~/.claude/agents/drup-theme.md` | Temas: deprecaciones twig/.theme |
-| **MCP server** | `~/.claude/.mcp.json` | Registra `drup mcp` como servidor MCP con 7 tools |
+| **Orchestrator skill** | `~/.claude/skills/drup/SKILL.md` | 7-phase pipeline. Invoked with `/drup <path>` |
+| **Sub-agents** | `~/.claude/agents/drup-preflight.md` | Preflight: detects environment, installs dependencies |
+| | `~/.claude/agents/drup-contrib.md` | Contrib modules: releases, patches, commits |
+| | `~/.claude/agents/drup-custom.md` | Custom code: refactor with retry and escalation |
+| | `~/.claude/agents/drup-theme.md` | Themes: twig/.theme deprecations |
+| **MCP server** | `~/.claude/.mcp.json` | Registers `drup mcp` as an MCP server with 7 tools |
 
-**Uso**: abrí Claude Code en el proyecto Drupal y ejecutá:
+**Usage**: open Claude Code in the Drupal project and run:
 
 ```
-/drup /ruta/al/proyecto
+/drup /path/to/project
 ```
 
-Claude Code carga el SKILL.md, se conecta al MCP server, y ejecuta las 7 fases del pipeline. Los sub-agentes aíslan el trabajo por módulo/archivo para no saturar el contexto.
+Claude Code loads SKILL.md, connects to the MCP server, and runs the 7 pipeline phases. Sub-agents isolate work per module/file to avoid saturating the context.
 
-**Modelo por defecto**: el skill usa el modelo activo de la sesión. Para forzar un modelo específico, configuralo en `~/.config/drup/config.yaml` (ver [Configuración](#configuración)).
+**Default model**: the skill uses the session's active model. To force a specific model, set it in `~/.config/drup/config.yaml` (see [Configuration](#configuration)).
 
 ### OpenCode
 
-| Qué se instala | Ruta |
+| What gets installed | Path |
 |---|---|
-| **Skill orquestador** | `~/.config/opencode/skills/drup/SKILL.md` |
-| **Sub-agentes** | `~/.config/opencode/agents/drup-*.md` |
+| **Orchestrator skill** | `~/.config/opencode/skills/drup/SKILL.md` |
+| **Sub-agents** | `~/.config/opencode/agents/drup-*.md` |
 | **MCP server** | `~/.config/opencode/mcp.json` |
 
-**Uso**: en OpenCode, ejecutá `/drup <ruta>` o dejá que el skill se cargue automáticamente cuando menciones "Drupal upgrade" o "migrar Drupal".
+**Usage**: in OpenCode, run `/drup <path>` or let the skill load automatically when you mention "Drupal upgrade" or "migrate Drupal".
 
 ### Codex
 
-| Qué se instala | Ruta |
+| What gets installed | Path |
 |---|---|
-| **Skill orquestador** | `~/.codex/skills/drup/SKILL.md` |
-| **Sub-agentes** | `~/.codex/agents/drup-*.md` |
+| **Orchestrator skill** | `~/.codex/skills/drup/SKILL.md` |
+| **Sub-agents** | `~/.codex/agents/drup-*.md` |
 | **MCP server** | `~/.codex/mcp.json` |
 
-**Uso**: en Codex CLI, ejecutá `/drup <ruta>`.
+**Usage**: in Codex CLI, run `/drup <path>`.
 
-### El MCP server
+### The MCP server
 
-Los 3 agentes comparten la misma configuración MCP. El archivo `.mcp.json` (o `mcp.json`) registra el servidor:
+All 3 agents share the same MCP configuration. The `.mcp.json` (or `mcp.json`) file registers the server:
 
 ```json
 {
   "mcpServers": {
     "drup": {
-      "command": "/ruta/al/binario/drup",
+      "command": "/path/to/binary/drup",
       "args": ["mcp"]
     }
   }
 }
 ```
 
-El servidor MCP se comunica por **stdio** (JSON-RPC 2.0). No necesita puerto, no necesita network — el agente lanza el proceso `drup mcp` y se comunica por stdin/stdout. Las 7 tools expuestas están documentadas en [MCP Tools](#mcp-tools).
+The MCP server communicates over **stdio** (JSON-RPC 2.0). No port needed, no network needed — the agent launches the `drup mcp` process and communicates via stdin/stdout. The 7 exposed tools are documented in [MCP Tools](#mcp-tools).
 
-### Verificar la instalación
+### Verifying the installation
 
 ```bash
-# Ver qué agentes detectó drup
+# See which agents drup detected
 drup install
 # Output: Installing drup to claude... done
 #         Installing drup to opencode... done
 
-# Forzar re-sincronización (tras update del binario)
+# Force re-sync (after a binary update)
 drup sync
 ```
 
 ---
 
-## Workflow completo: de Drupal 10 a Drupal 11
+## Full workflow: from Drupal 10 to Drupal 11
 
-### Paso a paso con el CLI
-
-```bash
-# 1. Preflight: detecta versión, instala dependencias
-drup preflight /ruta/proyecto
-
-# 2. Scan: análisis inicial de deprecaciones
-drup scan /ruta/proyecto
-
-# 3. Fix: pipeline completo
-drup fix /ruta/proyecto
-#    ├── corre drupal-rector (autofix ~80%)
-#    ├── por cada módulo contrib: busca release D11 o parche RTBC → aplica → commit
-#    ├── por cada archivo custom: muestra errores para que el agente los resuelva
-#    └── validación final → reporte
-
-# 4. Reporte: resumen de todo lo hecho
-drup report /ruta/proyecto
-```
-
-### Desde Claude Code (orquestado por skill)
-
-```
-/drup /ruta/proyecto
-```
-
-El skill `/drup` ejecuta el pipeline completo en 7 fases con **validation gates**: cada fase se valida antes de avanzar. Si algo falla, reintenta con modelo más potente. Si sigue fallando, va a la lista de pendientes para revisión humana.
-
-### Comandos individuales
+### Step by step with the CLI
 
 ```bash
-drup contrib check webform       # ¿tiene release compatible con D11?
-drup issue patches 3412345       # parches de una issue de Drupal.org (JSON limpio)
-drup mcp                         # servidor MCP (para agentes de IA)
+# 1. Preflight: detects version, installs dependencies
+drup preflight /path/to/project
+
+# 2. Scan: initial deprecation analysis
+drup scan /path/to/project
+
+# 3. Fix: full pipeline
+drup fix /path/to/project
+#    ├── runs drupal-rector (autofix ~80%)
+#    ├── for each contrib module: looks for D11 release or RTBC patch → applies → commit
+#    ├── for each custom file: shows errors for the agent to resolve
+#    └── final validation → report
+
+# 4. Report: summary of everything done
+drup report /path/to/project
+```
+
+### From Claude Code (orchestrated by skill)
+
+```
+/drup /path/to/project
+```
+
+The `/drup` skill runs the full pipeline in 7 phases with **validation gates**: each phase is validated before moving on. If something fails, it retries with a more powerful model. If it keeps failing, it goes to the pending list for human review.
+
+### Individual commands
+
+```bash
+drup contrib check webform       # does it have a D11-compatible release?
+drup issue patches 3412345       # patches from a Drupal.org issue (clean JSON)
+drup mcp                         # MCP server (for AI agents)
 ```
 
 ---
 
-## El Pipeline (7 fases)
+## The Pipeline (7 phases)
 
 ```
-[0. Preflight]      [1. Estático]         [2. Resolución]           [3. Self-healing]      [4. Salida]
-git limpio          composer require      contrib:                  re-analyze + phpstan   rama + commits
-drush status    →   upgrade_status    →   · release D11?        →   · ok → siguiente  →   reporte final
-detectar core       drupal-rector         · parche issue?           · falla → reintento    lista p/ humano
-versión             (autofix ~80%)        custom: agente edita      · ×2 → escala modelo   (PR opcional)
+[0. Preflight]      [1. Static]           [2. Resolution]           [3. Self-healing]      [4. Output]
+clean git           composer require      contrib:                  re-analyze + phpstan   branch + commits
+drush status    →   upgrade_status    →   · D11 release?        →   · ok → next        →   final report
+detect core         drupal-rector         · issue patch?            · fails → retry        human pending list
+version             (autofix ~80%)        custom: agent edits       · ×2 → escalate model  (PR optional)
 ```
 
-### Fase 0 — Preflight
-Verifica git limpio, composer/drush disponibles, versión de core. Instala dependencias faltantes (`upgrade_status`, `drupal-rector`, `phpstan-drupal`).
+### Phase 0 — Preflight
+Verifies clean git, composer/drush available, core version. Installs missing dependencies (`upgrade_status`, `drupal-rector`, `phpstan-drupal`).
 
-### Fase 1 — Rector (0 tokens)
-Ejecuta `drupal-rector` con los sets de reglas de D11 sobre módulos y temas custom. Resuelve ~80% de deprecaciones estándar de forma determinista. Commit atómico.
+### Phase 1 — Rector (0 tokens)
+Runs `drupal-rector` with D11 rule sets over custom modules and themes. Resolves ~80% of standard deprecations deterministically. Atomic commit.
 
-### Fase 2 — Módulos Contrib
-Para cada módulo contrib con errores:
-1. `contrib_check` → consulta `updates.drupal.org/release-history` (feed canónico del módulo Update de Drupal core)
-2. ¿Release compatible con D11? → `composer require` → commit
-3. ¿Sin release? → busca issues en Drupal.org (api-d7 + scraper HTML) → prioriza parches RTBC → descarga y aplica
-4. ¿Sin parches? → el agente genera un `.patch` con la corrección
-5. **Gate de validación**: `validate(scope=contrib, module=X)` → 0 errores = commit, >0 = reintentar
+### Phase 2 — Contrib Modules
+For each contrib module with errors:
+1. `contrib_check` → queries `updates.drupal.org/release-history` (Drupal core's Update module canonical feed)
+2. D11-compatible release available? → `composer require` → commit
+3. No release? → searches Drupal.org issues (api-d7 + HTML scraper) → prioritizes RTBC patches → downloads and applies
+4. No patches? → the agent generates a `.patch` with the fix
+5. **Validation gate**: `validate(scope=contrib, module=X)` → 0 errors = commit, >0 = retry
 
-### Fase 3 — Código Custom
-Para cada archivo custom con deprecaciones:
-1. Agente lee el archivo + mensaje de error (±30 líneas)
-2. Aplica la corrección mínima
-3. `validate(scope=custom, file=Y)` → ¿0 errores? → commit
-4. ¿Falla? → reintenta con feedback del validador (×2)
-5. ¿Sigue fallando? → escala a modelo más potente (×1)
-6. ¿Sigue fallando? → lista de pendientes para revisión humana
+### Phase 3 — Custom Code
+For each custom file with deprecations:
+1. Agent reads the file + error message (±30 lines)
+2. Applies the minimal fix
+3. `validate(scope=custom, file=Y)` → 0 errors? → commit
+4. Fails? → retries with validator feedback (×2)
+5. Still failing? → escalates to a more powerful model (×1)
+6. Still failing? → pending list for human review
 
-### Fase 4 — Validación Final
-`validate(global)` → ¿`total_errors == 0`? → reporte final. Quedan errores → itera con el sub-agente correcto.
+### Phase 4 — Final Validation
+`validate(global)` → `total_errors == 0`? → final report. Errors remain → iterates with the appropriate sub-agent.
 
 ---
 
-## Validation Gates (reglas estrictas)
+## Validation Gates (strict rules)
 
-El orquestador NUNCA confía en la auto-declaración de un sub-agente:
+The orchestrator NEVER trusts a sub-agent's self-declaration:
 
-| Regla | Descripción |
+| Rule | Description |
 |---|---|
-| **Validación externa** | El orquestador ejecuta `validate` — el sub-agente nunca valida su propio trabajo |
-| **Sin auto-aprobación** | Un sub-agente diciendo "listo" no significa nada. Solo `validate` == 0 cuenta |
-| **Reintento con evidencia** | Si falla, el mismo sub-agente recibe el output del validador como feedback |
-| **Máximo 2 reintentos** | Por scope. Luego escala modelo (haiku → sonnet). Luego lista humana |
-| **Gate de fase** | Ninguna fase avanza hasta que TODOS los ítems pasan validación |
-| **Commit solo post-gate** | Cada commit se ejecuta ÚNICAMENTE después de `validate` == 0 |
+| **External validation** | The orchestrator runs `validate` — the sub-agent never validates its own work |
+| **No self-approval** | A sub-agent saying "done" means nothing. Only `validate` == 0 counts |
+| **Retry with evidence** | If it fails, the same sub-agent receives the validator's output as feedback |
+| **Max 2 retries** | Per scope. Then escalates model (haiku → sonnet). Then human list |
+| **Phase gate** | No phase advances until ALL items pass validation |
+| **Commit only post-gate** | Each commit runs ONLY after `validate` == 0 |
 
 ---
 
-## Arquitectura
+## Architecture
 
-### El binario (`drup`)
+### The binary (`drup`)
 
 ```
 cmd/drup/main.go              # entrypoint
 internal/
-  app/          # CLI dispatch (11 comandos) + MCP tool handlers
-  exec/         # runner de subprocesos (composer, drush, rector, phpstan, git)
-  scan/         # parser de upgrade_status:analyze JSON
-  drupalorg/    # release-history XML + api-d7 + scraper de issues
-  patch/        # descarga de .patch, git apply, registro en composer.json
-  gitops/       # git clean check, commits atómicos, ramas
-  report/       # generación de reportes JSON + Markdown
-  mcp/          # servidor MCP (JSON-RPC 2.0, stdio)
-  packaging/    # templates de skills/agentes/MCP (go:embed)
-  installer/    # detección de agentes, escritura de assets, backup
-  state/        # state.json con agentes instalados, pending_sync, modelos
-  update/       # self-upgrade con checksum + reemplazo atómico
+  app/          # CLI dispatch (11 commands) + MCP tool handlers
+  exec/         # subprocess runner (composer, drush, rector, phpstan, git)
+  scan/         # upgrade_status:analyze JSON parser
+  drupalorg/    # release-history XML + api-d7 + issue scraper
+  patch/        # .patch download, git apply, composer.json registration
+  gitops/       # git clean check, atomic commits, branches
+  report/       # JSON + Markdown report generation
+  mcp/          # MCP server (JSON-RPC 2.0, stdio)
+  packaging/    # skill/agent/MCP templates (go:embed)
+  installer/    # agent detection, asset writing, backup
+  state/        # state.json with installed agents, pending_sync, models
+  update/       # self-upgrade with checksum + atomic replacement
 ```
 
-### El orquestador (skills de agente)
+### The orchestrator (agent skills)
 
-El binario solo hace trabajo determinista. El flujo completo lo ejecuta un **agente de IA** (Claude Code, OpenCode, Codex) siguiendo las instrucciones de un `SKILL.md`:
+The binary only does deterministic work. The full flow is executed by an **AI agent** (Claude Code, OpenCode, Codex) following the instructions of a `SKILL.md`:
 
-- **Skill `/drup`**: pipeline de 7 fases con validation gates
-- **Sub-agentes**: `drup-preflight`, `drup-contrib`, `drup-custom`, `drup-theme` — aíslan contexto por módulo/archivo para no saturar la ventana del orquestador
+- **`/drup` skill**: 7-phase pipeline with validation gates
+- **Sub-agents**: `drup-preflight`, `drup-contrib`, `drup-custom`, `drup-theme` — isolate context per module/file to avoid saturating the orchestrator's window
 
-### El puente (MCP)
+### The bridge (MCP)
 
-El servidor MCP de `drup` expone 7 tools con tipos y esquemas JSON. Es el protocolo estándar que conecta el binario con cualquier agente compatible:
+`drup`'s MCP server exposes 7 tools with JSON types and schemas. It's the standard protocol that connects the binary with any compatible agent:
 
 ```
 Claude Code ───┐
-OpenCode ──────┼── MCP (stdio) ── drup mcp ── tools deterministas
+OpenCode ──────┼── MCP (stdio) ── drup mcp ── deterministic tools
 Codex ─────────┘
 ```
 
@@ -280,19 +280,19 @@ Codex ─────────┘
 
 | Tool | Input | Output |
 |---|---|---|
-| `scan` | `project_path` | JSON: errores clasificados (contrib/custom/theme/core) |
-| `autofix` | `project_path` | JSON: resumen de rector + errores restantes |
+| `scan` | `project_path` | JSON: classified errors (contrib/custom/theme/core) |
+| `autofix` | `project_path` | JSON: rector summary + remaining errors |
 | `contrib_check` | `module_machine_name` | `{ has_d11_release, latest_version, compatible_branches }` |
-| `issue_patches` | `issue_nid` o `module_name` | `[{ url, status (RTBC/NR), date, is_patch }]` |
+| `issue_patches` | `issue_nid` or `module_name` | `[{ url, status (RTBC/NR), date, is_patch }]` |
 | `apply_patch` | `patch_url, project_path` | `{ applied, commit_hash, error }` |
 | `validate` | `project_path` | `{ total_errors, errors[] }` |
 | `create_patch` | `module_name, deprecation_details` | `{ patch_path, applied }` |
 
 ---
 
-## Configuración
+## Configuration
 
-`~/.config/drup/config.yaml` (opcional):
+`~/.config/drup/config.yaml` (optional):
 
 ```yaml
 agents:
@@ -311,57 +311,57 @@ agents:
         default: openrouter/qwen/qwen3-30b-a3b:free
 ```
 
-Si no configurás nada, `drup` usa defaults sensatos (barato para mecánico, fuerte para razonamiento).
+If you don't configure anything, `drup` uses sensible defaults (cheap for mechanical work, strong for reasoning).
 
 ---
 
-## Comandos
+## Commands
 
-| Comando | Descripción |
+| Command | Description |
 |---|---|
-| `drup init` | Genera `drup.yaml` en el directorio actual |
-| `drup scan <path>` | Análisis inicial de deprecaciones (JSON) |
-| `drup fix <path>` | Pipeline completo: preflight + rector + contrib + custom + validación |
-| `drup preflight <path>` | Detecta versión, verifica git/composer/drush, instala dependencias |
-| `drup contrib check <module>` | ¿Release D11 o parche disponible? |
-| `drup issue patches <nid>` | Parches de una issue de Drupal.org |
-| `drup report <path>` | Reporte del estado actual vs D11 |
-| `drup mcp` | Servidor MCP por stdio (para agentes de IA) |
-| `drup install` | Detecta agentes y escribe skills + MCP config |
-| `drup sync` | Re-aplica skills a agentes instalados |
-| `drup upgrade` | Actualiza el binario + sincroniza skills |
-| `drup version` | Versión actual |
+| `drup init` | Generates `drup.yaml` in the current directory |
+| `drup scan <path>` | Initial deprecation analysis (JSON) |
+| `drup fix <path>` | Full pipeline: preflight + rector + contrib + custom + validation |
+| `drup preflight <path>` | Detects version, checks git/composer/drush, installs dependencies |
+| `drup contrib check <module>` | D11 release or patch available? |
+| `drup issue patches <nid>` | Patches from a Drupal.org issue |
+| `drup report <path>` | Current status report vs D11 |
+| `drup mcp` | MCP server over stdio (for AI agents) |
+| `drup install` | Detects agents and writes skills + MCP config |
+| `drup sync` | Re-applies skills to installed agents |
+| `drup upgrade` | Updates the binary + syncs skills |
+| `drup version` | Current version |
 
-Flags globales: `--json`, `--force` (git sucio), `--dry-run`.
+Global flags: `--json`, `--force` (dirty git), `--dry-run`.
 
 ---
 
 ## Roadmap
 
-| Versión | Alcance |
+| Version | Scope |
 |---|---|
-| **v0.1** ✅ | Binario Go: preflight + scan + fix + contrib + report. 72 tests. |
-| v0.2 | Pipeline completo con skills de agente. Sub-agentes con isolation. Self-upgrade funcional. |
-| v0.3 | Modo standalone con LLM (sin agente externo). RAG de change records de Drupal. |
-| v0.4 | Encadenado 8→9→10→11. Creación de PR. Modo CI. |
+| **v0.1** ✅ | Go binary: preflight + scan + fix + contrib + report. 72 tests. |
+| v0.2 | Full pipeline with agent skills. Sub-agents with isolation. Working self-upgrade. |
+| v0.3 | Standalone mode with LLM (no external agent). RAG over Drupal change records. |
+| v0.4 | Chained 8→9→10→11. PR creation. CI mode. |
 
 ---
 
-## Desarrollo
+## Development
 
 ```bash
 git clone git@github.com:nireneko/drup.git
 cd drup
 
-go build ./cmd/drup     # compilar
+go build ./cmd/drup     # build
 go test ./...           # 72 tests
-go vet ./...            # análisis estático
+go vet ./...            # static analysis
 ```
 
-Estructura de tests: table-driven, fixtures en `testdata/`, variables a nivel paquete para mockear subprocesos.
+Test structure: table-driven, fixtures in `testdata/`, package-level variables for mocking subprocesses.
 
 ---
 
-## Licencia
+## License
 
 MIT

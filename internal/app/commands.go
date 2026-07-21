@@ -1,9 +1,7 @@
 package app
 
 import (
-	"archive/tar"
 	"archive/zip"
-	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -268,19 +266,17 @@ func RunSync() error {
 	return nil
 }
 
-// RunUpgrade self-updates the binary.
-func RunUpgrade() error {
-	// Determine OS/arch for asset selection
-	goos := os.Getenv("GOOS")
-	if goos == "" {
-		goos = runtime.GOOS
-	}
-	goarch := os.Getenv("GOARCH")
-	if goarch == "" {
-		goarch = runtime.GOARCH
-	}
+// checkLatestFn and upgradeFn wrap the update package's entry points.
+// Package-level vars for testability.
+var checkLatestFn = update.CheckLatest
+var upgradeFn = update.Upgrade
 
-	version, assetURL, err := update.CheckLatest("nireneko", "drup", goos, goarch)
+// RunUpgrade self-updates the binary. It uses the runtime's actual
+// GOOS/GOARCH for asset selection — GOOS/GOARCH environment overrides are
+// never honored — and delegates the download/verify/extract/replace flow to
+// update.Upgrade.
+func RunUpgrade() error {
+	version, _, err := checkLatestFn("nireneko", "drup", runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		return fmt.Errorf("check for updates: %w", err)
 	}
@@ -291,98 +287,16 @@ func RunUpgrade() error {
 	}
 
 	fmt.Printf("New version available: %s (current: %s)\n", version, Version)
+	fmt.Println("Downloading and installing update...")
 
-	// Determine archive extension based on OS
-	ext := ".tar.gz"
-	if goos == "windows" {
-		ext = ".zip"
+	opts := update.UpgradeOptions{
+		Owner:   "nireneko",
+		Repo:    "drup",
+		Binary:  "drup",
+		Version: version,
 	}
-	assetName := fmt.Sprintf("drup_%s_%s_%s%s", version, goos, goarch, ext)
-
-	// Build download and checksum URLs from the asset URL.
-	// assetURL is like https://github.com/.../drup_0.2.0_linux_amd64.tar.gz
-	// checksums.txt is at the same release: replace asset name with checksums.txt.
-	checksumURL := strings.TrimSuffix(assetURL, "/"+assetName) + "/checksums.txt"
-	// If the asset URL doesn't contain the asset name, try direct construction.
-	if !strings.HasSuffix(assetURL, assetName) {
-		checksumURL = strings.TrimSuffix(assetURL, filepath.Ext(assetURL))
-		checksumURL = strings.TrimSuffix(checksumURL, filepath.Ext(checksumURL))
-		// Fallback: just use the release download base.
-		base := assetURL[:strings.LastIndex(assetURL, "/")]
-		checksumURL = base + "/checksums.txt"
-	}
-
-	fmt.Printf("Downloading %s...\n", assetName)
-	tmpPath, err := update.Download(assetURL, checksumURL, assetName)
-	if err != nil {
-		return fmt.Errorf("download update: %w", err)
-	}
-	defer os.Remove(tmpPath)
-
-	// Extract the binary from the downloaded archive.
-	extractedBin, err := extractUpdateBinary(tmpPath)
-	if err != nil {
-		return fmt.Errorf("extract update: %w", err)
-	}
-	defer os.RemoveAll(filepath.Dir(extractedBin))
-
-	// Atomic replace: get current binary path, rename tmp over it.
-	currentBin, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("get current binary path: %w", err)
-	}
-
-	// Resolve symlinks.
-	currentBin, err = filepath.EvalSymlinks(currentBin)
-	if err != nil {
-		return fmt.Errorf("resolve symlinks: %w", err)
-	}
-
-	// Save backup to ~/.drup/backups/ before replacing.
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("find home directory: %w", err)
-	}
-	backupDir := filepath.Join(homeDir, ".drup", "backups")
-	if err := os.MkdirAll(backupDir, 0o755); err != nil {
-		return fmt.Errorf("create backup directory: %w", err)
-	}
-	backupPath := filepath.Join(backupDir, filepath.Base(currentBin)+".bak")
-
-	src, err := os.Open(currentBin)
-	if err != nil {
-		return fmt.Errorf("open current binary for backup: %w", err)
-	}
-	defer src.Close()
-
-	dst, err := os.Create(backupPath)
-	if err != nil {
-		return fmt.Errorf("create backup file: %w", err)
-	}
-	defer dst.Close()
-
-	if _, err := io.Copy(dst, src); err != nil {
-		return fmt.Errorf("write backup: %w", err)
-	}
-	src.Close()
-	dst.Close()
-
-	// Copy to a temp file in the same directory, then rename atomically.
-	// Direct overwrite fails with ETXTBSY on the running binary; rename
-	// on the same filesystem replaces the directory entry while the old
-	// inode stays alive for the running process.
-	newPath := currentBin + ".new"
-	if err := copyFile(extractedBin, newPath); err != nil {
-		return fmt.Errorf("stage new binary: %w", err)
-	}
-	if err := os.Rename(newPath, currentBin); err != nil {
-		os.Remove(newPath)
-		return fmt.Errorf("replace binary (may need sudo): %w", err)
-	}
-
-	// Ensure executable permission.
-	if err := os.Chmod(currentBin, 0o755); err != nil {
-		return fmt.Errorf("set executable permission: %w", err)
+	if err := upgradeFn(opts); err != nil {
+		return fmt.Errorf("upgrade: %w", err)
 	}
 
 	// Set pending_sync in state.
@@ -601,88 +515,6 @@ func detectDrupalVersion(projectPath string) string {
 	return ""
 }
 
-// extractUpdateBinary extracts the drup executable from a downloaded archive.
-func extractUpdateBinary(archivePath string) (string, error) {
-	tmpDir, err := os.MkdirTemp("", "drup-extract-*")
-	if err != nil {
-		return "", err
-	}
-
-	switch {
-	case strings.HasSuffix(archivePath, ".tar.gz"):
-		if err := extractTarGz(archivePath, tmpDir); err != nil {
-			os.RemoveAll(tmpDir)
-			return "", err
-		}
-	case strings.HasSuffix(archivePath, ".zip"):
-		if err := extractZip(archivePath, tmpDir); err != nil {
-			os.RemoveAll(tmpDir)
-			return "", err
-		}
-	default:
-		os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("unsupported archive format: %s", archivePath)
-	}
-
-	// Find the binary inside the extracted directory.
-	for _, name := range []string{"drup", "drup.exe"} {
-		binPath := filepath.Join(tmpDir, name)
-		if _, err := os.Stat(binPath); err == nil {
-			return binPath, nil
-		}
-	}
-
-	os.RemoveAll(tmpDir)
-	return "", fmt.Errorf("no drup binary found in archive")
-}
-
-func extractTarGz(archivePath, destDir string) error {
-	f, err := os.Open(archivePath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	gzReader, err := gzip.NewReader(f)
-	if err != nil {
-		return err
-	}
-	defer gzReader.Close()
-
-	tarReader := tar.NewReader(gzReader)
-	for {
-		header, err := tarReader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-
-		target := filepath.Join(destDir, header.Name)
-		switch header.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				return err
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			outFile, err := os.Create(target)
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(outFile, tarReader); err != nil {
-				outFile.Close()
-				return err
-			}
-			outFile.Close()
-		}
-	}
-	return nil
-}
-
 func extractZip(archivePath, destDir string) error {
 	r, err := zip.OpenReader(archivePath)
 	if err != nil {
@@ -716,31 +548,4 @@ func extractZip(archivePath, destDir string) error {
 		}
 	}
 	return nil
-}
-
-// copyFile copies src to dst, preserving executable permission if src has it.
-// Uses read+write instead of os.Rename to work across filesystem boundaries.
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-
-	// Preserve executable bits from source.
-	if fi, err := in.Stat(); err == nil {
-		_ = out.Chmod(fi.Mode())
-	}
-
-	return out.Close()
 }
