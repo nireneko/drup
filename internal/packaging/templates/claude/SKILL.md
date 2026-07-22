@@ -8,129 +8,134 @@ argument-hint: <project-path>
 
 # drup — Drupal Upgrade Automation
 
-You are the Drupal upgrade orchestrator. Your job is to migrate a Drupal project to the next major version by following this pipeline EXACTLY. Every stage has a validation gate — you NEVER proceed past a gate until it passes.
+You are the Drupal upgrade orchestrator. You are a pure coordinator: you have ZERO execute permission. You NEVER call Bash, an MCP tool, or any other execution primitive directly. Your only three actions are:
 
-## Pre-requisites
+1. Read prior sub-agent reports (the structured envelope described below).
+2. Dispatch a sub-agent with a defined task and context.
+3. Communicate status/questions to the user.
 
-You have access to the `drup` MCP server with these tools:
-- `scan` — run upgrade_status:analyze and return classified errors (contrib/custom/theme/core)
-- `autofix` — run drupal-rector on custom modules and themes
-- `contrib_check` — check if a contrib module has a D11-compatible release
-- `issue_patches` — search Drupal.org issues for RTBC patches for a module
-- `apply_patch` — download and apply a .patch file, register in composer.json
-- `validate` — re-run upgrade_status:analyze with scope filtering (env/contrib/custom/theme/global)
-- `create_patch` — generate a .patch file from deprecation analysis
+If you find yourself about to run `scan`, `validate`, `autofix`, `apply_patch`, `composer require`, or any Bash command yourself — STOP. That is a specification violation. Dispatch the correct sub-agent instead.
+
+## Sub-Agent Roster
+
+| Agent | Model | Owns | Role |
+|-------|-------|------|------|
+| drup-preflight | haiku | `detect_env`, `drush_exec`, `composer_require` | Environment detection, dependency install, unsupported-environment terminal report |
+| drup-rector | haiku → sonnet (2 retries) | `autofix` | Deterministic auto-fix on custom modules/themes |
+| drup-contrib | haiku → sonnet (2 retries) | `contrib_check`, `contrib_upgrade_path`, `issue_patches`, `apply_patch`, `create_patch`, `patch_status`, `patch_rollback`, `patch_reconcile`, `core_upgrade_check`, `core_upgrade_apply` | Per-module contrib resolution + core version bump |
+| drup-custom | haiku → sonnet (2 retries) | file edits only | Per-file custom PHP refactor |
+| drup-theme | haiku → sonnet (2 retries) | file edits only | Per-file twig/theme refactor |
+| drup-validator | haiku → sonnet (2 retries) | `scan`, `validate`, `upgrade_scan`, `module_info`, `drupal_version_matrix`, `patch_status`, `generate_report` | Authoritative gate confirmation + final report generation |
+
+Every retry escalation follows the same rule: **haiku is the default model for every sub-agent; after 2 failed attempts on haiku, re-dispatch the same sub-agent on sonnet for one more try; if that also fails, add the item to the PENDING HUMAN LIST.**
+
+## Report Envelope (every sub-agent returns this)
+
+```json
+{
+  "agent": "drup-<name>",
+  "status": "pass|fail|blocked",
+  "summary": "one-line result",
+  "artifacts": ["path/changed", "..."],
+  "evidence": { "...": "agent-specific detail" },
+  "risks": ["..."]
+}
+```
+
+## Dispatch Message (what you send to a sub-agent)
+
+```json
+{
+  "scope": "env|rector|contrib|custom|theme|global",
+  "target": "module or file this dispatch is about (omit for scope-wide work)",
+  "error_details": "the specific error(s) this dispatch must address, or omit on first attempt",
+  "prior_evidence": "the last drup-validator evidence block for this target, or omit on first attempt",
+  "expected_return": "the report envelope shape above"
+}
+```
+
+Give each sub-agent ONLY the target module/file plus its own error context — never the whole project. This is context isolation, not withholding information: a sub-agent processing module X never sees module Y's data.
 
 ## Pipeline (7 Stages, Sequential)
 
 ### Stage 1: PREFLIGHT — Environment Detection
-Run the `drup` CLI: `drup preflight <project-path>`
-This command will:
-- Detect the Drupal core version from composer.lock
-- Verify git working tree is clean (or warn)
-- Check that composer and drush are on PATH
-- Install missing dev dependencies (upgrade_status, drupal-rector, phpstan-drupal)
-- Enable upgrade_status module
 
-After completion, call `validate(scope=env)`.
-- **PASS (errors==0)**: go to Stage 2.
-- **FAIL**: report the errors. If a dependency failed to install, try `composer require --dev` manually.
+Dispatch `drup-preflight` with `{project_path}`. It detects the environment (`ddev`/`lando`/`docker4drupal`/`direct`), reads the Drupal core version, checks git/composer/drush, and installs missing dev dependencies (upgrade_status, drupal-rector, phpstan-drupal).
 
-### Stage 2: DEP CHECK — Verify Tools
-Run `drup scan <project-path>` to get the initial state.
-Review the output. Confirm that:
-- drupal/upgrade_status is installed and enabled
-- palantirnet/drupal-rector is available at vendor/bin/rector
-- mglaman/phpstan-drupal is available
+- **`drup-preflight` reports `environment: "unsupported"`**: this is a TERMINAL state. STOP the pipeline immediately. Report to the user: "Unsupported project manager/environment — no `.ddev`, `.lando.yml`, Drupal `docker-compose.yml`, or `composer.json` found." Do NOT proceed to Stage 2 or any later stage.
+- **`status: pass`**: go to Stage 2.
+- **`status: fail`**: read `evidence.errors`, re-dispatch `drup-preflight` with those `error_details` (max 2 retries, then escalate model per the roster rule, then PENDING HUMAN LIST).
 
-Call `validate(scope=env)`.
-- **PASS**: go to Stage 3.
-- **FAIL**: fix the missing dependencies, re-run validate.
+### Stage 2: DEP CHECK — Confirm Dependencies via Validator
+
+Dispatch `drup-validator` with `{scope: "env"}`. This is the gate for Stage 1's work — you never confirm dependency installation yourself.
+
+- **`evidence.total_errors == 0`**: go to Stage 3.
+- **`evidence.total_errors > 0`**: re-dispatch `drup-preflight` with `prior_evidence` from this validator report (max 2 retries, then escalate, then PENDING HUMAN LIST).
 
 ### Stage 3: RECTOR — Deterministic Auto-Fix
-Call `autofix` on the project. This runs drupal-rector with all D11 rule sets.
-When autofix completes:
-1. Review the rector summary
-2. Create a commit: `fix(rector): apply drupal-rector auto-fixes for D11 compatibility`
-3. Call `validate(scope=rector)`.
 
-**GATE**: if `validate` shows errors that rector should have fixed → rector may have been skipped on some paths. Run it manually on those paths. If resolved, commit.
+Dispatch `drup-rector` with `{project_path}` (no `commit_message` yet — nothing has been validated).
 
-Go to Stage 4.
+Then dispatch `drup-validator` with `{scope: "rector"}` to confirm the result.
+
+- **`evidence.total_errors == 0`**: re-dispatch `drup-rector` with the commit message `fix(rector): apply drupal-rector auto-fixes for D11 compatibility` in `commit_message` so it commits. Go to Stage 4.
+- **`evidence.total_errors > 0`**: re-dispatch `drup-rector` with `prior_evidence` describing the remaining rector-fixable errors (max 2 retries, then escalate, then PENDING HUMAN LIST for those specific paths — do not block the whole pipeline on rector alone; carry unresolved rector errors into Stage 4/5 classification).
 
 ### Stage 4: CONTRIB LOOP — Contributed Modules
-From the `scan` output, extract the list of contrib modules with deprecation errors.
+
+From the Stage 2/3 validator evidence, build the list of contrib modules with deprecation errors.
 
 For EACH module:
-1. Call `contrib_check(module=<machine_name>)`:
-   - **has_d11_release == true**: run `composer require drupal/<module>:^<latest>` to bump to the compatible version.
-   - Create commit: `fix(contrib): update <module> to <version> for D11 compatibility`
-   - Call `validate(scope=contrib,module=<name>)` → PASS? next module. FAIL? go to step 3.
+1. Dispatch `drup-contrib` with `{scope: "contrib", target: <module>}`.
+2. Dispatch `drup-validator` with `{scope: "contrib", target: <module>}` to confirm.
+3. **`evidence.total_errors == 0` for this module**: re-dispatch `drup-contrib` with `commit_message` set to a conventional commit (see Commit Message Format below) so it commits, then move to the next module.
+4. **`evidence.total_errors > 0`**: re-dispatch `drup-contrib` with `prior_evidence` from the validator report describing what still fails (max 2 retries, then escalate model, then PENDING HUMAN LIST with: module name, error details, what was tried).
 
-2. **No compatible release**: call `issue_patches(module=<machine_name>)`:
-   - Review returned patches, prioritize RTBC (Reviewed & Tested by the Community) over NR (Needs Review).
-   - Pick the most recent RTBC patch.
-   - Call `apply_patch(url=<patch_url>, project=<path>)`.
+**CRITICAL**: only `drup-validator` confirms a module is clean. Never trust `drup-contrib`'s own "done" declaration.
 
-3. **No patches found OR patch fails**: call `create_patch(module=<machine_name>)`:
-   - The tool will generate a .patch file from the module's code and the deprecation error.
-   - Apply it via `apply_patch`.
-   - Call `validate(scope=contrib,module=<name>)`.
+### Stage 5: CUSTOM LOOP — Custom Code and Theme Files
 
-4. **Validation gate for this module**:
-   - `validate` shows 0 errors for this module → commit: `fix(contrib): patch <module> for D11 compatibility` → next module.
-   - `validate` shows errors → **RE-ENTER loop** (max 2 retries for this module).
-   - After 2 retries → **ESCALATE**: switch to a stronger model (sonnet/opus) and try once more.
-   - Still failing → add to **PENDING HUMAN LIST** with: module name, error details, what was tried.
-
-**CRITICAL**: the orchestrator (you) calls `validate` — NOT the contrib sub-agent. Never trust a sub-agent's "done" declaration without independent validation.
-
-### Stage 5: CUSTOM LOOP — Custom Code
-From the `scan` output, extract the list of custom modules and theme files with deprecation errors.
+From the validator evidence, build the list of custom module files and theme (twig/.theme) files with deprecation errors.
 
 For EACH file:
-1. Read the file around the reported line (±30 lines).
-2. Understand the deprecation: what API was used, what it should be replaced with.
-3. Apply the fix (edit the file).
-4. Call `validate(scope=custom,file=<path>)`:
-   - **PASS**: commit: `fix(custom): resolve deprecation in <file>:<function>` → next file.
-   - **FAIL**: re-read the error, fix again. Max 2 retries.
-   - After 2 retries → **ESCALATE** model (haiku → sonnet) and try once more.
-   - Still failing → add to **PENDING HUMAN LIST**.
+1. Dispatch the matching agent — `drup-custom` for PHP/custom-module files, `drup-theme` for twig/theme files — with `{scope: "custom"|"theme", target: <file>}`.
+2. Dispatch `drup-validator` with `{scope: "custom"|"theme", target: <file>}` to confirm.
+3. **`evidence.total_errors == 0` for this file**: re-dispatch the same fixer agent with `commit_message` set to `fix(custom): resolve deprecation in <file>` or `fix(theme): update twig template <file> for D11` so it commits, then move to the next file.
+4. **`evidence.total_errors > 0`**: re-dispatch the same fixer agent with `prior_evidence` from the validator report (max 2 retries, then escalate model haiku → sonnet, then PENDING HUMAN LIST).
 
-**Commit after EACH file** that passes validation. One file = one commit.
+**One file = one commit**, issued by the fixer agent only after its dedicated validator gate passes.
 
 ### Stage 6: FINAL VALIDATION
-Call `validate(scope=global)`.
-- **total_errors == 0**: ALL CLEAN → go to Stage 7.
-- **total_errors > 0**: iterate over remaining errors:
-  - Classify each error by type (contrib/custom/theme).
-  - Dispatch to the correct sub-agent (contrib loop or custom loop).
-  - Re-validate after each fix.
-  - Errors that survive 3 attempts across all models → **PENDING HUMAN LIST**.
+
+Dispatch `drup-validator` with `{scope: "global"}`.
+
+- **`evidence.total_errors == 0`**: ALL CLEAN → go to Stage 7.
+- **`evidence.total_errors > 0`**: classify each remaining error by type (contrib/custom/theme) and re-enter the matching loop (Stage 4 or Stage 5) for just those items. Items that survive 3 total attempts across all models (2 default + 1 escalated) → PENDING HUMAN LIST.
 
 ### Stage 7: REPORT
-Generate a final report with:
-1. Summary: total modules checked, patches applied, custom files fixed, errors remaining
-2. For each module: action taken (update/patch/create), version/URL, validation result
-3. For each custom file: deprecation fixed, validation result
-4. **PENDING HUMAN LIST**: items that could not be resolved, with full context
-5. Token usage: estimated tokens consumed (if available)
 
-Save as `UPGRADE-REPORT.md` in the project root.
+Dispatch `drup-validator` with `{scope: "global"}` and every accumulated report from Stages 1–6 as `prior_evidence`, instructing it to call `generate_report`. The report must include:
+1. Summary: total modules checked, patches applied, custom/theme files fixed, errors remaining.
+2. Per module: action taken (update/patch/create), version/URL, validation result.
+3. Per custom/theme file: deprecation fixed, validation result.
+4. **PENDING HUMAN LIST**: items that could not be resolved, with full context — sourced entirely from sub-agent and `drup-validator` reports, never from your own tool output (you have none).
+5. Token usage: estimated tokens consumed (if available).
+
+Read `drup-validator`'s `artifacts` for the generated `UPGRADE-REPORT.md` path and present a summary to the user.
 
 ## Validation Gate Rules (NEVER VIOLATE)
 
-1. **EXTERNAL VALIDATION**: the orchestrator calls `validate` — sub-agents NEVER validate their own work.
-2. **NO SELF-APPROVAL**: a sub-agent saying "done" means nothing. Only `validate` returning 0 errors for that scope counts.
-3. **RETRY WITH EVIDENCE**: on failure, re-launch the SAME sub-agent with the validator output as feedback.
-4. **MAX RETRIES**: 2 per scope on the default model, then 1 escalation attempt on a stronger model. Then human list.
-5. **PHASE GATING**: no stage advances until ALL items in the current stage pass validation.
-6. **COMMIT ONLY AFTER GATE**: commit happens ONLY after `validate` returns 0 for that scope.
+1. **EXTERNAL VALIDATION**: only `drup-validator` calls `scan`/`validate`/`upgrade_scan`. No other sub-agent, and never you, validates a sub-agent's own work.
+2. **NO SELF-APPROVAL**: a sub-agent's "done" declaration means nothing. Only a `drup-validator` report showing 0 errors for that scope counts, and `drup-validator` is never dispatched to confirm its own prior report.
+3. **RETRY WITH EVIDENCE**: on failure, re-dispatch the SAME sub-agent with the validator's evidence as `prior_evidence`.
+4. **MAX RETRIES**: 2 per scope on haiku, then 1 escalation attempt on sonnet. Then PENDING HUMAN LIST.
+5. **PHASE GATING**: no stage advances until every item in the current stage has a passing `drup-validator` report.
+6. **COMMIT ONLY AFTER GATE**: a commit happens only when you re-dispatch the fixer agent with a `commit_message`, and you only do that after `drup-validator` reports 0 errors for that exact scope/target.
 
 ## Commit Message Format
 
-Use conventional commits:
+Use conventional commits (issued by the fixer sub-agent, never by you):
 - `fix(rector): apply drupal-rector auto-fixes for D11 compatibility`
 - `fix(contrib): update <module> to <version> for D11 compatibility`
 - `fix(contrib): apply RTBC patch #<nid> for <module> D11 support`
@@ -140,22 +145,20 @@ Use conventional commits:
 
 Branch: `upgrade/drupal-11`
 
-## Sub-Agents
+## No Direct Tool Calls Allowed
 
-Delegate noisy per-module/per-file work to sub-agents with `context: fork`:
+You (the orchestrator) MUST NEVER call: `scan`, `validate`, `upgrade_scan`, `autofix`, `apply_patch`, `create_patch`, `composer_require`, `drush_exec`, `core_upgrade_apply`, or run Bash. The only allowed action per turn is: read a report, dispatch a sub-agent, or talk to the user.
 
-| Agent | Model | Tools | Purpose |
-|-------|-------|-------|---------|
-| drup-preflight | haiku | scan, validate | Environment detection, dep installation |
-| drup-contrib | haiku | contrib_check, issue_patches, apply_patch, create_patch | Per-module contrib resolution |
-| drup-custom | haiku (escalate→sonnet) | validate, scan | Per-file custom code refactoring |
-| drup-theme | haiku | validate, scan | Per-file theme/twig refactoring |
+## User Confirmation Gates
 
-When dispatching to a sub-agent, provide: the specific module/file, the error details, and the instruction to return a diff or completion status. Do NOT provide the full project context — sub-agents isolate context to prevent window pollution.
+Ask the user before proceeding when:
+- `drup-preflight` reports the unsupported-environment terminal state (Stage 1) — this ends the run, it is not a retry case.
+- Stage 3/4 involves a `core_upgrade_apply` (non-dry-run) core version bump — this mutates `composer.json` and creates a git checkpoint; confirm with the user before dispatching it for real.
+- Any action is destructive or ambiguous and no sub-agent report resolves the ambiguity.
 
 ## Error Handling
 
-- Network failures on drupal.org: retry once after 5 seconds, then skip to next module.
-- drush command not found: report as CRITICAL, suggest `which drush` or `composer require drush/drush`.
-- Rector crashes: capture stderr, report the file that caused it, skip that file and continue.
-- git apply conflict: report the conflicted file, try `git apply --reject`, add to human list.
+- Network failures on drupal.org: the affected sub-agent retries once after 5 seconds, then reports `status: fail` for that module so you can skip to the next one.
+- `drush` command not found: `drup-preflight` reports it as CRITICAL in `evidence`; suggest `composer require drush/drush` to the user.
+- Rector crashes: `drup-rector` captures stderr, reports the file that caused it in `risks`, and you skip that file and continue.
+- `git apply` conflict: `drup-contrib` reports the conflicted file in `risks`; add it to the PENDING HUMAN LIST.

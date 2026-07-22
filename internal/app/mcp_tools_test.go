@@ -3,12 +3,16 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/nireneko/drup/internal/drupalorg"
 	"github.com/nireneko/drup/internal/mcp"
 )
 
@@ -25,7 +29,7 @@ func TestWireMCPTools_AllToolsRegistered(t *testing.T) {
 	server := mcp.NewServer(&buf)
 	WireMCPTools(server)
 
-	// Verify all 17 tools are registered by calling tools/list.
+	// Verify all 20 tools are registered by calling tools/list.
 	req := mcp.JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      1,
@@ -369,4 +373,181 @@ func TestGenerateReport_WritesFiles(t *testing.T) {
 func jsonStr(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// --- core_upgrade_check ---
+
+func TestCoreUpgradeCheck_InvalidJSON(t *testing.T) {
+	_, err := realHandleCoreUpgradeCheck(json.RawMessage(`{invalid`))
+	if err == nil {
+		t.Error("expected error for invalid JSON, got nil")
+	}
+}
+
+func TestCoreUpgradeCheck_MissingProjectPath(t *testing.T) {
+	_, err := realHandleCoreUpgradeCheck(json.RawMessage(`{}`))
+	if err == nil {
+		t.Error("expected error for missing project_path, got nil")
+	}
+}
+
+func TestCoreUpgradeCheck_PathTraversal(t *testing.T) {
+	args := json.RawMessage(`{"project_path":"/tmp/../../etc"}`)
+	_, err := realHandleCoreUpgradeCheck(args)
+	if err == nil {
+		t.Error("expected error for path traversal, got nil")
+	}
+	if !strings.Contains(err.Error(), "..") {
+		t.Errorf("error = %q, want it to mention '..'", err.Error())
+	}
+}
+
+func TestCoreUpgradeCheck_RelativePathRejected(t *testing.T) {
+	args := json.RawMessage(`{"project_path":"relative/path"}`)
+	_, err := realHandleCoreUpgradeCheck(args)
+	if err == nil {
+		t.Error("expected error for relative path, got nil")
+	}
+}
+
+func TestCoreUpgradeCheck_UnsupportedEnvironment(t *testing.T) {
+	dir := t.TempDir() // no markers at all — envdetect reports EnvUnsupported
+
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	result, err := realHandleCoreUpgradeCheck(args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(result, &resp)
+	if resp["supported"] != false {
+		t.Errorf("supported = %v, want false for a project with no recognized environment markers", resp["supported"])
+	}
+	if resp["next_version"] != "" {
+		t.Errorf("next_version = %v, want empty when unsupported", resp["next_version"])
+	}
+}
+
+// --- core_upgrade_apply ---
+
+func TestCoreUpgradeApply_InvalidJSON(t *testing.T) {
+	_, err := realHandleCoreUpgradeApply(json.RawMessage(`{invalid`))
+	if err == nil {
+		t.Error("expected error for invalid JSON, got nil")
+	}
+}
+
+func TestCoreUpgradeApply_MissingProjectPath(t *testing.T) {
+	_, err := realHandleCoreUpgradeApply(json.RawMessage(`{"target_version":"11.0.9"}`))
+	if err == nil {
+		t.Error("expected error for missing project_path, got nil")
+	}
+}
+
+func TestCoreUpgradeApply_MissingTargetVersion(t *testing.T) {
+	args := json.RawMessage(`{"project_path":` + jsonStr("/tmp") + `}`)
+	_, err := realHandleCoreUpgradeApply(args)
+	if err == nil {
+		t.Error("expected error for missing target_version, got nil")
+	}
+}
+
+func TestCoreUpgradeApply_DryRunPreview(t *testing.T) {
+	requireGitForApp(t)
+	dir := t.TempDir()
+	runGitCmd(t, dir, "init")
+	runGitCmd(t, dir, "config", "user.email", "test@test.com")
+	runGitCmd(t, dir, "config", "user.name", "Test")
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/core-recommended":"^10.1"}}`), 0o644)
+	runGitCmd(t, dir, "add", ".")
+	runGitCmd(t, dir, "commit", "-m", "initial")
+
+	args := json.RawMessage(fmt.Sprintf(`{"project_path":%s,"target_version":"11.0.9","dry_run":true}`, jsonStr(dir)))
+	result, err := realHandleCoreUpgradeApply(args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(result, &resp)
+	if resp["success"] != true {
+		t.Errorf("success = %v, want true", resp["success"])
+	}
+	if resp["rollback_checkpoint"] != "" {
+		t.Errorf("rollback_checkpoint = %v, want empty for dry-run", resp["rollback_checkpoint"])
+	}
+	report, _ := resp["report"].(string)
+	if !strings.Contains(report, "drupal/core-recommended") {
+		t.Errorf("report = %q, want it to mention drupal/core-recommended", report)
+	}
+}
+
+func requireGitForApp(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+}
+
+func runGitCmd(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// --- patch_reconcile ---
+
+func TestPatchReconcile_InvalidJSON(t *testing.T) {
+	_, err := realHandlePatchReconcile(json.RawMessage(`{invalid`))
+	if err == nil {
+		t.Error("expected error for invalid JSON, got nil")
+	}
+}
+
+func TestPatchReconcile_InvalidModuleName(t *testing.T) {
+	args := json.RawMessage(`{"module_machine_name":"INVALID","current_patch_url":"https://www.drupal.org/node/1"}`)
+	_, err := realHandlePatchReconcile(args)
+	if err == nil {
+		t.Error("expected error for invalid module machine name, got nil")
+	}
+}
+
+func TestPatchReconcile_MissingPatchURL(t *testing.T) {
+	args := json.RawMessage(`{"module_machine_name":"token"}`)
+	_, err := realHandlePatchReconcile(args)
+	if err == nil {
+		t.Error("expected error for missing current_patch_url, got nil")
+	}
+}
+
+func TestPatchReconcile_ReturnsResult(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"list":[{"node":{"nid":"555","title":"Fixed","status":"Fixed"}}],"next":""}`))
+	}))
+	defer srv.Close()
+
+	origClient := drupalorg.HTTPClient
+	drupalorg.HTTPClient = srv.Client()
+	defer func() { drupalorg.HTTPClient = origClient }()
+
+	origBase := drupalorg.APID7BaseURL
+	drupalorg.APID7BaseURL = srv.URL + "/api-d7/node.json?field_project_machine_name=%s"
+	defer func() { drupalorg.APID7BaseURL = origBase }()
+
+	args := json.RawMessage(`{"module_machine_name":"token","current_patch_url":"https://www.drupal.org/node/555"}`)
+	result, err := realHandlePatchReconcile(args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(result, &resp)
+	if resp["is_still_needed"] != false {
+		t.Errorf("is_still_needed = %v, want false for a merged/Fixed issue", resp["is_still_needed"])
+	}
+	recommendation, _ := resp["recommendation"].(string)
+	if !strings.Contains(recommendation, "remove") {
+		t.Errorf("recommendation = %q, want it to mention remove", recommendation)
+	}
 }

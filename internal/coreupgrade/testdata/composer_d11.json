@@ -1,0 +1,9 @@
+{
+    "name": "example/site",
+    "require": {
+        "php": ">=8.3",
+        "drupal/core-recommended": "^11.0",
+        "drupal/core-composer-scaffold": "^11.0",
+        "drupal/core-project-message": "^11.0"
+    }
+}

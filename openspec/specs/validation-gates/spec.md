@@ -8,29 +8,35 @@ Hard gates between each pipeline stage enforcing external validation, no self-ap
 
 ### Requirement: External Validation
 
-The system SHALL require the orchestrator — not the sub-agent — to execute `validate` after each sub-agent completes.
+The system SHALL require a party other than the sub-agent under test to confirm its work: the orchestrator dispatches `drup-validator`, which executes `validate` independently of the sub-agent's self-report. The orchestrator MUST NOT execute `validate` directly — it only dispatches `drup-validator` and reads its report.
 
-#### Scenario: Orchestrator validates sub-agent work
+#### Scenario: Orchestrator delegates validation of sub-agent work
 
 - GIVEN drup-contrib finishes processing module X
-- WHEN the orchestrator runs validation
-- THEN the orchestrator SHALL call `validate(scope=contrib, module=X)` independently of the sub-agent's self-report
+- WHEN the orchestrator needs confirmation
+- THEN the orchestrator SHALL dispatch `drup-validator(scope=contrib, module=X)` and SHALL NOT call `validate` itself
 
-#### Scenario: Sub-agent claims success but validate finds errors
+#### Scenario: Sub-agent claims success but validator finds errors
 
 - GIVEN a sub-agent reports "done" for its scope
-- WHEN the orchestrator runs `validate` and it returns errors
+- WHEN `drup-validator` runs and its report shows errors
 - THEN the orchestrator SHALL treat the sub-agent's report as failed and re-enter the retry loop
 
 ### Requirement: No Self-Approval
 
-The system SHALL NOT allow any sub-agent to validate its own work.
+The system SHALL NOT allow any sub-agent — including `drup-validator` — to validate its own remediation work. `drup-validator` MUST only be dispatched against work produced by a different sub-agent.
 
 #### Scenario: Sub-agent cannot skip validation
 
 - GIVEN a sub-agent completes its task
-- WHEN the sub-agent attempts to proceed without orchestrator validation
-- THEN the orchestrator SHALL block progression and run its own `validate` call
+- WHEN the sub-agent attempts to proceed without confirmation
+- THEN the orchestrator SHALL block progression and dispatch `drup-validator` before advancing
+
+#### Scenario: Validator cannot validate its own output
+
+- GIVEN `drup-validator` has no remediation capability
+- WHEN the orchestrator plans dispatches
+- THEN `drup-validator` SHALL never be dispatched to confirm its own prior report
 
 ### Requirement: Retry Loop
 

@@ -50,9 +50,9 @@ func TestDetect(t *testing.T) {
 			wantPrefix: []string{},
 		},
 		{
-			name:       "unknown environment (empty dir)",
+			name:       "unsupported environment (empty dir, no markers)",
 			setup:      func(t *testing.T, dir string) {},
-			wantEnv:    EnvUnknown,
+			wantEnv:    EnvUnsupported,
 			wantPrefix: []string{},
 		},
 		{

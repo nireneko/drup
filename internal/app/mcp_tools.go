@@ -9,11 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nireneko/drup/internal/coreupgrade"
 	"github.com/nireneko/drup/internal/drupalorg"
 	"github.com/nireneko/drup/internal/envdetect"
 	drupexec "github.com/nireneko/drup/internal/exec"
 	"github.com/nireneko/drup/internal/mcp"
 	"github.com/nireneko/drup/internal/patch"
+	"github.com/nireneko/drup/internal/patchreconcile"
 	"github.com/nireneko/drup/internal/report"
 	"github.com/nireneko/drup/internal/scan"
 )
@@ -60,6 +62,9 @@ func WireMCPTools(s *mcp.Server) {
 	s.RegisterTool("generate_report", realHandleGenerateReport)
 	s.RegisterTool("module_info", realHandleModuleInfo)
 	s.RegisterTool("drupal_version_matrix", realHandleDrupalVersionMatrix)
+	s.RegisterTool("core_upgrade_check", realHandleCoreUpgradeCheck)
+	s.RegisterTool("core_upgrade_apply", realHandleCoreUpgradeApply)
+	s.RegisterTool("patch_reconcile", realHandlePatchReconcile)
 }
 
 func realHandleScan(args json.RawMessage) (json.RawMessage, error) {
@@ -1179,4 +1184,162 @@ func realHandleDrupalVersionMatrix(args json.RawMessage) (json.RawMessage, error
 func isPHPCompatible(phpVer, phpMin, phpRecommended string) bool {
 	// Simple comparison: phpVer >= phpMin.
 	return phpVer >= phpMin
+}
+
+// --- Core upgrade + patch reconcile tool handlers ---
+
+func realHandleCoreUpgradeCheck(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath string `json:"project_path"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if params.ProjectPath == "" {
+		return nil, fmt.Errorf("project_path is required")
+	}
+	if !filepath.IsAbs(params.ProjectPath) {
+		return nil, fmt.Errorf("project_path must be an absolute path: %s", params.ProjectPath)
+	}
+	if strings.Contains(params.ProjectPath, "..") {
+		return nil, fmt.Errorf("project_path must not contain '..' segments")
+	}
+
+	detection, err := defaultEnvDetector.Detect(params.ProjectPath, false)
+	if err != nil {
+		return nil, err
+	}
+	if detection.Environment == envdetect.EnvUnsupported {
+		result := map[string]interface{}{
+			"current_version":        "",
+			"next_version":           "",
+			"composer_patch_preview": "",
+			"supported":              false,
+		}
+		return json.Marshal(result)
+	}
+
+	currentVersion, err := coreCurrentVersion(params.ProjectPath)
+	if err != nil {
+		return nil, err
+	}
+
+	check, err := coreupgrade.NextMajor(currentVersion)
+	if err != nil {
+		return nil, err
+	}
+
+	preview := ""
+	if check.Available {
+		composerData, rerr := os.ReadFile(filepath.Join(params.ProjectPath, "composer.json"))
+		if rerr != nil {
+			return nil, fmt.Errorf("read composer.json: %w", rerr)
+		}
+		diff, _, perr := coreupgrade.PreviewComposerPatch(composerData, check.Constraint)
+		if perr != nil {
+			return nil, perr
+		}
+		preview = diff
+	}
+
+	result := map[string]interface{}{
+		"current_version":        currentVersion,
+		"next_version":           check.NextVersion,
+		"composer_patch_preview": preview,
+		"supported":              true,
+	}
+	return json.Marshal(result)
+}
+
+// coreCurrentVersion resolves the installed drupal/core version: prefers
+// composer.lock's exact pinned version, falling back to the composer.json
+// require constraint when no lock file is present.
+func coreCurrentVersion(projectPath string) (string, error) {
+	if data, err := os.ReadFile(filepath.Join(projectPath, "composer.lock")); err == nil {
+		var lock struct {
+			Packages []struct {
+				Name    string `json:"name"`
+				Version string `json:"version"`
+			} `json:"packages"`
+		}
+		if json.Unmarshal(data, &lock) == nil {
+			for _, p := range lock.Packages {
+				if p.Name == drupalCorePackageName {
+					return strings.TrimPrefix(p.Version, "v"), nil
+				}
+			}
+		}
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectPath, "composer.json"))
+	if err != nil {
+		return "", fmt.Errorf("read composer.json: %w", err)
+	}
+	var doc struct {
+		Require map[string]string `json:"require"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return "", fmt.Errorf("parse composer.json: %w", err)
+	}
+	for _, key := range []string{"drupal/core-recommended", drupalCorePackageName} {
+		if v, ok := doc.Require[key]; ok {
+			return v, nil
+		}
+	}
+	return "", fmt.Errorf("drupal/core not found in composer.json or composer.lock")
+}
+
+// drupalCorePackageName is the composer package name for Drupal core itself.
+const drupalCorePackageName = "drupal/core"
+
+func realHandleCoreUpgradeApply(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath   string `json:"project_path"`
+		TargetVersion string `json:"target_version"`
+		DryRun        bool   `json:"dry_run"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if params.ProjectPath == "" {
+		return nil, fmt.Errorf("project_path is required")
+	}
+	if params.TargetVersion == "" {
+		return nil, fmt.Errorf("target_version is required")
+	}
+
+	result, err := coreupgrade.Apply(params.ProjectPath, params.TargetVersion, params.DryRun)
+	if err != nil {
+		return nil, err
+	}
+
+	response := map[string]interface{}{
+		"success":             result.Success,
+		"report":              result.Report,
+		"rollback_checkpoint": result.RollbackCheckpoint,
+		"stderr":              result.Stderr,
+	}
+	return json.Marshal(response)
+}
+
+func realHandlePatchReconcile(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		Module          string `json:"module_machine_name"`
+		CurrentPatchURL string `json:"current_patch_url"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if !moduleNamePattern.MatchString(params.Module) {
+		return nil, fmt.Errorf("invalid module machine name: %s", params.Module)
+	}
+	if params.CurrentPatchURL == "" {
+		return nil, fmt.Errorf("current_patch_url is required")
+	}
+
+	result, err := patchreconcile.Reconcile(params.Module, params.CurrentPatchURL)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(result)
 }

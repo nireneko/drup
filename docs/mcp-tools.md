@@ -1,6 +1,8 @@
 # drup MCP Tools
 
-The `drup` binary exposes **17 MCP tools** over stdio (JSON-RPC 2.0). These tools cover the full Drupal upgrade pipeline: environment detection, deprecation scanning, automatic fixing, contrib module management, patching, custom code refactoring, validation, and reporting.
+The `drup` binary exposes **20 MCP tools** over stdio (JSON-RPC 2.0). These tools cover the full Drupal upgrade pipeline: environment detection, deprecation scanning, automatic fixing, contrib module management, patching, core-version bumps, custom code refactoring, validation, and reporting.
+
+All 20 tools are deterministic Go code with zero AI/LLM calls. The AI agent (invoked via the `/drup` slash command in Claude Code, OpenCode, or Codex — see the [main README](../README.md#deterministic-work-vs-orchestration)) only decides *when* to call each tool and how to react to its result; it never re-implements what a tool already does.
 
 ## Tool Index
 
@@ -45,6 +47,14 @@ The `drup` binary exposes **17 MCP tools** over stdio (JSON-RPC 2.0). These tool
 | 15 | `generate_report` | Report | Generate JSON + Markdown reports |
 | 16 | `module_info` | Research | Module metadata from Drupal.org |
 | 17 | `drupal_version_matrix` | Preflight | Drupal/PHP compatibility lookup |
+
+### Core Upgrade / Patch Reconcile
+
+| # | Tool | Phase | Purpose |
+|---|------|-------|---------|
+| 18 | `core_upgrade_check` | Research | Read-only: next major version + composer.json patch preview |
+| 19 | `core_upgrade_apply` | Fix | Clean-tree check + git checkpoint, then mutate composer.json (or dry-run preview only) |
+| 20 | `patch_reconcile` | Validation | Analysis-only: is an applied patch obsolete, still needed, or superseded? |
 
 ---
 
@@ -620,6 +630,101 @@ Look up Drupal and PHP version compatibility.
 
 ---
 
+### 18. `core_upgrade_check`
+
+Read-only check for the next Drupal core major version and a preview of the `composer.json` change needed to reach it. Never mutates anything.
+
+**Input:**
+```json
+{
+  "project_path": "/path/to/drupal-project"
+}
+```
+
+**Output:**
+```json
+{
+  "current_version": "10.3.0",
+  "next_version": "11.0.0",
+  "composer_patch_preview": "--- composer.json\n+++ composer.json\n@@ ...",
+  "supported": true
+}
+```
+
+**Environment detection:** if `detect_env` reports `EnvUnsupported` for `project_path`, returns `{ "supported": false }` with empty version fields instead of erroring.
+
+**Error states:** `project_path` not absolute or contains `..` segments, `drupal/core` missing from `composer.json`/`composer.lock`.
+
+---
+
+### 19. `core_upgrade_apply`
+
+Bumps the Drupal core version constraint in `composer.json`. Requires a **clean git tree**; on a real apply (not `dry_run`) it commits a git checkpoint first so the change can always be rolled back.
+
+**Input:**
+```json
+{
+  "project_path": "/path/to/drupal-project",
+  "target_version": "11.0.9",
+  "dry_run": true
+}
+```
+
+**Output:**
+```json
+{
+  "success": true,
+  "report": "--- composer.json\n+++ composer.json\n@@ ...",
+  "rollback_checkpoint": "abc123def456",
+  "stderr": ""
+}
+```
+
+**Behavior:**
+- `dry_run: true` → returns the diff preview only; nothing on disk changes and `rollback_checkpoint` is empty.
+- `dry_run: false` → refuses if the git working tree is dirty; otherwise commits a checkpoint (returned as `rollback_checkpoint`), then mutates `composer.json`.
+
+**Rollback:** revert to `rollback_checkpoint` via `git reset --hard <sha>` (or an equivalent guarded revert) to undo the mutation.
+
+**Error states:** dirty working tree, relative/`..` path in `project_path`, invalid `target_version`.
+
+---
+
+### 20. `patch_reconcile`
+
+Analysis-only: given a patch currently applied for a module, checks Drupal.org's issue queue (JSON `api-d7`, no HTML scraping) to determine whether it is still needed, obsolete (already merged upstream), or superseded by a newer patch.
+
+**Input:**
+```json
+{
+  "module_machine_name": "webform",
+  "current_patch_url": "https://www.drupal.org/files/issues/2025-01-15/webform-d11.patch"
+}
+```
+
+**Output:**
+```json
+{
+  "newer_patches": [
+    {
+      "url": "https://www.drupal.org/files/issues/2025-06-01/webform-d11-v2.patch",
+      "status": "RTBC",
+      "date": "2025-06-01",
+      "is_patch": true,
+      "issue_nid": "3412345"
+    }
+  ],
+  "is_still_needed": true,
+  "recommendation": "Newer patch available on the same issue — consider re-applying"
+}
+```
+
+**Adaptation:** when the upstream patch is rejected/closed without merging, the caller can preserve the original issue reference (issue nid) in the patch header and `composer.json` description while adapting to the current codebase.
+
+**Error states:** invalid `module_machine_name` format, empty `current_patch_url`, Drupal.org API unavailable.
+
+---
+
 ## Tool Dependencies
 
 ```
@@ -637,6 +742,13 @@ drupalorg (package)
 
 report (package)
   └── generate_report
+
+coreupgrade (package)
+  ├── core_upgrade_check (NextMajor, PreviewComposerPatch — read-only)
+  └── core_upgrade_apply (Apply/Rollback — clean-tree + git checkpoint)
+
+patchreconcile (package)
+  └── patch_reconcile (Reconcile, via drupalorg.SearchIssuesAPI — JSON api-d7 only)
 ```
 
 ## Security Model

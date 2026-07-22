@@ -31,9 +31,9 @@ func TestCheckRelease_HasD11(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	orig := httpClient
-	httpClient = srv.Client()
-	defer func() { httpClient = orig }()
+	orig := HTTPClient
+	HTTPClient = srv.Client()
+	defer func() { HTTPClient = orig }()
 
 	// Override the base URL.
 	origBase := releaseBaseURL
@@ -67,9 +67,9 @@ func TestCheckRelease_NoD11(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	orig := httpClient
-	httpClient = srv.Client()
-	defer func() { httpClient = orig }()
+	orig := HTTPClient
+	HTTPClient = srv.Client()
+	defer func() { HTTPClient = orig }()
 
 	origBase := releaseBaseURL
 	releaseBaseURL = srv.URL + "/release-history/%s/current"
@@ -99,13 +99,13 @@ func TestSearchIssuesAPI(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	orig := httpClient
-	httpClient = srv.Client()
-	defer func() { httpClient = orig }()
+	orig := HTTPClient
+	HTTPClient = srv.Client()
+	defer func() { HTTPClient = orig }()
 
-	origBase := apiD7BaseURL
-	apiD7BaseURL = srv.URL + "/api-d7/node.json?field_project_machine_name=%s"
-	defer func() { apiD7BaseURL = origBase }()
+	origBase := APID7BaseURL
+	APID7BaseURL = srv.URL + "/api-d7/node.json?field_project_machine_name=%s"
+	defer func() { APID7BaseURL = origBase }()
 
 	patches, err := SearchIssuesAPI("token")
 	if err != nil {
@@ -140,13 +140,13 @@ func TestSearchPatches_API_D7Primary(t *testing.T) {
 	}))
 	defer htmlSrv.Close()
 
-	orig := httpClient
-	httpClient = apiSrv.Client()
-	defer func() { httpClient = orig }()
+	orig := HTTPClient
+	HTTPClient = apiSrv.Client()
+	defer func() { HTTPClient = orig }()
 
-	origAPI := apiD7BaseURL
-	apiD7BaseURL = apiSrv.URL + "/api-d7/node.json?field_project_machine_name=%s"
-	defer func() { apiD7BaseURL = origAPI }()
+	origAPI := APID7BaseURL
+	APID7BaseURL = apiSrv.URL + "/api-d7/node.json?field_project_machine_name=%s"
+	defer func() { APID7BaseURL = origAPI }()
 
 	origIssue := issueBaseURL
 	issueBaseURL = htmlSrv.URL + "/project/issues/%s"
@@ -188,17 +188,17 @@ func TestSearchPatches_FixtureHTML(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	orig := httpClient
-	httpClient = srv.Client()
-	defer func() { httpClient = orig }()
+	orig := HTTPClient
+	HTTPClient = srv.Client()
+	defer func() { HTTPClient = orig }()
 
 	origBase := issueBaseURL
 	issueBaseURL = srv.URL + "/project/issues/%s"
 	defer func() { issueBaseURL = origBase }()
 
-	origAPI := apiD7BaseURL
-	apiD7BaseURL = srv.URL + "/api-d7/node.json?field_project_machine_name=%s"
-	defer func() { apiD7BaseURL = origAPI }()
+	origAPI := APID7BaseURL
+	APID7BaseURL = srv.URL + "/api-d7/node.json?field_project_machine_name=%s"
+	defer func() { APID7BaseURL = origAPI }()
 
 	patches, err := SearchPatches("token")
 	if err != nil {
@@ -261,9 +261,9 @@ func TestUpgradePath_FindsStableRelease(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	orig := httpClient
-	httpClient = srv.Client()
-	defer func() { httpClient = orig }()
+	orig := HTTPClient
+	HTTPClient = srv.Client()
+	defer func() { HTTPClient = orig }()
 
 	origURL := releaseHistoryVersionURL
 	releaseHistoryVersionURL = srv.URL + "/release-history/%s/%s"
@@ -309,9 +309,9 @@ func TestUpgradePath_NoCompatibleReleases(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	orig := httpClient
-	httpClient = srv.Client()
-	defer func() { httpClient = orig }()
+	orig := HTTPClient
+	HTTPClient = srv.Client()
+	defer func() { HTTPClient = orig }()
 
 	origURL := releaseHistoryVersionURL
 	releaseHistoryVersionURL = srv.URL + "/release-history/%s/%s"
@@ -355,9 +355,9 @@ func TestUpgradePath_FallbackToCurrentVersion(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	orig := httpClient
-	httpClient = srv.Client()
-	defer func() { httpClient = orig }()
+	orig := HTTPClient
+	HTTPClient = srv.Client()
+	defer func() { HTTPClient = orig }()
 
 	origURL := releaseHistoryVersionURL
 	releaseHistoryVersionURL = srv.URL + "/release-history/%s/%s"
@@ -406,9 +406,9 @@ func TestModuleInfo_FetchesMetadata(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	orig := httpClient
-	httpClient = srv.Client()
-	defer func() { httpClient = orig }()
+	orig := HTTPClient
+	HTTPClient = srv.Client()
+	defer func() { HTTPClient = orig }()
 
 	origNode := moduleNodeURL
 	moduleNodeURL = srv.URL + "/api-d7/node.json?name=%s"
@@ -442,9 +442,9 @@ func TestModuleInfo_NotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	orig := httpClient
-	httpClient = srv.Client()
-	defer func() { httpClient = orig }()
+	orig := HTTPClient
+	HTTPClient = srv.Client()
+	defer func() { HTTPClient = orig }()
 
 	origNode := moduleNodeURL
 	moduleNodeURL = srv.URL + "/api-d7/node.json?name=%s"

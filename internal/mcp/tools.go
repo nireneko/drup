@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 )
 
-// defaultTools returns the 17 MCP tool handlers (7 existing + 10 new).
+// defaultTools returns the 20 MCP tool handlers (7 existing + 10 prior + 3 core-upgrade/patch-reconcile).
 func defaultTools() map[string]ToolHandler {
 	return map[string]ToolHandler{
 		// Existing tools.
@@ -26,6 +26,9 @@ func defaultTools() map[string]ToolHandler {
 		"generate_report":       handleGenerateReport,
 		"module_info":           handleModuleInfo,
 		"drupal_version_matrix": handleDrupalVersionMatrix,
+		"core_upgrade_check":    handleCoreUpgradeCheck,
+		"core_upgrade_apply":    handleCoreUpgradeApply,
+		"patch_reconcile":       handlePatchReconcile,
 	}
 }
 
@@ -325,6 +328,56 @@ func handleDrupalVersionMatrix(args json.RawMessage) (json.RawMessage, error) {
 	result := map[string]interface{}{
 		"drupal_version":   "",
 		"php_requirements": map[string]string{},
+	}
+	return json.Marshal(result)
+}
+
+func handleCoreUpgradeCheck(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath string `json:"project_path"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	result := map[string]interface{}{
+		"current_version":        "",
+		"next_version":           "",
+		"composer_patch_preview": "",
+		"supported":              false,
+	}
+	return json.Marshal(result)
+}
+
+func handleCoreUpgradeApply(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath   string `json:"project_path"`
+		TargetVersion string `json:"target_version"`
+		DryRun        bool   `json:"dry_run"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	result := map[string]interface{}{
+		"success":             false,
+		"report":              "",
+		"rollback_checkpoint": "",
+		"stderr":              "not implemented",
+	}
+	return json.Marshal(result)
+}
+
+func handlePatchReconcile(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		Module          string `json:"module_machine_name"`
+		CurrentPatchURL string `json:"current_patch_url"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	result := map[string]interface{}{
+		"newer_patches":   []interface{}{},
+		"is_still_needed": false,
+		"recommendation":  "",
 	}
 	return json.Marshal(result)
 }

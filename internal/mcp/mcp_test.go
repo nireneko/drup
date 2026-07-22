@@ -120,8 +120,8 @@ func TestServer_ListTools(t *testing.T) {
 	if !ok {
 		t.Fatal("missing tools array in result")
 	}
-	if len(tools) != 17 {
-		t.Errorf("len(tools) = %d, want 17", len(tools))
+	if len(tools) != 20 {
+		t.Errorf("len(tools) = %d, want 20", len(tools))
 	}
 }
 

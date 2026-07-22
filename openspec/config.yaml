@@ -2,8 +2,23 @@
 schema: spec-driven
 
 context: |
-  Tech stack: Go 1.26.0, cobra CLI, OpenAI-compatible LLM client
-  Architecture: cmd/drup entrypoint, internal/ packages (exec, scan, drupalorg, patch, llm, heal, gitops, mcp, packaging, installer, update, state)
+  Tech stack: Go 1.25.10, no third-party CLI framework (manual `switch args[0]` dispatch in internal/app/app.go), no LLM client in Go code — AI reasoning lives entirely in agent prompts (SKILL.md/sub-agents), not in the binary
+  Architecture: cmd/drup entrypoint, internal/ packages:
+    - app: CLI dispatch (Run(args []string)) + MCP tool handlers
+    - envdetect: dev environment detection (ddev/lando/docker4drupal/direct), includes EnvUnsupported terminal state
+    - exec: subprocess runner (composer, drush, rector, phpstan, git)
+    - scan: upgrade_status:analyze JSON parser
+    - drupalorg: release-history + api-d7 issue search
+    - patch: .patch download, git apply, composer.json registration
+    - patchreconcile: patch lifecycle analysis (newer/obsolete/still-needed) over drupalorg
+    - coreupgrade: next-major version check + safe composer.json mutation (dry-run preview, git checkpoint, rollback)
+    - gitops: git clean check, atomic commits, branches
+    - report: JSON + Markdown report generation
+    - mcp: MCP server (JSON-RPC 2.0, stdio)
+    - packaging: skill/agent/MCP templates (go:embed)
+    - installer: agent detection, asset writing, backup
+    - state: state.json with installed agents, pending_sync, models
+    - update: self-upgrade with checksum + atomic replacement
   Reference project: gentle-ai (same author, same conventions)
   Build: goreleaser, CI: GitHub Actions
   Style: gofmt, go vet

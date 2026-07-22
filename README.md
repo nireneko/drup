@@ -75,12 +75,14 @@ When running `drup install`, the binary detects which agents you have installed 
 
 | What gets installed | Path | Purpose |
 |---|---|---|
-| **Orchestrator skill** | `~/.claude/skills/drup/SKILL.md` | 7-phase pipeline. Invoked with `/drup <path>` |
+| **Orchestrator skill** | `~/.claude/skills/drup/SKILL.md` | 7-stage pipeline. Invoked with `/drup <path>`. Pure coordinator: zero Bash/MCP calls, only dispatches sub-agents and talks to the user |
 | **Sub-agents** | `~/.claude/agents/drup-preflight.md` | Preflight: detects environment, installs dependencies |
-| | `~/.claude/agents/drup-contrib.md` | Contrib modules: releases, patches, commits |
+| | `~/.claude/agents/drup-rector.md` | Rector: deterministic auto-fix (`autofix`) on custom modules/themes |
+| | `~/.claude/agents/drup-contrib.md` | Contrib modules: releases, patches, core-version bump, commits |
 | | `~/.claude/agents/drup-custom.md` | Custom code: refactor with retry and escalation |
 | | `~/.claude/agents/drup-theme.md` | Themes: twig/.theme deprecations |
-| **MCP server** | `~/.claude/.mcp.json` | Registers `drup mcp` as an MCP server with 17 tools |
+| | `~/.claude/agents/drup-validator.md` | Validator: owns every `scan`/`validate`/`upgrade_scan` call — the only agent allowed to confirm a gate; generates the final report |
+| **MCP server** | `~/.claude/.mcp.json` | Registers `drup mcp` as an MCP server with 20 tools |
 
 **Usage**: open Claude Code in the Drupal project and run:
 
@@ -127,7 +129,7 @@ All 3 agents share the same MCP configuration. The `.mcp.json` (or `mcp.json`) f
 }
 ```
 
-The MCP server communicates over **stdio** (JSON-RPC 2.0). No port needed, no network needed — the agent launches the `drup mcp` process and communicates via stdin/stdout. The 17 exposed tools are documented in [MCP Tools](#mcp-tools) and in [`docs/mcp-tools.md`](docs/mcp-tools.md).
+The MCP server communicates over **stdio** (JSON-RPC 2.0). No port needed, no network needed — the agent launches the `drup mcp` process and communicates via stdin/stdout. The 20 exposed tools are documented in [MCP Tools](#mcp-tools) and in [`docs/mcp-tools.md`](docs/mcp-tools.md).
 
 ### Verifying the installation
 
@@ -183,56 +185,59 @@ drup mcp                         # MCP server (for AI agents)
 
 ---
 
-## The Pipeline (7 phases)
+## The Pipeline (7 stages)
+
+The orchestrator itself never executes anything — it only reads sub-agent reports, dispatches the next sub-agent, and talks to the user. All the steps below are carried out by dedicated sub-agents calling MCP tools; see [Deterministic work vs. orchestration](#deterministic-work-vs-orchestration).
 
 ```
-[0. Preflight]      [1. Static]           [2. Resolution]           [3. Self-healing]      [4. Output]
-clean git           composer require      contrib:                  re-analyze + phpstan   branch + commits
-drush status    →   upgrade_status    →   · D11 release?        →   · ok → next        →   final report
-detect core         drupal-rector         · issue patch?            · fails → retry        human pending list
-version             (autofix ~80%)        custom: agent edits       · ×2 → escalate model  (PR optional)
+1. PREFLIGHT   2. DEP CHECK    3. RECTOR       4. CONTRIB LOOP    5. CUSTOM/THEME LOOP   6. FINAL VALIDATION   7. REPORT
+drup-preflight drup-validator  drup-rector     drup-contrib       drup-custom/           drup-validator         drup-validator
+env + core ver  confirms deps  autofix (0 tok)  per module:         drup-theme             total_errors == 0?    generate_report
+                                                 release/patch/      per file:              else re-enter          → UPGRADE-REPORT.md
+                                                 core-upgrade         validate → commit       loop 4/5
 ```
 
-### Phase 0 — Preflight
-Verifies clean git, composer/drush available, core version. Installs missing dependencies (`upgrade_status`, `drupal-rector`, `phpstan-drupal`).
+### Stage 1 — Preflight
+`drup-preflight` verifies clean git, composer/drush availability, and core version, and installs missing dev dependencies (`upgrade_status`, `drupal-rector`, `phpstan-drupal`). An `unsupported` environment result is a **terminal state** — the pipeline stops and reports to the user; it never proceeds to later stages.
 
-### Phase 1 — Rector (0 tokens)
-Runs `drupal-rector` with D11 rule sets over custom modules and themes. Resolves ~80% of standard deprecations deterministically. Atomic commit.
+### Stage 2 — Dep Check
+`drup-validator` confirms Stage 1's dependency install actually took effect. `drup-preflight` never confirms its own work.
 
-### Phase 2 — Contrib Modules
-For each contrib module with errors:
-1. `contrib_check` → queries `updates.drupal.org/release-history` (Drupal core's Update module canonical feed)
-2. D11-compatible release available? → `composer require` → commit
-3. No release? → searches Drupal.org issues (api-d7 + HTML scraper) → prioritizes RTBC patches → downloads and applies
-4. No patches? → the agent generates a `.patch` with the fix
-5. **Validation gate**: `validate(scope=contrib, module=X)` → 0 errors = commit, >0 = retry
+### Stage 3 — Rector (0 tokens)
+`drup-rector` runs `drupal-rector` with D11 rule sets over custom modules and themes, resolving ~80% of standard deprecations deterministically. `drup-validator` confirms `total_errors == 0` before `drup-rector` commits.
 
-### Phase 3 — Custom Code
-For each custom file with deprecations:
-1. Agent reads the file + error message (±30 lines)
-2. Applies the minimal fix
-3. `validate(scope=custom, file=Y)` → 0 errors? → commit
-4. Fails? → retries with validator feedback (×2)
-5. Still failing? → escalates to a more powerful model (×1)
-6. Still failing? → pending list for human review
+### Stage 4 — Contrib Loop
+For each contrib module with errors, `drup-contrib`:
+1. `contrib_check` / `contrib_upgrade_path` → is there a D11-compatible release?
+2. No release? → `issue_patches` + `patch_reconcile` (analysis-only, JSON api-d7) → apply the best patch, or `create_patch` if none exists
+3. Core-version bump needed? → `core_upgrade_check` (preview) then `core_upgrade_apply` (requires clean tree, creates a git checkpoint before mutating `composer.json`; supports `dry_run`)
+4. `drup-validator` confirms `total_errors == 0` for that module before `drup-contrib` commits
 
-### Phase 4 — Final Validation
-`validate(global)` → `total_errors == 0`? → final report. Errors remain → iterates with the appropriate sub-agent.
+### Stage 5 — Custom/Theme Loop
+For each custom PHP file or twig/theme file with deprecations, `drup-custom` / `drup-theme` applies the minimal fix; `drup-validator` confirms per-file before a commit. Failures retry with validator feedback (max 2), then escalate model (haiku → sonnet), then go to the pending human list.
+
+### Stage 6 — Final Validation
+`drup-validator` re-runs a global scan. `total_errors == 0` → Stage 7. Otherwise the remaining errors are classified and routed back into Stage 4 or 5 for just those items.
+
+### Stage 7 — Report
+`drup-validator` calls `generate_report`, producing `UPGRADE-REPORT.md` with a summary, per-module/per-file results, and the pending human list.
 
 ---
 
 ## Validation Gates (strict rules)
 
-The orchestrator NEVER trusts a sub-agent's self-declaration:
+The orchestrator NEVER trusts a sub-agent's self-declaration, and it never validates anything itself — only `drup-validator` does:
 
 | Rule | Description |
 |---|---|
-| **External validation** | The orchestrator runs `validate` — the sub-agent never validates its own work |
-| **No self-approval** | A sub-agent saying "done" means nothing. Only `validate` == 0 counts |
+| **External validation** | Only `drup-validator` calls `scan`/`validate`/`upgrade_scan`. No other sub-agent — and never the orchestrator — validates a sub-agent's own work |
+| **No self-approval** | A sub-agent saying "done" means nothing. Only a `drup-validator` report showing `total_errors == 0` counts |
 | **Retry with evidence** | If it fails, the same sub-agent receives the validator's output as feedback |
-| **Max 2 retries** | Per scope. Then escalates model (haiku → sonnet). Then human list |
-| **Phase gate** | No phase advances until ALL items pass validation |
-| **Commit only post-gate** | Each commit runs ONLY after `validate` == 0 |
+| **Max 2 retries** | Per scope on haiku. Then escalates model (haiku → sonnet). Then pending human list |
+| **Phase gate** | No stage advances until ALL items pass validation |
+| **Commit only post-gate** | Each commit runs ONLY after `drup-validator` reports 0 errors for that exact scope/target |
+
+See [`openspec/changes/drupal-upgrade-orchestrator/specs/`](openspec/changes/drupal-upgrade-orchestrator/specs/) for the full spec-driven requirements behind this flow, and [`openspec/changes/drupal-upgrade-orchestrator/design.md`](openspec/changes/drupal-upgrade-orchestrator/design.md) for the architecture decisions.
 
 ---
 
@@ -267,7 +272,7 @@ The binary only does deterministic work. The full flow is executed by an **AI ag
 
 ### The bridge (MCP)
 
-`drup`'s MCP server exposes 17 tools with JSON types and schemas. It's the standard protocol that connects the binary with any compatible agent:
+`drup`'s MCP server exposes 20 tools with JSON types and schemas. It's the standard protocol that connects the binary with any compatible agent:
 
 ```
 Claude Code ───┐
@@ -305,6 +310,25 @@ Codex ─────────┘
 | `generate_report` | `project_path, report_type?, include_*?` | `{ json_path, markdown_path, summary }` | Generates JSON + Markdown upgrade report |
 | `module_info` | `module, include_maintainers?, include_deps?` | `{ title, downloads, last_release, maintainers, deps }` | Module metadata from Drupal.org |
 | `drupal_version_matrix` | `drupal_version?, php_version?` | `{ php_requirements, supported_until, upgrade_path }` | Drupal/PHP compatibility lookup |
+
+### Core Upgrade / Patch Reconcile (3 added)
+
+| Tool | Input | Output | Purpose |
+|---|---|---|---|
+| `core_upgrade_check` | `project_path` | `{ current_version, next_version, composer_patch_preview, supported }` | Read-only: next major version + composer.json patch preview |
+| `core_upgrade_apply` | `project_path, target_version, dry_run` | `{ success, report, rollback_checkpoint, stderr }` | Requires a clean git tree; `dry_run` previews only; on apply, commits a git checkpoint before mutating `composer.json` |
+| `patch_reconcile` | `module_machine_name, current_patch_url` | `{ newer_patches[], is_still_needed, recommendation }` | Analysis-only: is an already-applied patch obsolete, still needed, or superseded? |
+
+---
+
+## Deterministic work vs. orchestration
+
+`drup` splits responsibility strictly along one rule: **all deterministic work happens in the Go binary/MCP tools; the AI agent only orchestrates and talks to the user.**
+
+- **Go/MCP tools** (this binary): version checking, composer.json mutation, patch analysis, git operations, drush/composer execution, report generation — all 20 tools above run without spending a single AI token.
+- **Agent orchestration** (`SKILL.md` + sub-agents, installed via `drup install`): the `/drup` skill is a pure coordinator with zero execute permission — it never calls Bash or an MCP tool directly. It only dispatches sub-agents (which do call the MCP tools) and relays their structured reports to the user.
+
+This means `/drup <path>` is **not a shell command** — it is a slash command that loads an AI agent skill in Claude Code, OpenCode, or Codex. See [`openspec/changes/drupal-upgrade-orchestrator/specs/`](openspec/changes/drupal-upgrade-orchestrator/specs/) for the requirements this split is built on.
 
 ---
 

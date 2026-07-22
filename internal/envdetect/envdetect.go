@@ -18,6 +18,12 @@ const (
 	EnvDocker4Drupal Environment = "docker4drupal"
 	EnvDirect        Environment = "direct"
 	EnvUnknown       Environment = "unknown"
+	// EnvUnsupported is the terminal state reported when a project directory
+	// exists but contains none of the recognized environment markers
+	// (.ddev, .lando.yml, a Drupal docker-compose.yml, or composer.json).
+	// Callers (preflight) MUST treat this as a hard stop and MUST NOT proceed
+	// to later pipeline stages.
+	EnvUnsupported Environment = "unsupported"
 )
 
 // Detection holds the result of environment detection.
@@ -132,9 +138,9 @@ func detect(projectPath string) *Detection {
 		}
 	}
 
-	// 5. Unknown
+	// 5. No recognized marker found — terminal unsupported state.
 	return &Detection{
-		Environment:   EnvUnknown,
+		Environment:   EnvUnsupported,
 		CommandPrefix: []string{},
 		DetectedAt:    now,
 	}

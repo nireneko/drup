@@ -11,9 +11,11 @@ import (
 	"time"
 )
 
-// httpClient is the HTTP client for Drupal.org requests.
-// Package-level var for testability.
-var httpClient = &http.Client{Timeout: 30 * time.Second}
+// HTTPClient is the HTTP client for Drupal.org requests.
+// Exported package-level var so other internal packages (e.g. patchreconcile)
+// can drive real httptest-backed integration tests through this package's
+// existing HTTP + parsing logic instead of duplicating it.
+var HTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 // releaseBaseURL is the template for release-history lookups.
 // Package-level var for testability.
@@ -23,9 +25,10 @@ var releaseBaseURL = "https://updates.drupal.org/release-history/%s/current"
 // Package-level var for testability.
 var issueBaseURL = "https://www.drupal.org/project/issues/%s"
 
-// apiD7BaseURL is the template for api-d7 node queries.
-// Package-level var for testability.
-var apiD7BaseURL = "https://www.drupal.org/api-d7/node.json?field_project_machine_name=%s"
+// APID7BaseURL is the template for api-d7 node queries (JSON API — no HTML
+// parsing). Exported for the same cross-package testability reason as
+// HTTPClient.
+var APID7BaseURL = "https://www.drupal.org/api-d7/node.json?field_project_machine_name=%s"
 
 // ReleaseInfo contains D11 compatibility data for a module.
 type ReleaseInfo struct {
@@ -83,7 +86,7 @@ type apiD7NodeDetail struct {
 // D11 compatibility.
 func CheckRelease(module string) (*ReleaseInfo, error) {
 	url := fmt.Sprintf(releaseBaseURL, module)
-	resp, err := httpClient.Get(url)
+	resp, err := HTTPClient.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("fetch release history for %s: %w", module, err)
 	}
@@ -140,8 +143,8 @@ func parseReleaseXML(module string, data []byte) (*ReleaseInfo, error) {
 // SearchIssuesAPI queries the Drupal api-d7 endpoint for issue nodes.
 // Returns patch info entries extracted from the API response.
 func SearchIssuesAPI(module string) ([]PatchInfo, error) {
-	url := fmt.Sprintf(apiD7BaseURL, module)
-	resp, err := httpClient.Get(url)
+	url := fmt.Sprintf(APID7BaseURL, module)
+	resp, err := HTTPClient.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("fetch api-d7 issues for %s: %w", module, err)
 	}
@@ -195,7 +198,7 @@ func SearchPatches(query string) ([]PatchInfo, error) {
 
 	// Fall back to HTML scraping.
 	url := fmt.Sprintf(issueBaseURL, query)
-	resp, err := httpClient.Get(url)
+	resp, err := HTTPClient.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("fetch issues for %s: %w", query, err)
 	}
@@ -355,7 +358,7 @@ var releaseHistoryVersionURL = "https://updates.drupal.org/release-history/%s/%s
 // FetchReleaseHistory fetches the full release-history XML for a module at a specific Drupal version.
 func FetchReleaseHistory(module, drupalVersion string) (*releaseHistoryFull, error) {
 	url := fmt.Sprintf(releaseHistoryVersionURL, module, drupalVersion)
-	resp, err := httpClient.Get(url)
+	resp, err := HTTPClient.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("fetch release history for %s/%s: %w", module, drupalVersion, err)
 	}
@@ -499,7 +502,7 @@ func ModuleInfo(module string) (*ModuleMetadata, error) {
 
 	// Fetch node data.
 	url := fmt.Sprintf(moduleNodeURL, module)
-	resp, err := httpClient.Get(url)
+	resp, err := HTTPClient.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("fetch module info for %s: %w", module, err)
 	}
