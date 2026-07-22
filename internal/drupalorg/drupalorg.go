@@ -20,9 +20,9 @@ var HTTPClient = &http.Client{Timeout: 30 * time.Second}
 // SetHTTPClientForTest overrides the package-level HTTP client for testing.
 // Returns a cleanup function that restores the original client.
 func SetHTTPClientForTest(c *http.Client) func() {
-	orig := httpClient
-	httpClient = c
-	return func() { httpClient = orig }
+	orig := HTTPClient
+	HTTPClient = c
+	return func() { HTTPClient = orig }
 }
 
 // releaseBaseURL is the template for release-history lookups.
