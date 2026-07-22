@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/nireneko/drup/internal/coreupgrade"
 	"github.com/nireneko/drup/internal/drupalorg"
 	drupexec "github.com/nireneko/drup/internal/exec"
 	"github.com/nireneko/drup/internal/gitops"
@@ -57,7 +58,7 @@ func RunInit(args []string) error {
 
 // RunScan runs upgrade_status:analyze and outputs structured JSON.
 func RunScan(path string) error {
-	stdout, stderr, exitCode, err := drupexec.Run("drush", "-r", path, "upgrade_status:analyze", "--format=json")
+	stdout, stderr, exitCode, err := drupexec.Run("drush", "-r", path, "upgrade_status:analyze", "--all", "--format=json")
 	if err != nil {
 		return fmt.Errorf("exec drush: %w", err)
 	}
@@ -277,6 +278,11 @@ var osExecutableFn = os.Executable
 var osUserHomeDirFn = os.UserHomeDir
 var stateRemoveFn = statepkg.Remove
 
+// RunUpgradeCore override points for testability.
+var getwdFn = os.Getwd
+var isCleanFn = gitops.IsClean
+var execRunFn = drupexec.Run
+
 // RunUpgrade self-updates the binary. It uses the runtime's actual
 // GOOS/GOARCH for asset selection — GOOS/GOARCH environment overrides are
 // never honored — and delegates the download/verify/extract/replace flow to
@@ -462,6 +468,8 @@ func RunPreflight() error {
 
 	// 6. Enable upgrade_status module.
 	fmt.Println("Enabling upgrade_status module...")
+	// Delete conflicting update.settings config before enabling.
+	_, _, _, _ = drupexec.Run("drush", "config:delete", "update.settings")
 	_, stderr, exitCode, err := drupexec.Run("drush", "en", "upgrade_status", "-y")
 	if err != nil || exitCode != 0 {
 		results = append(results, PreflightResult{
@@ -519,6 +527,221 @@ func detectDrupalVersion(projectPath string) string {
 		}
 	}
 	return ""
+}
+
+// UpgradeCoreResult is the JSON output of RunUpgradeCore.
+type UpgradeCoreResult struct {
+	CurrentConstraint string `json:"current_constraint"`
+	TargetConstraint  string `json:"target_constraint"`
+	DryRun            bool   `json:"dry_run"`
+	Backup            string `json:"backup,omitempty"`
+	Checkpoint        string `json:"checkpoint,omitempty"`
+	ComposerExit      int    `json:"composer_exit,omitempty"`
+	DrushUpdbExit     int    `json:"drush_updb_exit,omitempty"`
+	VerifiedVersion   string `json:"verified_version,omitempty"`
+	Success           bool   `json:"success"`
+	AlreadyAtTarget   bool   `json:"already_at_target,omitempty"`
+}
+
+// RunUpgradeCore performs a deterministic Drupal core version upgrade.
+// It parses target version + --dry-run flag, calls coreupgrade.Apply,
+// then runs composer require, drush updb, and drush status verify.
+func RunUpgradeCore(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: drup upgrade-core <target-version> [--dry-run]")
+	}
+
+	targetVersion := ""
+	dryRun := false
+	for _, arg := range args {
+		switch {
+		case arg == "--dry-run":
+			dryRun = true
+		case strings.HasPrefix(arg, "-"):
+			continue
+		default:
+			if targetVersion == "" {
+				targetVersion = arg
+			}
+		}
+	}
+
+	if targetVersion == "" {
+		return fmt.Errorf("usage: drup upgrade-core <target-version> [--dry-run]")
+	}
+
+	cwd, err := getwdFn()
+	if err != nil {
+		return fmt.Errorf("get working directory: %w", err)
+	}
+
+	// Validate project path (security: absolute path, no traversal).
+	if err := coreupgrade.ValidateProjectPath(cwd); err != nil {
+		return err
+	}
+
+	composerPath := filepath.Join(cwd, "composer.json")
+	composerData, err := os.ReadFile(composerPath)
+	if err != nil {
+		return fmt.Errorf("composer.json not found in %s: %w", cwd, err)
+	}
+
+	// Parse current constraint.
+	var composerDoc map[string]json.RawMessage
+	if err := json.Unmarshal(composerData, &composerDoc); err != nil {
+		return fmt.Errorf("parse composer.json: %w", err)
+	}
+	var require map[string]string
+	if raw, ok := composerDoc["require"]; ok {
+		json.Unmarshal(raw, &require)
+	}
+
+	currentConstraint := ""
+	for _, pkg := range []string{"drupal/core-recommended", "drupal/core"} {
+		if c, ok := require[pkg]; ok {
+			currentConstraint = c
+			break
+		}
+	}
+
+	targetMajor, _ := coreupgrade.MajorVersion(targetVersion)
+	targetConstraint := fmt.Sprintf("^%d.0", targetMajor)
+
+	result := &UpgradeCoreResult{
+		CurrentConstraint: currentConstraint,
+		TargetConstraint:  targetConstraint,
+		DryRun:            dryRun,
+	}
+
+	// Check if already at target.
+	if currentConstraint == targetConstraint {
+		result.AlreadyAtTarget = true
+		result.Success = true
+		data, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println("already at target version")
+		fmt.Println(string(data))
+		return nil
+	}
+
+	// Check for clean working tree (unless dry-run).
+	if !dryRun {
+		clean, dirtyFiles, err := isCleanFn(cwd)
+		if err != nil {
+			return fmt.Errorf("check git status: %w", err)
+		}
+		if !clean {
+			return fmt.Errorf("working tree is dirty; commit or stash changes first: %s", strings.Join(dirtyFiles, ", "))
+		}
+	}
+
+	// Call coreupgrade.Apply for the composer.json mutation.
+	applyResult, err := coreupgrade.Apply(cwd, targetVersion, dryRun)
+	if err != nil {
+		return fmt.Errorf("core upgrade apply: %w", err)
+	}
+	if !applyResult.Success {
+		if applyResult.RollbackCheckpoint == "" && !dryRun {
+			return fmt.Errorf("core upgrade failed: %s", applyResult.Report)
+		}
+		if applyResult.RollbackCheckpoint != "" {
+			return fmt.Errorf("core upgrade failed (checkpoint: %s): %s", applyResult.RollbackCheckpoint, applyResult.Report)
+		}
+	}
+
+	result.Checkpoint = applyResult.RollbackCheckpoint
+	result.Backup = "composer.json.bak"
+
+	if dryRun {
+		result.Success = true
+		data, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	}
+
+	// Create backup (kept on failure for rollback, removed on success).
+	backupPath := composerPath + ".bak"
+	os.WriteFile(backupPath, composerData, 0o644)
+
+	// Disable advisory blocking before require.
+	_, stderr, exitCode, err := execRunFn("composer", "config", "policy.advisories.block", "false")
+	if err != nil {
+		return fmt.Errorf("composer config failed: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("composer config failed (exit %d): %s", exitCode, stderr)
+	}
+
+	// Run composer require with -W and --no-update.
+	composerArgs := []string{
+		"require",
+		fmt.Sprintf("drupal/core-recommended:%s", targetConstraint),
+		fmt.Sprintf("drupal/core-composer-scaffold:%s", targetConstraint),
+		fmt.Sprintf("drupal/core-project-message:%s", targetConstraint),
+		"-W",
+		"--no-update",
+	}
+	_, stderr, exitCode, err = execRunFn("composer", composerArgs...)
+	if err != nil {
+		return fmt.Errorf("composer not found or failed: %w", err)
+	}
+	result.ComposerExit = exitCode
+	if exitCode != 0 {
+		return fmt.Errorf("composer require failed (exit %d): %s", exitCode, stderr)
+	}
+
+	// Run composer update -W for full dependency resolution.
+	_, stderr, exitCode, err = execRunFn("composer", "update", "-W")
+	if err != nil {
+		return fmt.Errorf("composer update failed: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("composer update failed (exit %d): %s", exitCode, stderr)
+	}
+
+	// Run drush updb.
+	_, stderr, exitCode, err = execRunFn("drush", "updb", "-y")
+	if err != nil {
+		return fmt.Errorf("drush not found or failed: %w", err)
+	}
+	result.DrushUpdbExit = exitCode
+	if exitCode != 0 {
+		return fmt.Errorf("drush updb failed (checkpoint: %s, exit %d): %s", applyResult.RollbackCheckpoint, exitCode, stderr)
+	}
+
+	// Verify with drush status.
+	stdout, stderr, exitCode, err := execRunFn("drush", "status", "--format=json")
+	if err != nil {
+		return fmt.Errorf("drush status failed: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("drush status failed (exit %d): %s", exitCode, stderr)
+	}
+
+	// Parse drush status output for version verification.
+	var status map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &status); err == nil {
+		if drupalVersion, ok := status["drupal-version"].(string); ok {
+			result.VerifiedVersion = drupalVersion
+		}
+	}
+
+	// Verify the resulting Drupal version matches the target.
+	if result.VerifiedVersion != "" {
+		verifiedMajor, err := coreupgrade.MajorVersion(result.VerifiedVersion)
+		if err == nil && verifiedMajor != targetMajor {
+			return fmt.Errorf("version mismatch: expected Drupal %d.x, got %s (major %d)",
+				targetMajor, result.VerifiedVersion, verifiedMajor)
+		}
+	}
+
+	result.Success = true
+
+	// Remove backup on success only — keep on failure for rollback per spec.
+	os.Remove(backupPath)
+
+	data, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Println(string(data))
+	return nil
 }
 
 func extractZip(archivePath, destDir string) error {

@@ -39,12 +39,18 @@ func Render(platform, binaryPath string) (map[string]string, error) {
 			return fmt.Errorf("read %s: %w", path, err)
 		}
 
+		// Relative path from platform dir.
+		relPath, _ := filepath.Rel(root, path)
+
 		// Replace binary path placeholder in MCP config.
 		s := string(content)
 		s = strings.ReplaceAll(s, "{{BINARY_PATH}}", binaryPath)
 
-		// Relative path from platform dir.
-		relPath, _ := filepath.Rel(root, path)
+		// Replace skill path placeholder in bootstrap templates.
+		// Uses "." (current directory) as default — SKILL.md is co-located with the bootstrap.
+		skillDir := "."
+		s = strings.ReplaceAll(s, "{{SKILL_PATH}}", skillDir)
+
 		files[relPath] = s
 		return nil
 	})

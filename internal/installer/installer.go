@@ -857,6 +857,22 @@ func Install(agents []AgentAdapter, binaryPath string, files map[string]string) 
 				if err := agent.WriteSkill("drup", content); err != nil {
 					return fmt.Errorf("write orchestrator skill to %s: %w", agent.ID(), err)
 				}
+			case path == "CLAUDE.md":
+				// Claude Code bootstrap → project root
+				projectDir, _ := getCWD()
+				if err := os.WriteFile(filepath.Join(projectDir, "CLAUDE.md"), []byte(content), 0o644); err != nil {
+					return fmt.Errorf("write CLAUDE.md to project root: %w", err)
+				}
+			case path == "copilot-instructions.md":
+				// Codex bootstrap → .github/
+				projectDir, _ := getCWD()
+				githubDir := filepath.Join(projectDir, ".github")
+				if err := os.MkdirAll(githubDir, 0o755); err != nil {
+					return fmt.Errorf("create .github directory: %w", err)
+				}
+				if err := os.WriteFile(filepath.Join(githubDir, "copilot-instructions.md"), []byte(content), 0o644); err != nil {
+					return fmt.Errorf("write copilot-instructions.md: %w", err)
+				}
 			case strings.HasPrefix(path, "agents/"):
 				// Sub-agent definitions → agents/<name>.md
 				agentName := strings.TrimPrefix(path, "agents/")

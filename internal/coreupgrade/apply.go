@@ -23,9 +23,9 @@ type ApplyResult struct {
 	Stderr             string `json:"stderr,omitempty"`
 }
 
-// validateProjectPath enforces the same absolute-path, no-traversal guard
+// ValidateProjectPath enforces the same absolute-path, no-traversal guard
 // used elsewhere in drup (see internal/app upgrade_scan handler).
-func validateProjectPath(projectPath string) error {
+func ValidateProjectPath(projectPath string) error {
 	if projectPath == "" {
 		return fmt.Errorf("project_path must not be empty")
 	}
@@ -47,7 +47,7 @@ func validateProjectPath(projectPath string) error {
 //     commit BEFORE mutating composer.json (so Rollback can restore the prior
 //     state), then writes the new constraint and returns the checkpoint SHA.
 func Apply(projectPath, targetVersion string, dryRun bool) (*ApplyResult, error) {
-	if err := validateProjectPath(projectPath); err != nil {
+	if err := ValidateProjectPath(projectPath); err != nil {
 		return nil, err
 	}
 	if targetVersion == "" {
@@ -60,7 +60,7 @@ func Apply(projectPath, targetVersion string, dryRun bool) (*ApplyResult, error)
 		return nil, fmt.Errorf("read composer.json: %w", err)
 	}
 
-	targetMajor, err := majorVersion(targetVersion)
+	targetMajor, err := MajorVersion(targetVersion)
 	if err != nil {
 		return nil, fmt.Errorf("parse target version %q: %w", targetVersion, err)
 	}

@@ -21,7 +21,7 @@ import (
 )
 
 // defaultEnvDetector is the shared environment detector.
-var defaultEnvDetector = envdetect.NewDetector()
+var defaultEnvDetector envdetect.Detector = envdetect.NewDetector()
 
 // drushBlocklist contains commands that must not be executed via drush_exec.
 var drushBlocklist = map[string]bool{
@@ -75,7 +75,7 @@ func realHandleScan(args json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 
-	stdout, stderr, exitCode, err := drupexec.Run("drush", "-r", params.ProjectPath, "upgrade_status:analyze", "--format=json")
+	stdout, stderr, exitCode, err := drupexec.Run("drush", "-r", params.ProjectPath, "upgrade_status:analyze", "--all", "--format=json")
 	if err != nil {
 		return nil, fmt.Errorf("exec drush: %w", err)
 	}
@@ -119,7 +119,7 @@ func realHandleAutofix(args json.RawMessage) (json.RawMessage, error) {
 	}
 
 	// Re-scan to get remaining errors.
-	scanStdout, _, scanExit, _ := drupexec.Run("drush", "-r", params.ProjectPath, "upgrade_status:analyze", "--format=json")
+	scanStdout, _, scanExit, _ := drupexec.Run("drush", "-r", params.ProjectPath, "upgrade_status:analyze", "--all", "--format=json")
 	remaining := 0
 	if scanExit == 0 {
 		result, err := scan.Parse(strings.NewReader(scanStdout))
@@ -201,7 +201,13 @@ func realHandleValidate(args json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 
-	stdout, stderr, exitCode, err := drupexec.Run("drush", "-r", params.ProjectPath, "upgrade_status:analyze", "--format=json")
+	// Use module name when specified, otherwise --all for full project analysis.
+	analyzeTarget := "--all"
+	if params.Module != "" {
+		analyzeTarget = params.Module
+	}
+
+	stdout, stderr, exitCode, err := drupexec.Run("drush", "-r", params.ProjectPath, "upgrade_status:analyze", analyzeTarget, "--format=json")
 	if err != nil {
 		return nil, fmt.Errorf("exec drush: %w", err)
 	}
@@ -600,6 +606,10 @@ func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 
 	// Enable if needed.
 	if !upgradeStatusEnabled {
+		// Delete conflicting update.settings config before enabling.
+		cdArgs := []string{"config:delete", "update.settings", "--root=" + params.ProjectPath}
+		_, _, _, _ = drupexec.RunWithEnv(detection.CommandPrefix, "drush", cdArgs...)
+
 		enArgs := []string{"en", "upgrade_status", "-y", "--root=" + params.ProjectPath}
 		_, enStderr, enExit, enErr := drupexec.RunWithEnv(detection.CommandPrefix, "drush", enArgs...)
 		if enErr != nil {

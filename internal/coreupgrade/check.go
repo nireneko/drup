@@ -34,7 +34,7 @@ type CheckResult struct {
 // whether a major version newer than currentVersion is available. It performs
 // no writes and no git operations.
 func NextMajor(currentVersion string) (*CheckResult, error) {
-	currentMajor, err := majorVersion(currentVersion)
+	currentMajor, err := MajorVersion(currentVersion)
 	if err != nil {
 		return nil, fmt.Errorf("parse current version %q: %w", currentVersion, err)
 	}
@@ -44,7 +44,7 @@ func NextMajor(currentVersion string) (*CheckResult, error) {
 		return nil, fmt.Errorf("check drupal/core release: %w", err)
 	}
 
-	latestMajor, err := majorVersion(info.Latest)
+	latestMajor, err := MajorVersion(info.Latest)
 	if err != nil {
 		return nil, fmt.Errorf("parse latest release %q: %w", info.Latest, err)
 	}
@@ -58,9 +58,9 @@ func NextMajor(currentVersion string) (*CheckResult, error) {
 	return result, nil
 }
 
-// majorVersion extracts the leading major version number from a semver-like
+// MajorVersion extracts the leading major version number from a semver-like
 // or composer-constraint-like string (e.g. "10.1.5" -> 10, "^11.0" -> 11).
-func majorVersion(version string) (int, error) {
+func MajorVersion(version string) (int, error) {
 	version = strings.TrimPrefix(version, "^")
 	version = strings.TrimPrefix(version, "~")
 	if version == "" {

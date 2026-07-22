@@ -2,62 +2,112 @@
 
 ## Purpose
 
-Deterministic capability to check for and apply the next Drupal core major version bump in `composer.json`, with dry-run inspection and rollback safety. Invoked by a dispatched sub-agent (not the orchestrator directly); the orchestrator only reads the sub-agent's report.
+The `drup upgrade-core` CLI command performs a deterministic Drupal core version upgrade: composer.json manipulation, dependency resolution, database updates, and result verification.
 
 ## Requirements
 
-### Requirement: Next Major Version Check
+### Requirement: Version Detection
 
-The system SHALL check the latest stable `drupal/core` release for the next major version relative to the project's currently installed core version.
+The system MUST read `composer.json` in the current working directory and extract the current Drupal core version from `require.drupal/core-recommended` or `require.drupal/core`.
 
-#### Scenario: Next major available
+#### Scenario: Detect current version
 
-- GIVEN a project on Drupal 10.x
-- WHEN the sub-agent runs the core-upgrade check
-- THEN the system SHALL report the latest available Drupal 11.x release and its constraint string
+- GIVEN a Drupal project with `composer.json` containing `"drupal/core-recommended": "^10.3"`
+- WHEN `drup upgrade-core` reads the project
+- THEN it MUST report current constraint `^10.3`
 
-#### Scenario: Already on latest major
+#### Scenario: No composer.json found
 
-- GIVEN a project already on the newest available major version
-- WHEN the sub-agent runs the core-upgrade check
-- THEN the system SHALL report no next major is available
+- GIVEN a directory without `composer.json`
+- WHEN `drup upgrade-core` runs
+- THEN it MUST exit with a non-zero code and an error message indicating no composer.json found
 
-### Requirement: Dry-Run Validation Before Apply
+### Requirement: Core Version Update
 
-The system SHALL support a dry-run mode that reports the exact `composer.json` changes it would make without writing to disk.
+The system MUST accept a target version argument and update the `drupal/core-recommended` (or `drupal/core`) constraint in `composer.json`.
 
-#### Scenario: Dry-run shows diff only
+#### Scenario: Update to target version
 
-- GIVEN a next major version is available
-- WHEN the sub-agent runs a dry-run
-- THEN the system SHALL return the proposed `composer.json` diff and SHALL NOT modify any file
+- GIVEN `composer.json` with `"drupal/core-recommended": "^10.3"`
+- WHEN `drup upgrade-core 11` runs
+- THEN it MUST update the constraint to `^11` in `composer.json`
 
-### Requirement: Clean Tree Precondition
+#### Scenario: Already at target version
 
-The system SHALL require a clean git working tree before applying a core version change.
+- GIVEN `composer.json` with `"drupal/core-recommended": "^11.0"`
+- WHEN `drup upgrade-core 11` runs
+- THEN it MUST exit with info message "already at target" and make no changes
 
-#### Scenario: Dirty tree blocks apply
+### Requirement: Composer Execution
 
-- GIVEN uncommitted changes exist in the working tree
-- WHEN the sub-agent attempts to apply the core version bump
-- THEN the system SHALL refuse to apply and report the dirty-tree condition
+The system MUST run `composer config policy.advisories.block false` before the require command to disable advisory blocking, then run `composer require drupal/core-recommended:^<target> drupal/core:^<target> --with-all-dependencies`, followed by `composer update --with-all-dependencies` to ensure full dependency resolution.
 
-### Requirement: Composer.json Update
+#### Scenario: Composer update with advisory bypass
 
-The system SHALL update the `drupal/core` constraint in `composer.json` to the next major version and create a git checkpoint commit immediately before the change.
+- GIVEN a valid composer.json with updated constraint
+- WHEN composer execution runs
+- THEN it MUST disable advisory blocking, invoke `composer require` with `--with-all-dependencies`, run `composer update --with-all-dependencies`, and propagate the final exit code
 
-#### Scenario: Apply succeeds
+#### Scenario: Composer not available
 
-- GIVEN a clean working tree and an available next major version
-- WHEN the sub-agent applies the core version bump
-- THEN the system SHALL create a pre-change checkpoint commit, update `composer.json`, and report the new constraint
+- GIVEN `composer` is not in PATH
+- WHEN composer execution runs
+- THEN it MUST exit non-zero with "composer not found" error
 
-### Requirement: Rollback Capability
+### Requirement: Database Update
 
-The system SHALL provide a rollback that restores `composer.json` (and `composer.lock` if changed) to the pre-apply checkpoint commit.
+After successful composer update, the system MUST run `drush updb -y` to apply pending database updates.
 
-#### Scenario: Rollback after failed follow-up install
+#### Scenario: Drush updb succeeds
 
-- GIVEN a core version bump was applied and checkpointed
-- WHEN a subsequent `composer install` fails and rollback is requested
-- THEN the system SHALL revert to the checkpoint commit and report the restored state
+- GIVEN composer update completed successfully
+- WHEN database update runs
+- THEN it MUST execute `drush updb -y` and propagate its exit code
+
+#### Scenario: Drush not available
+
+- GIVEN `drush` is not in PATH
+- WHEN database update runs
+- THEN it MUST exit non-zero with "drush not found" error
+
+### Requirement: Verification
+
+After database update, the system MUST verify the upgrade by running `drush status` and confirming the reported Drupal version matches the target.
+
+#### Scenario: Verification passes
+
+- GIVEN drush updb completed successfully
+- WHEN verification runs
+- THEN it MUST confirm Drupal version matches target and exit 0
+
+#### Scenario: Verification fails
+
+- GIVEN drush status reports a version different from target
+- WHEN verification runs
+- THEN it MUST exit non-zero with a version mismatch error
+
+### Requirement: Dry Run Mode
+
+The system SHOULD support a `--dry-run` flag that previews changes without modifying files or executing commands.
+
+#### Scenario: Dry run output
+
+- GIVEN `--dry-run` flag is passed
+- WHEN `drup upgrade-core 11 --dry-run` runs
+- THEN it MUST print the planned composer.json change and commands without executing them
+
+### Requirement: Backup
+
+The system SHOULD create a backup of `composer.json` before modifying it, and MUST remove the backup file after successful completion of all upgrade steps.
+
+#### Scenario: Backup created and cleaned on success
+
+- GIVEN a valid composer.json
+- WHEN `drup upgrade-core` modifies it and completes successfully
+- THEN a backup file `composer.json.bak` MUST be created during modification and MUST be removed after all steps succeed
+
+#### Scenario: Backup retained on failure
+
+- GIVEN a valid composer.json
+- WHEN `drup upgrade-core` fails during execution
+- THEN the backup file `composer.json.bak` MUST remain for rollback purposes

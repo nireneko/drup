@@ -1092,3 +1092,81 @@ func TestWriteCommand_CodexIsNoop(t *testing.T) {
 		t.Errorf("Codex should not create a commands directory, but %s exists", cmdDir)
 	}
 }
+
+// --- Phase 3: Bootstrap file installation tests ---
+
+func TestInstall_BootstrapFiles_Claude(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
+
+	orig := homeDir
+	homeDir = func() (string, error) { return home, nil }
+	defer func() { homeDir = orig }()
+
+	origCWD := getCWD
+	getCWD = func() (string, error) { return home, nil }
+	defer func() { getCWD = origCWD }()
+
+	agents := DetectAgents()
+	if len(agents) == 0 {
+		t.Fatal("no agents detected")
+	}
+
+	files := map[string]string{
+		"SKILL.md":  "# drup pipeline\n",
+		"CLAUDE.md": "# Bootstrap\nLoad SKILL.md\n",
+		".mcp.json": `{"command":"drup","args":["mcp"]}`,
+	}
+
+	if err := Install(agents, "/usr/local/bin/drup", files); err != nil {
+		t.Fatalf("Install error: %v", err)
+	}
+
+	// CLAUDE.md should be written to project root (CWD in this test).
+	claudeBootstrap := filepath.Join(home, "CLAUDE.md")
+	data, err := os.ReadFile(claudeBootstrap)
+	if err != nil {
+		t.Fatalf("CLAUDE.md not written to project root: %v", err)
+	}
+	if !strings.Contains(string(data), "SKILL.md") {
+		t.Error("CLAUDE.md should reference SKILL.md")
+	}
+}
+
+func TestInstall_BootstrapFiles_Codex(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".codex"), 0o755)
+
+	orig := homeDir
+	homeDir = func() (string, error) { return home, nil }
+	defer func() { homeDir = orig }()
+
+	origCWD := getCWD
+	getCWD = func() (string, error) { return home, nil }
+	defer func() { getCWD = origCWD }()
+
+	agents := DetectAgents()
+	if len(agents) == 0 {
+		t.Fatal("no agents detected")
+	}
+
+	files := map[string]string{
+		"SKILL.md":                "# drup pipeline\n",
+		"copilot-instructions.md": "# Bootstrap\nLoad SKILL.md\n",
+		".mcp.json":               `{"command":"drup","args":["mcp"]}`,
+	}
+
+	if err := Install(agents, "/usr/local/bin/drup", files); err != nil {
+		t.Fatalf("Install error: %v", err)
+	}
+
+	// copilot-instructions.md should be written to .github/.
+	codexBootstrap := filepath.Join(home, ".github", "copilot-instructions.md")
+	data, err := os.ReadFile(codexBootstrap)
+	if err != nil {
+		t.Fatalf("copilot-instructions.md not written to .github/: %v", err)
+	}
+	if !strings.Contains(string(data), "SKILL.md") {
+		t.Error("copilot-instructions.md should reference SKILL.md")
+	}
+}

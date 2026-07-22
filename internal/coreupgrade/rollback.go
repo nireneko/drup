@@ -12,7 +12,7 @@ import (
 // after a core-version bump when a follow-up step (e.g. composer install)
 // fails and the mutation must be undone.
 func Rollback(projectPath, checkpointSHA string) error {
-	if err := validateProjectPath(projectPath); err != nil {
+	if err := ValidateProjectPath(projectPath); err != nil {
 		return err
 	}
 	if checkpointSHA == "" {

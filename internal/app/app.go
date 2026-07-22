@@ -58,6 +58,11 @@ func Run(args []string) error {
 		return RunUpgrade()
 	case "preflight":
 		return RunPreflight()
+	case "upgrade-core":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: drup upgrade-core <target-version> [--dry-run]")
+		}
+		return RunUpgradeCore(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q — run 'drup help' for available commands", args[0])
 	}
@@ -81,6 +86,7 @@ Commands:
   sync                  Re-apply agent assets
   upgrade               Self-update binary
   preflight             Check project readiness for upgrade automation
+  upgrade-core <ver>    Upgrade Drupal core to target major version
   version               Print version
   help                  Show this help message
 

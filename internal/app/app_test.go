@@ -1,6 +1,10 @@
 package app
 
 import (
+	"bytes"
+	"io"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -57,5 +61,32 @@ func TestRun_ReportMissingPath(t *testing.T) {
 	err := Run([]string{"report"})
 	if err == nil {
 		t.Error("report without path should return error")
+	}
+}
+
+func TestRun_UpgradeCoreMissingArg(t *testing.T) {
+	err := Run([]string{"upgrade-core"})
+	if err == nil {
+		t.Error("upgrade-core without target version should return error")
+	}
+}
+
+func TestRun_UpgradeCoreInUsage(t *testing.T) {
+	// Capture stdout to verify usage includes upgrade-core.
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	Run([]string{"help"})
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	if !strings.Contains(output, "upgrade-core") {
+		t.Errorf("usage output should mention 'upgrade-core', got: %s", output)
 	}
 }

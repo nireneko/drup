@@ -11,8 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nireneko/drup/internal/drupalorg"
+	"github.com/nireneko/drup/internal/envdetect"
+	drupexec "github.com/nireneko/drup/internal/exec"
 	"github.com/nireneko/drup/internal/mcp"
 )
 
@@ -550,4 +553,266 @@ func TestPatchReconcile_ReturnsResult(t *testing.T) {
 	if !strings.Contains(recommendation, "remove") {
 		t.Errorf("recommendation = %q, want it to mention remove", recommendation)
 	}
+}
+
+// --- Phase 1: RED tests for --all flag in MCP tools ---
+
+func TestRealHandleScan_PassesAllFlag(t *testing.T) {
+	origRun := drupexec.Run
+	var capturedArgs []string
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			capturedArgs = args
+			return `{}`, "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.Run = origRun }()
+
+	args := json.RawMessage(`{"project_path":"/tmp/test-project"}`)
+	_, err := realHandleScan(args)
+	if err != nil {
+		t.Fatalf("realHandleScan error: %v", err)
+	}
+
+	found := false
+	for _, arg := range capturedArgs {
+		if arg == "--all" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("drush args = %v, want --all flag present", capturedArgs)
+	}
+}
+
+func TestRealHandleAutofix_PassesAllFlagInRescan(t *testing.T) {
+	origRun := drupexec.Run
+	var capturedDrushArgs [][]string
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			capturedDrushArgs = append(capturedDrushArgs, args)
+			return `{"total_errors":0,"modules":[]}`, "", 0, nil
+		}
+		// rector
+		return "rector output", "", 0, nil
+	}
+	defer func() { drupexec.Run = origRun }()
+
+	// Create temp dir with modules/custom and themes dirs.
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "modules", "custom"), 0o755)
+	os.MkdirAll(filepath.Join(dir, "themes"), 0o755)
+
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	_, err := realHandleAutofix(args)
+	if err != nil {
+		t.Fatalf("realHandleAutofix error: %v", err)
+	}
+
+	// Find the drush upgrade_status:analyze call (re-scan after rector).
+	foundAll := false
+	for _, drushArgs := range capturedDrushArgs {
+		for _, arg := range drushArgs {
+			if arg == "--all" {
+				foundAll = true
+				break
+			}
+		}
+	}
+	if !foundAll {
+		t.Errorf("drush re-scan args = %v, want --all flag present", capturedDrushArgs)
+	}
+}
+
+func TestRealHandleValidate_PassesAllFlagWhenNoModule(t *testing.T) {
+	origRun := drupexec.Run
+	var capturedArgs []string
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			capturedArgs = args
+			return `{}`, "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.Run = origRun }()
+
+	args := json.RawMessage(`{"project_path":"/tmp/test-project"}`)
+	_, err := realHandleValidate(args)
+	if err != nil {
+		t.Fatalf("realHandleValidate error: %v", err)
+	}
+
+	found := false
+	for _, arg := range capturedArgs {
+		if arg == "--all" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("drush args = %v, want --all flag when no module specified", capturedArgs)
+	}
+}
+
+func TestRealHandleValidate_PassesModuleNameWhenSet(t *testing.T) {
+	origRun := drupexec.Run
+	var capturedArgs []string
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			capturedArgs = args
+			return `{}`, "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.Run = origRun }()
+
+	args := json.RawMessage(`{"project_path":"/tmp/test-project","module":"mymodule"}`)
+	_, err := realHandleValidate(args)
+	if err != nil {
+		t.Fatalf("realHandleValidate error: %v", err)
+	}
+
+	// Verify module name is in args, not --all.
+	foundModule := false
+	foundAll := false
+	for _, arg := range capturedArgs {
+		if arg == "mymodule" {
+			foundModule = true
+		}
+		if arg == "--all" {
+			foundAll = true
+		}
+	}
+	if !foundModule {
+		t.Errorf("drush args = %v, want 'mymodule' present", capturedArgs)
+	}
+	if foundAll {
+		t.Errorf("drush args = %v, want --all NOT present when module is specified", capturedArgs)
+	}
+}
+
+// --- Phase 5: RED test for config conflict in realHandleUpgradeScan ---
+
+func TestRealHandleUpgradeScan_DeletesUpdateSettingsBeforeEnable(t *testing.T) {
+	// Override environment detector to return empty prefix.
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	// Override RunWithEnv to capture drush calls.
+	origRunWithEnv := drupexec.RunWithEnv
+	var drushCalls [][]string
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			drushCalls = append(drushCalls, args)
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRunWithEnv }()
+
+	// Create a minimal project structure.
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/upgrade_status":"*"}}`), 0o644)
+
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	_, err := realHandleUpgradeScan(args)
+	if err != nil {
+		t.Fatalf("realHandleUpgradeScan error: %v", err)
+	}
+
+	// Find the config:delete and en calls.
+	configDeleteIdx := -1
+	enIdx := -1
+	for i, drushArgs := range drushCalls {
+		for _, arg := range drushArgs {
+			if arg == "config:delete" {
+				configDeleteIdx = i
+			}
+			if arg == "en" {
+				enIdx = i
+			}
+		}
+	}
+
+	// Verify config:delete was called before en.
+	if configDeleteIdx == -1 {
+		t.Error("drush config:delete was not called")
+	}
+	if enIdx == -1 {
+		t.Error("drush en was not called")
+	}
+	if configDeleteIdx >= 0 && enIdx >= 0 && configDeleteIdx >= enIdx {
+		t.Errorf("drush config:delete (idx %d) should be called before drush en (idx %d)", configDeleteIdx, enIdx)
+	}
+}
+
+func TestRealHandleUpgradeScan_SkipsEnableWhenAlreadyEnabled(t *testing.T) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRunWithEnv := drupexec.RunWithEnv
+	var drushCalls [][]string
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd != "drush" {
+			return "", "", 0, nil
+		}
+		drushCalls = append(drushCalls, args)
+		// Return upgrade_status as already enabled for pm:list.
+		for _, arg := range args {
+			if arg == "pm:list" {
+				return `{"upgrade_status":"11.0.0"}`, "", 0, nil
+			}
+		}
+		// Return empty analysis for upgrade_status:analyze.
+		return `{}`, "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRunWithEnv }()
+
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/upgrade_status":"*"}}`), 0o644)
+
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	_, err := realHandleUpgradeScan(args)
+	if err != nil {
+		t.Fatalf("realHandleUpgradeScan error: %v", err)
+	}
+
+	// Verify config:delete and en were NOT called (already enabled).
+	for _, drushArgs := range drushCalls {
+		for _, arg := range drushArgs {
+			if arg == "config:delete" {
+				t.Error("drush config:delete should NOT be called when upgrade_status is already enabled")
+			}
+			if arg == "en" {
+				t.Error("drush en should NOT be called when upgrade_status is already enabled")
+			}
+		}
+	}
+
+	// Verify upgrade_status:analyze WAS called.
+	foundAnalyze := false
+	for _, drushArgs := range drushCalls {
+		for _, arg := range drushArgs {
+			if arg == "upgrade_status:analyze" {
+				foundAnalyze = true
+			}
+		}
+	}
+	if !foundAnalyze {
+		t.Error("upgrade_status:analyze should be called when upgrade_status is already enabled")
+	}
+}
+
+// mockEnvDetector returns empty environment for testing.
+type mockEnvDetector struct{}
+
+func (m *mockEnvDetector) Detect(projectPath string, forceDetect bool) (*envdetect.Detection, error) {
+	return &envdetect.Detection{
+		Environment:   "",
+		CommandPrefix: []string{},
+		DetectedAt:    time.Now(),
+	}, nil
 }
