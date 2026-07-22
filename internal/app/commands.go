@@ -17,6 +17,7 @@ import (
 	"github.com/nireneko/drup/internal/installer"
 	"github.com/nireneko/drup/internal/mcp"
 	"github.com/nireneko/drup/internal/packaging"
+	"github.com/nireneko/drup/internal/patch"
 	"github.com/nireneko/drup/internal/report"
 	"github.com/nireneko/drup/internal/scan"
 	statepkg "github.com/nireneko/drup/internal/state"
@@ -56,19 +57,32 @@ func RunInit(args []string) error {
 	return nil
 }
 
-// RunScan runs upgrade_status:analyze and outputs structured JSON.
-func RunScan(path string) error {
-	stdout, stderr, exitCode, err := drupexec.Run("drush", "-r", path, "upgrade_status:analyze", "--all", "--format=json")
-	if err != nil {
-		return fmt.Errorf("exec drush: %w", err)
+// drushExecError wraps a drush execution failure with command context.
+func drushExecError(cmd string, args []string, exitCode int, stderr, stdout string) error {
+	fullCmd := cmd + " " + strings.Join(args, " ")
+	truncated := stdout
+	if len(truncated) > 500 {
+		truncated = truncated[:500] + "..."
 	}
 	if exitCode != 0 {
-		return fmt.Errorf("drush upgrade_status:analyze exit %d: %s", exitCode, stderr)
+		return fmt.Errorf("drush command %q exited %d\nstderr: %s\nstdout: %s", fullCmd, exitCode, stderr, truncated)
+	}
+	return fmt.Errorf("drush command %q failed: %s\nstderr: %s\nstdout: %s", fullCmd, stderr, stderr, truncated)
+}
+
+// RunScan runs upgrade_status:analyze and outputs structured JSON.
+func RunScan(path string) error {
+	stdout, stderr, exitCode, err := drupexec.Run("drush", "-r", path, "upgrade_status:analyze", "--all")
+	if err != nil {
+		return drushExecError("drush", []string{"-r", path, "upgrade_status:analyze", "--all"}, -1, err.Error(), "")
+	}
+	if exitCode != 0 {
+		return drushExecError("drush", []string{"-r", path, "upgrade_status:analyze", "--all"}, exitCode, stderr, stdout)
 	}
 
 	result, err := scan.Parse(strings.NewReader(stdout))
 	if err != nil {
-		return fmt.Errorf("parse scan output: %w", err)
+		return fmt.Errorf("parse scan output (command: drush -r %s upgrade_status:analyze --all): %w\nstdout (truncated): %.500s", path, err, stdout)
 	}
 
 	result.ProjectPath = path
@@ -188,6 +202,95 @@ func RunMCP() error {
 	server := mcp.NewServer(os.Stdout, Version)
 	WireMCPTools(server)
 	return server.Run()
+}
+
+// DoValidate runs upgrade_status:analyze and returns parsed results.
+// Shared between CLI and MCP handlers.
+func DoValidate(projectPath, module string) (*scan.ScanResult, []scan.DepError, error) {
+	analyzeTarget := "--all"
+	if module != "" {
+		analyzeTarget = module
+	}
+
+	stdout, stderr, exitCode, err := drupexec.Run("drush", "-r", projectPath, "upgrade_status:analyze", analyzeTarget)
+	if err != nil {
+		return nil, nil, drushExecError("drush", []string{"-r", projectPath, "upgrade_status:analyze", analyzeTarget}, -1, err.Error(), "")
+	}
+	if exitCode != 0 {
+		return nil, nil, drushExecError("drush", []string{"-r", projectPath, "upgrade_status:analyze", analyzeTarget}, exitCode, stderr, stdout)
+	}
+
+	result, err := scan.Parse(strings.NewReader(stdout))
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse scan output (command: drush -r %s upgrade_status:analyze %s): %w\nstdout (truncated): %.500s", projectPath, analyzeTarget, err, stdout)
+	}
+
+	// Filter by module if specified.
+	var filtered []scan.DepError
+	for _, mod := range result.Modules {
+		if module != "" && mod.Name != module {
+			continue
+		}
+		filtered = append(filtered, mod.Errors...)
+	}
+
+	return result, filtered, nil
+}
+
+// RunValidate runs upgrade_status:analyze and outputs JSON with error count.
+// Exit 0 if clean, exit 1 if errors remain.
+func RunValidate(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: drup validate <path> [module]")
+	}
+
+	projectPath := args[0]
+	module := ""
+	if len(args) > 1 {
+		module = args[1]
+	}
+
+	_, filtered, err := DoValidate(projectPath, module)
+	if err != nil {
+		return err
+	}
+
+	output := map[string]interface{}{
+		"total_errors": len(filtered),
+		"errors":       filtered,
+	}
+	data, _ := json.MarshalIndent(output, "", "  ")
+	fmt.Println(string(data))
+
+	if len(filtered) > 0 {
+		return fmt.Errorf("validation found %d errors", len(filtered))
+	}
+	return nil
+}
+
+// DoApplyPatch downloads and applies a patch to the project.
+// Shared between CLI and MCP handlers.
+func DoApplyPatch(patchURL, projectPath string) (*patch.ApplyResult, error) {
+	return patch.Apply(patchURL, projectPath, "", "")
+}
+
+// RunApplyPatch downloads and applies a patch, outputting JSON result.
+func RunApplyPatch(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: drup apply-patch <url> <path>")
+	}
+
+	patchURL := args[0]
+	projectPath := args[1]
+
+	result, err := DoApplyPatch(patchURL, projectPath)
+	if err != nil {
+		return err
+	}
+
+	data, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Println(string(data))
+	return nil
 }
 
 // RunInstall detects agents and writes skill files.

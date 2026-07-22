@@ -1,0 +1,8 @@
+
+====================
+
+Project: oldmodule (modules/contrib/oldmodule)
+
+  - modules/contrib/oldmodule/oldmodule.module:10
+    Use of deprecated function db_query().
+    Rule: deprecation

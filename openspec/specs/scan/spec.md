@@ -2,31 +2,44 @@
 
 ## Purpose
 
-Parse `upgrade_status:analyze` JSON output into a classified error model organized by contrib, custom, and theme categories.
+Parse `upgrade_status:analyze` plain-text output into a classified error model organized by contrib, custom, and theme categories. The parser uses line-based regex extraction and tolerates warnings, blank lines, and unrecognized input.
 
 ## Requirements
 
-### Requirement: JSON Parsing
+### Requirement: Plain-Text Parsing
 
-The system SHALL parse the JSON output from `drush upgrade_status:analyze` into an internal error model.
+The system SHALL parse the plain-text output from `drush upgrade_status:analyze` into an internal error model using line-based regex extraction.
 
-#### Scenario: Valid upgrade_status output
+| Req | Strength | Behavior |
+|-----|----------|----------|
+| Line-based parsing | MUST | Parse plain-text `upgrade_status:analyze` output into existing error model |
+| Tolerant extraction | MUST | Regex field extraction; skip unrecognized lines |
+| Project detection | MUST | `Project: <name>` lines delimit per-project blocks |
+| Empty output | MUST | Return zero-error model when no project blocks found |
 
-- GIVEN JSON output from `drush upgrade_status:analyze --format=json`
-- WHEN the scan package processes it
-- THEN the system SHALL produce a structured model with errors classified by type
+#### Scenario: Multi-project plain text
+
+- GIVEN plain text with contrib + custom projects
+- WHEN `scan.Parse()` runs
+- THEN SHALL return classified errors with file/line/message/rule
+
+#### Scenario: Tolerate warnings and blanks
+
+- GIVEN `[warning]` and blank lines in output
+- WHEN parsing runs
+- THEN SHALL skip non-error lines, produce correct model
 
 #### Scenario: Empty analysis (zero errors)
 
-- GIVEN JSON output with no errors
+- GIVEN plain-text output with no project blocks
 - WHEN the scan package processes it
 - THEN the system SHALL return an empty error list with `total_errors: 0`
 
-#### Scenario: Malformed JSON
+#### Scenario: Unparseable input
 
-- GIVEN invalid or unexpected JSON structure
+- GIVEN input that does not match expected plain-text patterns
 - WHEN the scan package processes it
-- THEN the system SHALL return a parse error with details about the unexpected structure
+- THEN the system SHALL return a zero-result model gracefully
 
 ### Requirement: Error Classification
 
@@ -68,29 +81,40 @@ The system SHALL represent each error with file path, line number, message, seve
 
 ### Requirement: Fixture-Based Parsing
 
-The system SHALL have fixture-based unit tests covering known `upgrade_status` JSON formats.
+The system SHALL have fixture-based unit tests covering known `upgrade_status` plain-text formats.
 
 #### Scenario: Fixture test for D10 output
 
-- GIVEN a fixture file with known D10 upgrade_status JSON
+- GIVEN a fixture file with known D10 upgrade_status plain text
 - WHEN the test runs
 - THEN the parsed output SHALL match the expected error model exactly
 
 #### Scenario: Fixture test for D9 output
 
-- GIVEN a fixture file with known D9 upgrade_status JSON
+- GIVEN a fixture file with known D9 upgrade_status plain text
 - WHEN the test runs
 - THEN the parsed output SHALL match the expected error model exactly
 
+#### Scenario: Fixture test for empty output
+
+- GIVEN a fixture file with blank or warning-only content
+- WHEN the test runs
+- THEN the parsed output SHALL return zero errors
+
 ### Requirement: Drush Invocation
 
-The system SHALL invoke `drush upgrade_status:analyze` with the `--all` flag to ensure complete analysis results.
+The system SHALL invoke `drush upgrade_status:analyze` with the `--all` flag to ensure complete analysis results. The `--format=json` flag SHALL NOT be used; the parser handles plain-text output.
+
+#### Scenario: CLI scan
+
+- GIVEN `drup scan /path`
+- THEN SHALL run `drush -r /path upgrade_status:analyze --all`
 
 #### Scenario: Full project scan
 
 - GIVEN a Drupal project with multiple modules and themes
 - WHEN `drup scan` runs
-- THEN the system SHALL execute `drush upgrade_status:analyze --all --format=json` and parse the complete output
+- THEN the system SHALL execute `drush upgrade_status:analyze --all` and parse the complete plain-text output
 
 #### Scenario: Empty results without --all
 

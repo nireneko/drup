@@ -23,13 +23,13 @@ The system SHALL implement an MCP server using stdio transport, accepting JSON-R
 
 ### Requirement: scan Tool
 
-The system SHALL expose a `scan` MCP tool that accepts `project_path` and returns classified error JSON. The tool SHALL invoke `drush upgrade_status:analyze` with the `--all` flag to ensure complete analysis.
+The system SHALL expose a `scan` MCP tool that accepts `project_path` and returns classified error JSON. The tool SHALL invoke `drush upgrade_status:analyze` with the `--all` flag to ensure complete analysis. The `--format=json` flag SHALL NOT be used; the parser handles plain-text output.
 
 #### Scenario: scan with valid path
 
 - GIVEN a tool call `scan({project_path: "/path/to/drupal"})`
 - WHEN the project has upgrade_status results
-- THEN the system SHALL execute `drush upgrade_status:analyze --all --format=json` and return JSON `{errors: {contrib: [...], custom: [...], theme: [...]}}` with error details
+- THEN the system SHALL execute `drush upgrade_status:analyze --all` and return JSON `{errors: {contrib: [...], custom: [...], theme: [...]}}` with error details
 
 #### Scenario: scan with invalid path
 
@@ -360,3 +360,17 @@ The system SHALL validate all tool inputs against their JSON schemas before exec
 
 - GIVEN a tool call missing a required parameter
 - THEN the system SHALL return a JSON-RPC error with code -32602 (invalid params)
+
+### Requirement: Drush Error Context
+
+The system SHALL wrap all drush execution failures with structured error context including the full command string, exit code, stderr (full), and stdout (truncated to 500 chars). This helper (`drushExecError`) SHALL be used by RunScan and all MCP tool handlers that invoke drush.
+
+#### Scenario: Drush non-zero exit
+
+- GIVEN drush exit 1 with stderr
+- THEN error SHALL include command, exit code, stderr
+
+#### Scenario: Parse failure
+
+- GIVEN drush exit 0 but unparseable output
+- THEN error SHALL include command and truncated stdout (500 chars)

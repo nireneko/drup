@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Go CLI binary (`drup`) providing 6 commands for Drupal upgrade automation. Manual dispatch via `os.Args`, stdlib only (no cobra).
+Go CLI binary (`drup`) providing 8 commands for Drupal upgrade automation. Manual dispatch via `os.Args`, stdlib only (no cobra).
 
 ## Requirements
 
@@ -13,7 +13,7 @@ The system SHALL dispatch CLI commands using manual `os.Args` parsing without th
 #### Scenario: Valid command invocation
 
 - GIVEN the binary is invoked with `drup <command> [args]`
-- WHEN `<command>` matches one of: init, scan, fix, contrib, issue, report
+- WHEN `<command>` matches one of: init, scan, fix, contrib, issue, report, validate, apply-patch
 - THEN the system SHALL execute the corresponding handler and exit 0
 
 #### Scenario: Unknown command
@@ -109,6 +109,44 @@ The system SHALL provide a `drup report <path>` command that generates JSON and 
 - GIVEN a Drupal project path with scan results available
 - WHEN `drup report /path/to/project` is executed
 - THEN the system SHALL output a markdown summary and JSON with resolved/pending/token accounting
+
+### Requirement: Validate Command
+
+The system SHALL provide a `drup validate <path> [module]` command that re-runs scan and returns current error state.
+
+#### Scenario: validate exit codes
+
+- GIVEN clean project → exit 0, `{total_errors: 0}`
+- GIVEN errors remain → exit 1, `{total_errors: N}`
+
+#### Scenario: validate with missing path argument
+
+- GIVEN `drup validate` is invoked without a path
+- THEN the system SHALL print usage information to stderr and exit 1
+
+### Requirement: Apply-Patch Command
+
+The system SHALL provide a `drup apply-patch <url> <path>` command that downloads and applies a patch.
+
+#### Scenario: apply-patch success
+
+- GIVEN a valid patch URL and project path
+- WHEN `drup apply-patch <url> <path>` is executed
+- THEN the system SHALL download the patch, apply it, and output JSON result
+
+#### Scenario: apply-patch conflict
+
+- GIVEN git apply fails → exit 1 with error details
+
+### Requirement: Shared Logic
+
+The system SHALL share logic between CLI and MCP handlers. `DoValidate` and `DoApplyPatch` functions in `commands.go` SHALL be called by both CLI (`RunValidate`, `RunApplyPatch`) and MCP (`realHandleValidate`, `realHandleApplyPatch`) handlers.
+
+#### Scenario: CLI and MCP reuse
+
+- GIVEN `DoValidate` is implemented in `commands.go`
+- WHEN either `RunValidate` (CLI) or `realHandleValidate` (MCP) is called
+- THEN both SHALL call the same `DoValidate` function
 
 ### Requirement: Stdlib Only
 

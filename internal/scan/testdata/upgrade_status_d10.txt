@@ -1,0 +1,28 @@
+
+====================
+
+Project: token (modules/contrib/token)
+
+  - modules/contrib/token/token.module:42
+    Call to deprecated function token_get_tree(). Use the Token service instead.
+    Rule: deprecation
+
+====================
+
+Project: mymodule (modules/custom/mymodule)
+
+  - modules/custom/mymodule/src/Service.php:15
+    Call to deprecated method getDefinition(). Use EntityTypeManagerInterface instead.
+    Rule: drupal.entity_type_manager
+
+  - modules/custom/mymodule/mymodule.module:8
+    Use of deprecated hook_hook_info().
+    Rule: deprecation
+
+====================
+
+Project: mytheme (themes/mytheme)
+
+  - themes/mytheme/templates/page.html.twig:23
+    Deprecated twig template filter |render.
+    Rule: twig-deprecation

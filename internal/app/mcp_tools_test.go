@@ -563,7 +563,7 @@ func TestRealHandleScan_PassesAllFlag(t *testing.T) {
 	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedArgs = args
-			return `{}`, "", 0, nil
+			return "", "", 0, nil // empty plain text = zero errors
 		}
 		return "", "", 0, nil
 	}
@@ -587,13 +587,111 @@ func TestRealHandleScan_PassesAllFlag(t *testing.T) {
 	}
 }
 
+func TestRealHandleAutofix_RemainingErrors(t *testing.T) {
+	origRun := drupexec.Run
+	callCount := 0
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			callCount++
+			// Re-scan returns plain text with 2 remaining errors.
+			return `
+Project: mymod (modules/custom/mymod)
+
+  - modules/custom/mymod/a.module:1
+    Error one.
+    Rule: r1
+
+  - modules/custom/mymod/b.module:2
+    Error two.
+    Rule: r2
+`, "", 0, nil
+		}
+		// rector
+		return "rector summary", "", 0, nil
+	}
+	defer func() { drupexec.Run = origRun }()
+
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "modules", "custom"), 0o755)
+	os.MkdirAll(filepath.Join(dir, "themes"), 0o755)
+
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	result, err := realHandleAutofix(args)
+	if err != nil {
+		t.Fatalf("realHandleAutofix error: %v", err)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(result, &resp)
+	if resp["remaining_errors"].(float64) != 2 {
+		t.Errorf("remaining_errors = %v, want 2", resp["remaining_errors"])
+	}
+}
+
+func TestRealHandleScan_PlainText(t *testing.T) {
+	origRun := drupexec.Run
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			return `
+====================
+
+Project: token (modules/contrib/token)
+
+  - modules/contrib/token/token.module:42
+    Call to deprecated function foo().
+    Rule: deprecation
+`, "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.Run = origRun }()
+
+	args := json.RawMessage(`{"project_path":"/tmp/test-project"}`)
+	result, err := realHandleScan(args)
+	if err != nil {
+		t.Fatalf("realHandleScan error: %v", err)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(result, &resp)
+	if resp["total_errors"].(float64) != 1 {
+		t.Errorf("total_errors = %v, want 1", resp["total_errors"])
+	}
+	modules := resp["modules"].([]interface{})
+	if len(modules) != 1 {
+		t.Errorf("modules = %d, want 1", len(modules))
+	}
+}
+
+func TestRealHandleScan_NoFormatJSON(t *testing.T) {
+	origRun := drupexec.Run
+	var capturedArgs []string
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			capturedArgs = args
+			return "", "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.Run = origRun }()
+
+	args := json.RawMessage(`{"project_path":"/tmp/test-project"}`)
+	realHandleScan(args)
+
+	for _, arg := range capturedArgs {
+		if arg == "--format=json" {
+			t.Errorf("drush args = %v, must NOT contain --format=json", capturedArgs)
+		}
+	}
+}
+
 func TestRealHandleAutofix_PassesAllFlagInRescan(t *testing.T) {
 	origRun := drupexec.Run
 	var capturedDrushArgs [][]string
 	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedDrushArgs = append(capturedDrushArgs, args)
-			return `{"total_errors":0,"modules":[]}`, "", 0, nil
+			return "", "", 0, nil // empty plain text = zero remaining errors
 		}
 		// rector
 		return "rector output", "", 0, nil
@@ -632,7 +730,7 @@ func TestRealHandleValidate_PassesAllFlagWhenNoModule(t *testing.T) {
 	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedArgs = args
-			return `{}`, "", 0, nil
+			return "", "", 0, nil
 		}
 		return "", "", 0, nil
 	}
@@ -662,7 +760,7 @@ func TestRealHandleValidate_PassesModuleNameWhenSet(t *testing.T) {
 	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedArgs = args
-			return `{}`, "", 0, nil
+			return "", "", 0, nil
 		}
 		return "", "", 0, nil
 	}
@@ -690,6 +788,35 @@ func TestRealHandleValidate_PassesModuleNameWhenSet(t *testing.T) {
 	}
 	if foundAll {
 		t.Errorf("drush args = %v, want --all NOT present when module is specified", capturedArgs)
+	}
+}
+
+func TestRealHandleValidate_PlainText(t *testing.T) {
+	origRun := drupexec.Run
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			return `
+Project: mymod (modules/custom/mymod)
+
+  - modules/custom/mymod/mymod.module:5
+    Deprecated function foo().
+    Rule: deprecation
+`, "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.Run = origRun }()
+
+	args := json.RawMessage(`{"project_path":"/tmp/test-project","module":"mymod"}`)
+	result, err := realHandleValidate(args)
+	if err != nil {
+		t.Fatalf("realHandleValidate error: %v", err)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(result, &resp)
+	if resp["total_errors"].(float64) != 1 {
+		t.Errorf("total_errors = %v, want 1", resp["total_errors"])
 	}
 }
 
@@ -766,8 +893,8 @@ func TestRealHandleUpgradeScan_SkipsEnableWhenAlreadyEnabled(t *testing.T) {
 				return `{"upgrade_status":"11.0.0"}`, "", 0, nil
 			}
 		}
-		// Return empty analysis for upgrade_status:analyze.
-		return `{}`, "", 0, nil
+		// Return empty plain text for upgrade_status:analyze.
+		return "", "", 0, nil
 	}
 	defer func() { drupexec.RunWithEnv = origRunWithEnv }()
 
@@ -803,6 +930,54 @@ func TestRealHandleUpgradeScan_SkipsEnableWhenAlreadyEnabled(t *testing.T) {
 	}
 	if !foundAnalyze {
 		t.Error("upgrade_status:analyze should be called when upgrade_status is already enabled")
+	}
+}
+
+func TestRealHandleUpgradeScan_PlainText(t *testing.T) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRunWithEnv := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd != "drush" {
+			return "", "", 0, nil
+		}
+		for _, arg := range args {
+			if arg == "pm:list" {
+				return `{"upgrade_status":"11.0.0"}`, "", 0, nil
+			}
+			if arg == "upgrade_status:analyze" {
+				return `
+Project: mymod (modules/custom/mymod)
+
+  - modules/custom/mymod/mymod.module:5
+    Deprecated function foo().
+    Rule: deprecation
+`, "", 0, nil
+			}
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRunWithEnv }()
+
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/upgrade_status":"*"}}`), 0o644)
+
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	result, err := realHandleUpgradeScan(args)
+	if err != nil {
+		t.Fatalf("realHandleUpgradeScan error: %v", err)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(result, &resp)
+	if resp["total_errors"].(float64) != 1 {
+		t.Errorf("total_errors = %v, want 1", resp["total_errors"])
+	}
+	modules := resp["modules"].([]interface{})
+	if len(modules) != 1 {
+		t.Errorf("modules = %d, want 1", len(modules))
 	}
 }
 

@@ -66,7 +66,7 @@ drup issue <module_or_nid>
 Then apply the patch:
 
 ```bash
-drup apply-patch <patch-url>
+drup apply-patch <patch-url> <project-path>
 ```
 
 After each module:
@@ -104,6 +104,14 @@ drup scan <project-path>
 - **File still has errors**: retry (max 2 attempts), then add to PENDING HUMAN LIST.
 
 ### Stage 7: FINAL VALIDATION
+
+```bash
+drup validate <project-path>
+```
+
+Full project validation. Exit 0 if clean, exit 1 if errors remain.
+
+Or scan for full detail:
 
 ```bash
 drup scan <project-path>

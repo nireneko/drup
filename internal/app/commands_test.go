@@ -808,7 +808,7 @@ func TestRunScan_PassesAllFlag(t *testing.T) {
 	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedArgs = args
-			return `{}`, "", 0, nil
+			return "no errors found", "", 0, nil
 		}
 		return "", "", 0, nil
 	}
@@ -829,5 +829,235 @@ func TestRunScan_PassesAllFlag(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("drush args = %v, want --all flag present", capturedArgs)
+	}
+}
+
+func TestRunScan_PlainTextParsing(t *testing.T) {
+	origRun := drupexec.Run
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			return `
+====================
+
+Project: token (modules/contrib/token)
+
+  - modules/contrib/token/token.module:42
+    Call to deprecated function foo().
+    Rule: deprecation
+`, "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.Run = origRun }()
+
+	// Capture stdout.
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := RunScan("/tmp/test-project")
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	if err != nil {
+		t.Fatalf("RunScan error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	// Verify JSON output contains expected data.
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, output)
+	}
+	if result["total_errors"].(float64) != 1 {
+		t.Errorf("total_errors = %v, want 1", result["total_errors"])
+	}
+}
+
+func TestRunScan_DrushExitNonZero(t *testing.T) {
+	origRun := drupexec.Run
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			return "", "drush failed: bootstrap error", 1, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.Run = origRun }()
+
+	err := RunScan("/tmp/test-project")
+	if err == nil {
+		t.Fatal("expected error for non-zero drush exit, got nil")
+	}
+	errMsg := err.Error()
+	// Error should include command, exit code, and stderr.
+	if !strings.Contains(errMsg, "exit") || !strings.Contains(errMsg, "1") {
+		t.Errorf("error = %q, want it to contain exit code 1", errMsg)
+	}
+	if !strings.Contains(errMsg, "bootstrap error") {
+		t.Errorf("error = %q, want it to contain stderr 'bootstrap error'", errMsg)
+	}
+}
+
+func TestRunScan_ParseFailure(t *testing.T) {
+	origRun := drupexec.Run
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			// Return empty output — parser returns zero-result, not error.
+			return "", "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.Run = origRun }()
+
+	err := RunScan("/tmp/test-project")
+	// Empty output is valid (zero errors), not a parse failure.
+	if err != nil {
+		t.Fatalf("RunScan should not error on empty output: %v", err)
+	}
+}
+
+func TestRunScan_NoFormatJSON(t *testing.T) {
+	origRun := drupexec.Run
+	var capturedArgs []string
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			capturedArgs = args
+			return "", "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.Run = origRun }()
+
+	_ = RunScan("/tmp/test-project")
+
+	for _, arg := range capturedArgs {
+		if arg == "--format=json" {
+			t.Errorf("drush args = %v, must NOT contain --format=json", capturedArgs)
+		}
+	}
+}
+
+// --- CLI validate and apply-patch tests ---
+
+func TestRunValidate_CleanProject(t *testing.T) {
+	origRun := drupexec.Run
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			return "[warning] No errors found.", "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.Run = origRun }()
+
+	// Capture stdout.
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := RunValidate([]string{"/tmp/test-project"})
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	if err != nil {
+		t.Fatalf("RunValidate error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, output)
+	}
+	if result["total_errors"].(float64) != 0 {
+		t.Errorf("total_errors = %v, want 0", result["total_errors"])
+	}
+}
+
+func TestRunValidate_ErrorsRemain(t *testing.T) {
+	origRun := drupexec.Run
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			return `
+Project: mymod (modules/custom/mymod)
+
+  - modules/custom/mymod/mymod.module:5
+    Deprecated function foo().
+    Rule: deprecation
+`, "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.Run = origRun }()
+
+	// Capture stdout.
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := RunValidate([]string{"/tmp/test-project"})
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	// Should return error (exit 1) when errors remain.
+	if err == nil {
+		t.Fatal("expected error for remaining errors, got nil")
+	}
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, output)
+	}
+	if result["total_errors"].(float64) != 1 {
+		t.Errorf("total_errors = %v, want 1", result["total_errors"])
+	}
+}
+
+func TestRunValidate_MissingArgs(t *testing.T) {
+	err := RunValidate([]string{})
+	if err == nil {
+		t.Fatal("expected error for missing args, got nil")
+	}
+	if !strings.Contains(err.Error(), "usage") {
+		t.Errorf("error = %q, want usage error", err.Error())
+	}
+}
+
+func TestRunApplyPatch_MissingArgs(t *testing.T) {
+	err := RunApplyPatch([]string{})
+	if err == nil {
+		t.Fatal("expected error for missing args, got nil")
+	}
+	if !strings.Contains(err.Error(), "usage") {
+		t.Errorf("error = %q, want usage error", err.Error())
+	}
+}
+
+func TestRunValidate_Dispatch(t *testing.T) {
+	// Verify validate command is dispatched correctly.
+	err := Run([]string{"validate"})
+	// Will fail because no args, but should not be "unknown command".
+	if err != nil && strings.Contains(err.Error(), "unknown command") {
+		t.Error("validate should be a known command")
+	}
+}
+
+func TestRunApplyPatch_Dispatch(t *testing.T) {
+	// Verify apply-patch command is dispatched correctly.
+	err := Run([]string{"apply-patch"})
+	// Will fail because no args, but should not be "unknown command".
+	if err != nil && strings.Contains(err.Error(), "unknown command") {
+		t.Error("apply-patch should be a known command")
 	}
 }

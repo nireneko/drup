@@ -14,7 +14,6 @@ import (
 	"github.com/nireneko/drup/internal/envdetect"
 	drupexec "github.com/nireneko/drup/internal/exec"
 	"github.com/nireneko/drup/internal/mcp"
-	"github.com/nireneko/drup/internal/patch"
 	"github.com/nireneko/drup/internal/patchreconcile"
 	"github.com/nireneko/drup/internal/report"
 	"github.com/nireneko/drup/internal/scan"
@@ -75,17 +74,17 @@ func realHandleScan(args json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 
-	stdout, stderr, exitCode, err := drupexec.Run("drush", "-r", params.ProjectPath, "upgrade_status:analyze", "--all", "--format=json")
+	stdout, stderr, exitCode, err := drupexec.Run("drush", "-r", params.ProjectPath, "upgrade_status:analyze", "--all")
 	if err != nil {
-		return nil, fmt.Errorf("exec drush: %w", err)
+		return nil, drushExecError("drush", []string{"-r", params.ProjectPath, "upgrade_status:analyze", "--all"}, -1, err.Error(), "")
 	}
 	if exitCode != 0 {
-		return nil, fmt.Errorf("drush exit %d: %s", exitCode, stderr)
+		return nil, drushExecError("drush", []string{"-r", params.ProjectPath, "upgrade_status:analyze", "--all"}, exitCode, stderr, stdout)
 	}
 
 	result, err := scan.Parse(strings.NewReader(stdout))
 	if err != nil {
-		return nil, fmt.Errorf("parse scan: %w", err)
+		return nil, fmt.Errorf("parse scan (command: drush -r %s upgrade_status:analyze --all): %w\nstdout (truncated): %.500s", params.ProjectPath, err, stdout)
 	}
 	result.ProjectPath = params.ProjectPath
 	return json.Marshal(result)
@@ -119,7 +118,7 @@ func realHandleAutofix(args json.RawMessage) (json.RawMessage, error) {
 	}
 
 	// Re-scan to get remaining errors.
-	scanStdout, _, scanExit, _ := drupexec.Run("drush", "-r", params.ProjectPath, "upgrade_status:analyze", "--all", "--format=json")
+	scanStdout, _, scanExit, _ := drupexec.Run("drush", "-r", params.ProjectPath, "upgrade_status:analyze", "--all")
 	remaining := 0
 	if scanExit == 0 {
 		result, err := scan.Parse(strings.NewReader(scanStdout))
@@ -183,7 +182,7 @@ func realHandleApplyPatch(args json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 
-	result, err := patch.Apply(params.PatchURL, params.ProjectPath, "", "")
+	result, err := DoApplyPatch(params.PatchURL, params.ProjectPath)
 	if err != nil {
 		return nil, err
 	}
@@ -201,38 +200,23 @@ func realHandleValidate(args json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 
-	// Use module name when specified, otherwise --all for full project analysis.
-	analyzeTarget := "--all"
-	if params.Module != "" {
-		analyzeTarget = params.Module
-	}
-
-	stdout, stderr, exitCode, err := drupexec.Run("drush", "-r", params.ProjectPath, "upgrade_status:analyze", analyzeTarget, "--format=json")
+	result, filtered, err := DoValidate(params.ProjectPath, params.Module)
 	if err != nil {
-		return nil, fmt.Errorf("exec drush: %w", err)
-	}
-	if exitCode != 0 {
-		return nil, fmt.Errorf("drush exit %d: %s", exitCode, stderr)
+		return nil, err
 	}
 
-	result, err := scan.Parse(strings.NewReader(stdout))
-	if err != nil {
-		return nil, fmt.Errorf("parse scan: %w", err)
-	}
-
-	// Filter by module or file if specified.
-	var filtered []scan.DepError
-	for _, mod := range result.Modules {
-		if params.Module != "" && mod.Name != params.Module {
-			continue
-		}
-		for _, e := range mod.Errors {
-			if params.File != "" && !strings.Contains(e.File, params.File) {
-				continue
+	// Further filter by file if specified.
+	if params.File != "" {
+		var byFile []scan.DepError
+		for _, e := range filtered {
+			if strings.Contains(e.File, params.File) {
+				byFile = append(byFile, e)
 			}
-			filtered = append(filtered, e)
 		}
+		filtered = byFile
 	}
+
+	_ = result // result available if needed for richer response
 
 	response := map[string]interface{}{
 		"total_errors": len(filtered),
@@ -626,10 +610,10 @@ func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 	if params.Module != "" {
 		analyzeTarget = params.Module
 	}
-	analyzeArgs := []string{"upgrade_status:analyze", analyzeTarget, "--format=json", "--root=" + params.ProjectPath}
+	analyzeArgs := []string{"upgrade_status:analyze", analyzeTarget, "--root=" + params.ProjectPath}
 	analyzeStdout, analyzeStderr, analyzeExit, analyzeErr := drupexec.RunWithEnv(detection.CommandPrefix, "drush", analyzeArgs...)
 	if analyzeErr != nil {
-		return nil, fmt.Errorf("exec upgrade_status:analyze: %w", analyzeErr)
+		return nil, drushExecError("drush", analyzeArgs, -1, analyzeErr.Error(), "")
 	}
 
 	// Parse results.

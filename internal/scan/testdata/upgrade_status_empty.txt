@@ -1,0 +1,2 @@
+[warning] No projects found to analyze.
+[warning] upgrade_status requires at least one custom or contrib module.
