@@ -18,7 +18,7 @@ import (
 
 func TestWireMCPTools_NoPanic(t *testing.T) {
 	var buf bytes.Buffer
-	server := mcp.NewServer(&buf)
+	server := mcp.NewServer(&buf, "test")
 	WireMCPTools(server)
 	// Verify WireMCPTools runs without panic and server is usable.
 	t.Log("WireMCPTools registered successfully")
@@ -26,7 +26,7 @@ func TestWireMCPTools_NoPanic(t *testing.T) {
 
 func TestWireMCPTools_AllToolsRegistered(t *testing.T) {
 	var buf bytes.Buffer
-	server := mcp.NewServer(&buf)
+	server := mcp.NewServer(&buf, "test")
 	WireMCPTools(server)
 
 	// Verify all 20 tools are registered by calling tools/list.

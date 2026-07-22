@@ -42,7 +42,8 @@ func (r *realCmd) Output() (stdout, stderr string, exitCode int, err error) {
 // Run executes cmd with args and returns stdout, stderr, exit code, and error.
 // A non-zero exit code is NOT an error — it's returned in exitCode.
 // An error is only returned if the command cannot be started (e.g., not found).
-func Run(cmd string, args ...string) (stdout, stderr string, exitCode int, err error) {
+// Package-level var for test overrides.
+var Run = func(cmd string, args ...string) (stdout, stderr string, exitCode int, err error) {
 	return execCommand(cmd, args...).Output()
 }
 
@@ -50,7 +51,8 @@ func Run(cmd string, args ...string) (stdout, stderr string, exitCode int, err e
 // Example: RunWithEnv([]string{"ddev"}, "composer", "require", "pkg")
 // executes: ddev composer require pkg
 // Empty prefix falls through to the same path as Run().
-func RunWithEnv(prefix []string, cmd string, args ...string) (stdout, stderr string, exitCode int, err error) {
+// Package-level var for test overrides.
+var RunWithEnv = func(prefix []string, cmd string, args ...string) (stdout, stderr string, exitCode int, err error) {
 	if len(prefix) == 0 {
 		return execCommand(cmd, args...).Output()
 	}

@@ -17,6 +17,14 @@ import (
 // existing HTTP + parsing logic instead of duplicating it.
 var HTTPClient = &http.Client{Timeout: 30 * time.Second}
 
+// SetHTTPClientForTest overrides the package-level HTTP client for testing.
+// Returns a cleanup function that restores the original client.
+func SetHTTPClientForTest(c *http.Client) func() {
+	orig := httpClient
+	httpClient = c
+	return func() { httpClient = orig }
+}
+
 // releaseBaseURL is the template for release-history lookups.
 // Package-level var for testability.
 var releaseBaseURL = "https://updates.drupal.org/release-history/%s/current"

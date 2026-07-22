@@ -781,3 +781,104 @@ func TestUpgrade_DownloadErrorPropagates(t *testing.T) {
 		t.Errorf("currentBin content = %q, want untouched %q", got, "old version")
 	}
 }
+
+// TestBackupBinary_WritesToHomeBackupsDir verifies that BackupBinary copies the
+// current binary to the specified backup path (which in production is
+// ~/.drup/backups/drup.bak), NOT adjacent to the source binary.
+func TestBackupBinary_WritesToHomeBackupsDir(t *testing.T) {
+	homeDir := t.TempDir()
+	binDir := t.TempDir()
+
+	currentBin := filepath.Join(binDir, "drup")
+	if err := os.WriteFile(currentBin, []byte("#!/bin/sh\necho binary"), 0o755); err != nil {
+		t.Fatalf("write currentBin: %v", err)
+	}
+
+	// Backup path simulates ~/.drup/backups/drup.bak.
+	backupDir := filepath.Join(homeDir, ".drup", "backups")
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		t.Fatalf("mkdir backupDir: %v", err)
+	}
+	backupPath := filepath.Join(backupDir, "drup.bak")
+
+	if err := BackupBinary(currentBin, backupPath); err != nil {
+		t.Fatalf("BackupBinary: %v", err)
+	}
+
+	// Verify backup exists at the home-based path.
+	got, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if string(got) != "#!/bin/sh\necho binary" {
+		t.Errorf("backup content = %q, want %q", got, "#!/bin/sh\necho binary")
+	}
+
+	// Verify NO adjacent backup exists next to source binary.
+	adjacentBackup := filepath.Join(binDir, "drup.bak")
+	if _, err := os.Stat(adjacentBackup); err == nil {
+		t.Errorf("adjacent backup %s should NOT exist — backup must go to ~/.drup/backups/", adjacentBackup)
+	}
+
+	// Verify backup preserves executable bit.
+	info, err := os.Stat(backupPath)
+	if err != nil {
+		t.Fatalf("stat backup: %v", err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Errorf("backup mode = %v, want executable bit set", info.Mode())
+	}
+}
+
+// TestReplaceBinary_CrossDeviceCopy verifies that ReplaceBinary correctly
+// handles the case where the backup path is on a different filesystem than
+// the binary. BackupBinary uses copyFile (not rename) so it works across
+// device boundaries.
+func TestReplaceBinary_CrossDeviceCopy(t *testing.T) {
+	// Use two separate TempDirs to simulate different filesystems.
+	// (On most systems these are on the same FS, but copyFile works
+	// regardless — the key test is that content is correctly copied.)
+	binDir := t.TempDir()
+	backupDir := t.TempDir()
+
+	currentBin := filepath.Join(binDir, "drup")
+	newBinaryPath := filepath.Join(binDir, "drup.new")
+	backupPath := filepath.Join(backupDir, "drup.bak")
+
+	oldContent := []byte("#!/bin/sh\necho old version")
+	newContent := []byte("#!/bin/sh\necho new version")
+
+	if err := os.WriteFile(currentBin, oldContent, 0o755); err != nil {
+		t.Fatalf("write currentBin: %v", err)
+	}
+	if err := os.WriteFile(newBinaryPath, newContent, 0o755); err != nil {
+		t.Fatalf("write newBinaryPath: %v", err)
+	}
+
+	if err := ReplaceBinary(newBinaryPath, currentBin, backupPath); err != nil {
+		t.Fatalf("ReplaceBinary: %v", err)
+	}
+
+	// Verify current binary has new content.
+	got, err := os.ReadFile(currentBin)
+	if err != nil {
+		t.Fatalf("read currentBin: %v", err)
+	}
+	if string(got) != string(newContent) {
+		t.Errorf("currentBin content = %q, want %q", got, newContent)
+	}
+
+	// Verify backup has old content on the separate directory.
+	backup, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if string(backup) != string(oldContent) {
+		t.Errorf("backup content = %q, want %q", backup, oldContent)
+	}
+
+	// Verify new binary was consumed (moved).
+	if _, err := os.Stat(newBinaryPath); !os.IsNotExist(err) {
+		t.Errorf("newBinaryPath %s should no longer exist after replace", newBinaryPath)
+	}
+}

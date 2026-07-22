@@ -86,7 +86,12 @@ func TestClaudeAdapter_Paths(t *testing.T) {
 		t.Error("SkillsDir is empty")
 	}
 
-	want := filepath.Join(home, ".claude", "mcp", "drup.json")
+	// Mock CWD to home dir so .mcp.json resolves predictably.
+	origCWD := getCWD
+	getCWD = func() (string, error) { return home, nil }
+	defer func() { getCWD = origCWD }()
+
+	want := filepath.Join(home, ".mcp.json")
 	if got := adapter.MCPConfigPath(); got != want {
 		t.Errorf("MCPConfigPath() = %q, want %q", got, want)
 	}
@@ -369,6 +374,11 @@ func TestInstall_WritesFiles(t *testing.T) {
 	homeDir = func() (string, error) { return home, nil }
 	defer func() { homeDir = orig }()
 
+	// Mock CWD so Claude's .mcp.json resolves predictably.
+	origCWD := getCWD
+	getCWD = func() (string, error) { return home, nil }
+	defer func() { getCWD = origCWD }()
+
 	agents := DetectAgents()
 	if len(agents) == 0 {
 		t.Fatal("no agents detected")
@@ -394,6 +404,14 @@ func TestInstall_WritesFiles(t *testing.T) {
 	agentPath := filepath.Join(agents[0].AgentsDir(), "drup-preflight.md")
 	if _, err := os.Stat(agentPath); os.IsNotExist(err) {
 		t.Errorf("agent file not written to %s", agentPath)
+	}
+
+	// Command: commands/drup.md → commands/drup.md (OpenCode only)
+	if agents[0].CommandsDir() != "" {
+		commandPath := filepath.Join(agents[0].CommandsDir(), "drup.md")
+		if _, err := os.Stat(commandPath); os.IsNotExist(err) {
+			t.Errorf("command file not written to %s", commandPath)
+		}
 	}
 
 	// MCP config: .mcp.json
@@ -485,11 +503,14 @@ func TestClaudeAdapter_RemoveMCPConfig(t *testing.T) {
 	home := t.TempDir()
 	adapter := &ClaudeAdapter{HomeDir: home}
 
+	// Mock CWD to home dir.
+	origCWD := getCWD
+	getCWD = func() (string, error) { return home, nil }
+	defer func() { getCWD = origCWD }()
+
 	// Create MCP config.
-	mcpDir := filepath.Join(home, ".claude", "mcp")
-	os.MkdirAll(mcpDir, 0o755)
-	mcpPath := filepath.Join(mcpDir, "drup.json")
-	os.WriteFile(mcpPath, []byte(`{"command":"drup"}`), 0o644)
+	mcpPath := filepath.Join(home, ".mcp.json")
+	os.WriteFile(mcpPath, []byte(`{"mcpServers":{"drup":{"command":"drup"}}}`), 0o644)
 
 	// Remove it.
 	path, err := adapter.RemoveMCPConfig(false)
@@ -827,6 +848,11 @@ func TestUninstall_CallsAllRemoveMethods(t *testing.T) {
 	homeDir = func() (string, error) { return home, nil }
 	defer func() { homeDir = orig }()
 
+	// Mock CWD so Claude's .mcp.json resolves predictably.
+	origCWD := getCWD
+	getCWD = func() (string, error) { return home, nil }
+	defer func() { getCWD = origCWD }()
+
 	agents := DetectAgents()
 	if len(agents) == 0 {
 		t.Fatal("no agents detected")
@@ -871,7 +897,7 @@ func TestUninstall_CallsAllRemoveMethods(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(agentsDir, "drup-contrib.md")); !os.IsNotExist(err) {
 		t.Error("drup-contrib.md still exists after Uninstall")
 	}
-	mcpPath := filepath.Join(home, ".claude", "mcp", "drup.json")
+	mcpPath := filepath.Join(home, ".mcp.json")
 	if _, err := os.Stat(mcpPath); !os.IsNotExist(err) {
 		t.Error("MCP config still exists after Uninstall")
 	}
@@ -884,6 +910,11 @@ func TestUninstall_DryRun(t *testing.T) {
 	orig := homeDir
 	homeDir = func() (string, error) { return home, nil }
 	defer func() { homeDir = orig }()
+
+	// Mock CWD so Claude's .mcp.json resolves predictably.
+	origCWD := getCWD
+	getCWD = func() (string, error) { return home, nil }
+	defer func() { getCWD = origCWD }()
 
 	agents := DetectAgents()
 	if len(agents) == 0 {
@@ -950,4 +981,114 @@ func TestUninstall_Idempotent(t *testing.T) {
 	// Both should succeed without error.
 	_ = paths1
 	_ = paths2
+}
+
+// WriteSkill tests — verify directory structure creation.
+
+func TestWriteSkill_CreatesDirectoryStructure(t *testing.T) {
+	home := t.TempDir()
+
+	tests := []struct {
+		name    string
+		adapter AgentAdapter
+		wantDir string
+	}{
+		{
+			name:    "Claude creates skills/<name>/SKILL.md",
+			adapter: &ClaudeAdapter{HomeDir: home},
+			wantDir: filepath.Join(home, ".claude", "skills", "drup"),
+		},
+		{
+			name:    "OpenCode creates skills/<name>/SKILL.md",
+			adapter: &OpenCodeAdapter{HomeDir: home},
+			wantDir: filepath.Join(home, ".config", "opencode", "skills", "drup"),
+		},
+		{
+			name:    "Codex creates skills/<name>/SKILL.md",
+			adapter: &CodexAdapter{HomeDir: home},
+			wantDir: filepath.Join(home, ".codex", "skills", "drup"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := "# Test Skill\nTrigger: test\n"
+			if err := tt.adapter.WriteSkill("drup", content); err != nil {
+				t.Fatalf("WriteSkill error: %v", err)
+			}
+
+			// Verify directory was created.
+			info, err := os.Stat(tt.wantDir)
+			if err != nil {
+				t.Fatalf("skill directory not created at %s: %v", tt.wantDir, err)
+			}
+			if !info.IsDir() {
+				t.Errorf("expected directory at %s, got file", tt.wantDir)
+			}
+
+			// Verify SKILL.md content.
+			skillFile := filepath.Join(tt.wantDir, "SKILL.md")
+			got, err := os.ReadFile(skillFile)
+			if err != nil {
+				t.Fatalf("read SKILL.md: %v", err)
+			}
+			if string(got) != content {
+				t.Errorf("SKILL.md content = %q, want %q", got, content)
+			}
+		})
+	}
+}
+
+// WriteCommand tests — verify adapter-specific behavior.
+
+func TestWriteCommand_OpenCode(t *testing.T) {
+	home := t.TempDir()
+	adapter := &OpenCodeAdapter{HomeDir: home}
+
+	content := "# drup command\nTrigger: drup\n"
+	if err := adapter.WriteCommand("drup.md", content); err != nil {
+		t.Fatalf("WriteCommand error: %v", err)
+	}
+
+	// Verify file written to commands directory.
+	cmdPath := filepath.Join(home, ".config", "opencode", "commands", "drup.md")
+	got, err := os.ReadFile(cmdPath)
+	if err != nil {
+		t.Fatalf("read command file: %v", err)
+	}
+	if string(got) != content {
+		t.Errorf("command content = %q, want %q", got, content)
+	}
+}
+
+func TestWriteCommand_ClaudeIsNoop(t *testing.T) {
+	home := t.TempDir()
+	adapter := &ClaudeAdapter{HomeDir: home}
+
+	// Claude does not support commands directory — WriteCommand should be a no-op.
+	if err := adapter.WriteCommand("drup.md", "# test"); err != nil {
+		t.Fatalf("WriteCommand should not error for Claude: %v", err)
+	}
+
+	// Verify no commands directory was created.
+	cmdDir := filepath.Join(home, ".claude", "commands")
+	if _, err := os.Stat(cmdDir); !os.IsNotExist(err) {
+		t.Errorf("Claude should not create a commands directory, but %s exists", cmdDir)
+	}
+}
+
+func TestWriteCommand_CodexIsNoop(t *testing.T) {
+	home := t.TempDir()
+	adapter := &CodexAdapter{HomeDir: home}
+
+	// Codex does not support commands directory — WriteCommand should be a no-op.
+	if err := adapter.WriteCommand("drup.md", "# test"); err != nil {
+		t.Fatalf("WriteCommand should not error for Codex: %v", err)
+	}
+
+	// Verify no commands directory was created.
+	cmdDir := filepath.Join(home, ".codex", "commands")
+	if _, err := os.Stat(cmdDir); !os.IsNotExist(err) {
+		t.Errorf("Codex should not create a commands directory, but %s exists", cmdDir)
+	}
 }

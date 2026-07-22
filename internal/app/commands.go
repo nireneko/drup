@@ -184,7 +184,7 @@ func RunReport(path string) error {
 
 // RunMCP starts the MCP stdio server.
 func RunMCP() error {
-	server := mcp.NewServer(os.Stdout)
+	server := mcp.NewServer(os.Stdout, Version)
 	WireMCPTools(server)
 	return server.Run()
 }
@@ -270,6 +270,12 @@ func RunSync() error {
 // Package-level vars for testability.
 var checkLatestFn = update.CheckLatest
 var upgradeFn = update.Upgrade
+
+// RunUninstall override points for testability.
+var stateLoadFn = statepkg.Load
+var osExecutableFn = os.Executable
+var osUserHomeDirFn = os.UserHomeDir
+var stateRemoveFn = statepkg.Remove
 
 // RunUpgrade self-updates the binary. It uses the runtime's actual
 // GOOS/GOARCH for asset selection — GOOS/GOARCH environment overrides are
@@ -565,7 +571,7 @@ func RunUninstall(args []string) error {
 	}
 
 	// Load state.
-	s, err := statepkg.Load()
+	s, err := stateLoadFn()
 	if err != nil {
 		if force {
 			fmt.Fprintf(os.Stderr, "Warning: could not load state: %v\n", err)
@@ -586,7 +592,7 @@ func RunUninstall(args []string) error {
 	}
 
 	// Build adapter list from state.
-	home, err := os.UserHomeDir()
+	home, err := osUserHomeDirFn()
 	if err != nil {
 		return fmt.Errorf("get home directory: %w", err)
 	}
@@ -639,12 +645,12 @@ func RunUninstall(args []string) error {
 	}
 
 	// Remove state directory.
-	if err := statepkg.Remove(); err != nil {
+	if err := stateRemoveFn(); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not remove state directory: %v\n", err)
 	}
 
 	// Attempt binary self-removal.
-	executable, err := os.Executable()
+	executable, err := osExecutableFn()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not determine executable path: %v\n", err)
 	} else {

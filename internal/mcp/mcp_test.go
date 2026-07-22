@@ -19,7 +19,7 @@ func TestServer_HandleRequest_Scan(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	server := NewServer(&buf)
+	server := NewServer(&buf, "test")
 
 	err := server.handleRequest(req)
 	if err != nil {
@@ -49,7 +49,7 @@ func TestServer_HandleRequest_UnknownTool(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	server := NewServer(&buf)
+	server := NewServer(&buf, "test")
 
 	err := server.handleRequest(req)
 	if err != nil {
@@ -69,7 +69,7 @@ func TestServer_HandleRequest_UnknownTool(t *testing.T) {
 
 func TestServer_HandleRequest_InvalidJSON(t *testing.T) {
 	var buf bytes.Buffer
-	server := NewServer(&buf)
+	server := NewServer(&buf, "test")
 
 	// Simulate invalid JSON input.
 	err := server.handleRaw([]byte("{invalid"))
@@ -96,7 +96,7 @@ func TestServer_ListTools(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	server := NewServer(&buf)
+	server := NewServer(&buf, "test")
 
 	err := server.handleRequest(req)
 	if err != nil {

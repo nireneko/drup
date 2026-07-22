@@ -39,18 +39,20 @@ type ToolCallParams struct {
 
 // Server is the MCP stdio server.
 type Server struct {
-	out   io.Writer
-	tools map[string]ToolHandler
+	out     io.Writer
+	tools   map[string]ToolHandler
+	version string
 }
 
 // ToolHandler is a function that handles a tool call.
 type ToolHandler func(args json.RawMessage) (json.RawMessage, error)
 
 // NewServer creates a new MCP server writing to out.
-func NewServer(out io.Writer) *Server {
+func NewServer(out io.Writer, version string) *Server {
 	return &Server{
-		out:   out,
-		tools: defaultTools(),
+		out:     out,
+		tools:   defaultTools(),
+		version: version,
 	}
 }
 
@@ -86,7 +88,8 @@ func (s *Server) handleRaw(data []byte) error {
 func (s *Server) handleRequest(req JSONRPCRequest) error {
 	switch req.Method {
 	case "initialize":
-		return s.sendResult(req.ID, json.RawMessage(`{"protocolVersion":"2024-11-05","capabilities":{"tools":{}}}`))
+		result := fmt.Sprintf(`{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"drup","version":"%s"}}`, s.version)
+		return s.sendResult(req.ID, json.RawMessage(result))
 	case "tools/list":
 		return s.handleListTools(req.ID)
 	case "tools/call":
@@ -103,6 +106,9 @@ func (s *Server) handleListTools(id interface{}) error {
 		tools = append(tools, map[string]interface{}{
 			"name":        name,
 			"description": fmt.Sprintf("Tool: %s", name),
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+			},
 		})
 	}
 

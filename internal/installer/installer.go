@@ -17,18 +17,24 @@ import (
 // homeDir returns the user's home directory. Package-level var for testability.
 var homeDir = os.UserHomeDir
 
+// getCWD returns the current working directory. Package-level var for testability.
+var getCWD = os.Getwd
+
 // AgentAdapter is the interface for agent-specific installation.
 type AgentAdapter interface {
 	ID() string
 	Detect() bool
 	SkillsDir() string
 	AgentsDir() string
+	CommandsDir() string
 	MCPConfigPath() string
 	WriteSkill(name, content string) error
 	WriteAgent(name, content string) error
+	WriteCommand(name, content string) error
 	WriteMCPConfig(content string) error
 	RemoveSkill(name string, dryRun bool) (string, error)
 	RemoveAgent(name string, dryRun bool) (string, error)
+	RemoveCommand(name string, dryRun bool) (string, error)
 	RemoveMCPConfig(dryRun bool) (string, error)
 }
 
@@ -50,11 +56,16 @@ func (a *ClaudeAdapter) SkillsDir() string {
 }
 
 func (a *ClaudeAdapter) MCPConfigPath() string {
-	return filepath.Join(a.HomeDir, ".claude", "mcp", "drup.json")
+	cwd, _ := getCWD()
+	return filepath.Join(cwd, ".mcp.json")
 }
 
 func (a *ClaudeAdapter) AgentsDir() string {
 	return filepath.Join(a.HomeDir, ".claude", "agents")
+}
+
+func (a *ClaudeAdapter) CommandsDir() string {
+	return "" // Claude Code does not support a commands directory
 }
 
 func (a *ClaudeAdapter) WriteSkill(name, content string) error {
@@ -75,12 +86,70 @@ func (a *ClaudeAdapter) WriteAgent(name, content string) error {
 	return os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644)
 }
 
+func (a *ClaudeAdapter) WriteCommand(name, content string) error {
+	// Claude Code does not support custom commands; commands are implicit via SKILL.md
+	return nil
+}
+
 func (a *ClaudeAdapter) WriteMCPConfig(content string) error {
-	dir := filepath.Dir(a.MCPConfigPath())
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+	configPath := a.MCPConfigPath()
+
+	// Read existing .mcp.json or start fresh.
+	var config map[string]any
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("read %s: %w", configPath, err)
+		}
+		config = make(map[string]any)
+	} else {
+		if err := json.Unmarshal(data, &config); err != nil {
+			return fmt.Errorf("corrupt config %s: %w", configPath, err)
+		}
 	}
-	return os.WriteFile(a.MCPConfigPath(), []byte(content), 0o644)
+
+	// Parse the rendered snippet (command + args object).
+	var snippet any
+	if err := json.Unmarshal([]byte(content), &snippet); err != nil {
+		return fmt.Errorf("invalid MCP snippet: %w", err)
+	}
+
+	// Ensure "mcpServers" key exists.
+	mcpServers, ok := config["mcpServers"].(map[string]any)
+	if !ok {
+		mcpServers = make(map[string]any)
+	}
+	mcpServers["drup"] = snippet
+	config["mcpServers"] = mcpServers
+
+	// Marshal with indent.
+	merged, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal merged config: %w", err)
+	}
+
+	// Atomic write: temp file + rename.
+	dir := filepath.Dir(configPath)
+	if dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create config dir: %w", err)
+		}
+	}
+	tmp, err := os.CreateTemp(dir, ".mcp.json.*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(merged); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	return os.Rename(tmpName, configPath)
 }
 
 func (a *ClaudeAdapter) RemoveSkill(name string, dryRun bool) (string, error) {
@@ -116,15 +185,76 @@ func (a *ClaudeAdapter) RemoveAgent(name string, dryRun bool) (string, error) {
 	return matches[0], nil
 }
 
+func (a *ClaudeAdapter) RemoveCommand(name string, dryRun bool) (string, error) {
+	// Claude Code does not support custom commands
+	return "", nil
+}
+
 func (a *ClaudeAdapter) RemoveMCPConfig(dryRun bool) (string, error) {
 	path := a.MCPConfigPath()
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return "", nil
 	}
-	if !dryRun {
+
+	if dryRun {
+		return path, nil
+	}
+
+	// Read existing .mcp.json.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		return "", fmt.Errorf("corrupt config %s: %w", path, err)
+	}
+
+	// Delete drup key from mcpServers.
+	mcpServers, ok := config["mcpServers"].(map[string]any)
+	if !ok {
+		return "", nil // no mcpServers key, nothing to remove
+	}
+	delete(mcpServers, "drup")
+
+	// If mcpServers is now empty, remove the mcpServers key too.
+	if len(mcpServers) == 0 {
+		delete(config, "mcpServers")
+	}
+
+	// If config is now empty, delete the file.
+	if len(config) == 0 {
 		if err := os.Remove(path); err != nil {
 			return "", err
 		}
+		return path, nil
+	}
+
+	// Marshal with indent.
+	updated, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal updated config: %w", err)
+	}
+
+	// Atomic write: temp file + rename.
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".mcp.json.*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(updated); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return "", fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return "", fmt.Errorf("close temp file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return "", err
 	}
 	return path, nil
 }
@@ -154,6 +284,10 @@ func (a *OpenCodeAdapter) AgentsDir() string {
 	return filepath.Join(a.HomeDir, ".config", "opencode", "agents")
 }
 
+func (a *OpenCodeAdapter) CommandsDir() string {
+	return filepath.Join(a.HomeDir, ".config", "opencode", "commands")
+}
+
 func (a *OpenCodeAdapter) WriteSkill(name, content string) error {
 	// OpenCode skills are directories: ~/.config/opencode/skills/<name>/SKILL.md
 	dir := filepath.Join(a.SkillsDir(), name)
@@ -165,6 +299,14 @@ func (a *OpenCodeAdapter) WriteSkill(name, content string) error {
 
 func (a *OpenCodeAdapter) WriteAgent(name, content string) error {
 	dir := a.AgentsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644)
+}
+
+func (a *OpenCodeAdapter) WriteCommand(name, content string) error {
+	dir := a.CommandsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -246,6 +388,25 @@ func (a *OpenCodeAdapter) RemoveSkill(name string, dryRun bool) (string, error) 
 func (a *OpenCodeAdapter) RemoveAgent(name string, dryRun bool) (string, error) {
 	// Support glob patterns like "drup-*.md"
 	pattern := filepath.Join(a.AgentsDir(), name)
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return "", err
+	}
+	if len(matches) == 0 {
+		return "", nil
+	}
+	if !dryRun {
+		for _, match := range matches {
+			if err := os.Remove(match); err != nil {
+				return "", err
+			}
+		}
+	}
+	return matches[0], nil
+}
+
+func (a *OpenCodeAdapter) RemoveCommand(name string, dryRun bool) (string, error) {
+	pattern := filepath.Join(a.CommandsDir(), name)
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return "", err
@@ -349,6 +510,10 @@ func (a *CodexAdapter) AgentsDir() string {
 	return filepath.Join(a.HomeDir, ".codex", "agents")
 }
 
+func (a *CodexAdapter) CommandsDir() string {
+	return "" // Codex does not support a commands directory
+}
+
 func (a *CodexAdapter) WriteSkill(name, content string) error {
 	dir := filepath.Join(a.SkillsDir(), name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -363,6 +528,11 @@ func (a *CodexAdapter) WriteAgent(name, content string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644)
+}
+
+func (a *CodexAdapter) WriteCommand(name, content string) error {
+	// Codex does not support custom commands
+	return nil
 }
 
 func (a *CodexAdapter) WriteMCPConfig(content string) error {
@@ -404,6 +574,11 @@ func (a *CodexAdapter) RemoveAgent(name string, dryRun bool) (string, error) {
 		}
 	}
 	return matches[0], nil
+}
+
+func (a *CodexAdapter) RemoveCommand(name string, dryRun bool) (string, error) {
+	// Codex does not support custom commands
+	return "", nil
 }
 
 func (a *CodexAdapter) RemoveMCPConfig(dryRun bool) (string, error) {
@@ -688,6 +863,12 @@ func Install(agents []AgentAdapter, binaryPath string, files map[string]string) 
 				if err := agent.WriteAgent(agentName, content); err != nil {
 					return fmt.Errorf("write agent %s to %s: %w", agentName, agent.ID(), err)
 				}
+			case strings.HasPrefix(path, "commands/"):
+				// Command definitions → commands/<name>.md
+				commandName := strings.TrimPrefix(path, "commands/")
+				if err := agent.WriteCommand(commandName, content); err != nil {
+					return fmt.Errorf("write command %s to %s: %w", commandName, agent.ID(), err)
+				}
 			case path == ".mcp.json":
 				// MCP config — use pre-rendered template content
 				if err := agent.WriteMCPConfig(content); err != nil {
@@ -720,6 +901,13 @@ func Uninstall(agents []AgentAdapter, dryRun bool) ([]string, error) {
 		// Remove agent files using glob pattern.
 		if path, err := agent.RemoveAgent("drup-*.md", dryRun); err != nil {
 			return paths, fmt.Errorf("remove agents from %s: %w", agent.ID(), err)
+		} else if path != "" {
+			paths = append(paths, path)
+		}
+
+		// Remove command files.
+		if path, err := agent.RemoveCommand("drup.md", dryRun); err != nil {
+			return paths, fmt.Errorf("remove command from %s: %w", agent.ID(), err)
 		} else if path != "" {
 			paths = append(paths, path)
 		}
