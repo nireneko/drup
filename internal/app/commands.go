@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/nireneko/drup/internal/coreupgrade"
@@ -596,6 +597,41 @@ func RunPreflight() error {
 		}
 	}
 
+	// 5.5. Detect PHP version and patch settings.php for PHP 8.4+
+	phpVersion, err := detectPHPVersion(cwd)
+	if err != nil {
+		results = append(results, PreflightResult{
+			Check:   "php_version",
+			Pass:    false,
+			Message: fmt.Sprintf("Failed to detect PHP version: %v", err),
+		})
+		allPass = false
+	} else {
+		results = append(results, PreflightResult{
+			Check:   "php_version",
+			Pass:    true,
+			Message: fmt.Sprintf("PHP %s detected", phpVersion),
+		})
+
+		if isPHP84OrLater(phpVersion) {
+			fmt.Println("PHP 8.4+ detected, patching settings.php to suppress deprecation warnings...")
+			if err := patchSettingsPHP(cwd); err != nil {
+				results = append(results, PreflightResult{
+					Check:   "php84_compat",
+					Pass:    false,
+					Message: fmt.Sprintf("Failed to patch settings.php: %v", err),
+				})
+				allPass = false
+			} else {
+				results = append(results, PreflightResult{
+					Check:   "php84_compat",
+					Pass:    true,
+					Message: "settings.php patched to suppress E_DEPRECATED",
+				})
+			}
+		}
+	}
+
 	// 6. Enable upgrade_status module.
 	fmt.Println("Enabling upgrade_status module...")
 	// Delete conflicting update.settings config before enabling.
@@ -906,6 +942,94 @@ func extractZip(archivePath, destDir string) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// detectPHPVersion detects the PHP version using cliRun.
+func detectPHPVersion(projectPath string) (string, error) {
+	stdout, _, exitCode, err := cliRun(projectPath, "php", "-r", "echo PHP_VERSION;")
+	if err != nil {
+		return "", fmt.Errorf("detect PHP version: %w", err)
+	}
+	if exitCode != 0 {
+		return "", fmt.Errorf("php command exited with code %d", exitCode)
+	}
+	return strings.TrimSpace(stdout), nil
+}
+
+// isPHP84OrLater checks if the PHP version is 8.4 or later.
+func isPHP84OrLater(version string) bool {
+	parts := strings.Split(version, ".")
+	if len(parts) < 2 {
+		return false
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return false
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return false
+	}
+	return major > 8 || (major == 8 && minor >= 4)
+}
+
+// patchSettingsPHP patches settings.php to suppress E_DEPRECATED warnings for PHP 8.4+.
+func patchSettingsPHP(projectPath string) error {
+	settingsPath := filepath.Join(projectPath, "web", "sites", "default", "settings.php")
+	
+	// Read current content
+	content, err := os.ReadFile(settingsPath)
+	if err != nil {
+		return fmt.Errorf("read settings.php: %w", err)
+	}
+	
+	contentStr := string(content)
+	suppressionLine := "error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);"
+	
+	// Check if already patched (idempotent)
+	if strings.Contains(contentStr, suppressionLine) {
+		return nil
+	}
+	
+	// Create backup
+	backupPath := settingsPath + ".bak"
+	if err := os.WriteFile(backupPath, content, 0o644); err != nil {
+		return fmt.Errorf("create backup: %w", err)
+	}
+	
+	// Find DDEV include block end or EOF
+	ddevBlockEnd := strings.Index(contentStr, "if (file_exists(__DIR__ . '/settings.ddev.php')) {")
+	insertPos := len(contentStr)
+	
+	if ddevBlockEnd != -1 {
+		// Find the closing brace of the DDEV block
+		blockStart := ddevBlockEnd
+		braceCount := 0
+		inBlock := false
+		for i := blockStart; i < len(contentStr); i++ {
+			if contentStr[i] == '{' {
+				braceCount++
+				inBlock = true
+			} else if contentStr[i] == '}' {
+				braceCount--
+				if inBlock && braceCount == 0 {
+					// Found the end of the DDEV block
+					insertPos = i + 1
+					break
+				}
+			}
+		}
+	}
+	
+	// Insert suppression line after DDEV block
+	newContent := contentStr[:insertPos] + "\n" + suppressionLine + "\n" + contentStr[insertPos:]
+	
+	// Write updated content
+	if err := os.WriteFile(settingsPath, []byte(newContent), 0o644); err != nil {
+		return fmt.Errorf("write settings.php: %w", err)
+	}
+	
 	return nil
 }
 

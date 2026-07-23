@@ -1118,6 +1118,78 @@ func TestRunApplyPatch_Dispatch(t *testing.T) {
 	}
 }
 
+// Phase 5: PHP 8.4 Deprecation Suppression - RED tests
+
+func TestIsPHP84OrLater(t *testing.T) {
+	tests := []struct {
+		version string
+		want    bool
+	}{
+		{"8.4.2", true},
+		{"8.3.0", false},
+		{"8.4.0", true},
+		{"8.5.0", true},
+		{"7.4.0", false},
+		{"9.0.0", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.version, func(t *testing.T) {
+			got := isPHP84OrLater(tt.version)
+			if got != tt.want {
+				t.Errorf("isPHP84OrLater(%q) = %v, want %v", tt.version, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPatchSettingsPHP_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "web", "sites", "default", "settings.php")
+	os.MkdirAll(filepath.Dir(settingsPath), 0o755)
+	
+	// Create initial settings.php with DDEV include block
+	initialContent := `<?php
+// DDEV include block
+if (file_exists(__DIR__ . '/settings.ddev.php')) {
+  include __DIR__ . '/settings.ddev.php';
+}
+// Other settings
+$settings['some_key'] = 'value';
+`
+	os.WriteFile(settingsPath, []byte(initialContent), 0o644)
+
+	// First patch
+	err := patchSettingsPHP(dir)
+	if err != nil {
+		t.Fatalf("first patchSettingsPHP error: %v", err)
+	}
+
+	// Verify backup was created
+	backupPath := settingsPath + ".bak"
+	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+		t.Error("backup file was not created")
+	}
+
+	// Verify suppression line was added
+	content, _ := os.ReadFile(settingsPath)
+	if !strings.Contains(string(content), "error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED)") {
+		t.Error("suppression line was not added")
+	}
+
+	// Second patch (should be idempotent)
+	err = patchSettingsPHP(dir)
+	if err != nil {
+		t.Fatalf("second patchSettingsPHP error: %v", err)
+	}
+
+	// Verify content hasn't changed (idempotent)
+	content2, _ := os.ReadFile(settingsPath)
+	if string(content) != string(content2) {
+		t.Error("second patch changed the file (not idempotent)")
+	}
+}
+
 // --- Phase 1: Exit code 3 semantic handling (RED) ---
 
 func TestIsScanExitOK(t *testing.T) {

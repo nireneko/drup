@@ -72,12 +72,12 @@ Chain strategy: size-exception
 
 ## Phase 5: Core Implementation — PHP 8.4 Deprecation Suppression (P1)
 
-- [ ] 5.1 Add `detectPHPVersion(projectPath string) (string, error)` in `internal/app/commands.go` — uses `cliRun` to execute `php -r "echo PHP_VERSION;"`, parses output
-- [ ] 5.2 Add `isPHP84OrLater(version string) bool` in `internal/app/commands.go` — parses major.minor, returns true if >= 8.4
-- [ ] 5.3 Add `patchSettingsPHP(projectPath string) error` in `internal/app/commands.go` — reads `web/sites/default/settings.php`, checks if suppression line already present (idempotent), finds DDEV include block end (or EOF), appends `error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);`, creates `.bak` backup before write
-- [ ] 5.4 **RED test**: `isPHP84OrLater` — "8.4.2" → true, "8.3.0" → false, "8.4.0" → true
-- [ ] 5.5 **RED test**: `patchSettingsPHP` idempotency — patch twice, second call is no-op; verify `.bak` created; verify line placed after DDEV include block
-- [ ] 5.6 Wire into `RunPreflight` — after dev dep installs, call `detectPHPVersion`, if >= 8.4 call `patchSettingsPHP`, add `PreflightResult{Check: "php84_compat", Pass: true}`
+- [x] 5.1 Add `detectPHPVersion(projectPath string) (string, error)` in `internal/app/commands.go` — uses `cliRun` to execute `php -r "echo PHP_VERSION;"`, parses output
+- [x] 5.2 Add `isPHP84OrLater(version string) bool` in `internal/app/commands.go` — parses major.minor, returns true if >= 8.4
+- [x] 5.3 Add `patchSettingsPHP(projectPath string) error` in `internal/app/commands.go` — reads `web/sites/default/settings.php`, checks if suppression line already present (idempotent), finds DDEV include block end (or EOF), appends `error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);`, creates `.bak` backup before write
+- [x] 5.4 **RED test**: `isPHP84OrLater` — "8.4.2" → true, "8.3.0" → false, "8.4.0" → true
+- [x] 5.5 **RED test**: `patchSettingsPHP` idempotency — patch twice, second call is no-op; verify `.bak` created; verify line placed after DDEV include block
+- [x] 5.6 Wire into `RunPreflight` — after dev dep installs, call `detectPHPVersion`, if >= 8.4 call `patchSettingsPHP`, add `PreflightResult{Check: "php84_compat", Pass: true}`
 
 **Commit**: `fix: auto-patch settings.php to suppress E_DEPRECATED on PHP 8.4+`
 **Files**: `internal/app/commands.go`, `internal/app/commands_test.go`
