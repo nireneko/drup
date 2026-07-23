@@ -89,6 +89,7 @@ For EACH module:
 2. Dispatch `drup-validator` with `{scope: "contrib", target: <module>}` to confirm.
 3. **`evidence.total_errors == 0` for this module**: re-dispatch `drup-contrib` with `commit_message` set to a conventional commit (see Commit Message Format below) so it commits, then move to the next module.
 4. **`evidence.total_errors > 0`**: re-dispatch `drup-contrib` with `prior_evidence` from the validator report describing what still fails (max 2 retries, then escalate model, then PENDING HUMAN LIST with: module name, error details, what was tried).
+### Stage 5: CUSTOM LOOP — Custom Code and Theme Files
 
 **CRITICAL**: only `drup-validator` confirms a module is clean. Never trust `drup-contrib`'s own "done" declaration.
 
@@ -103,6 +104,18 @@ For EACH file:
 4. **`evidence.total_errors > 0`**: re-dispatch the same fixer agent with `prior_evidence` from the validator report (max 2 retries, then escalate model haiku → sonnet, then PENDING HUMAN LIST).
 
 **One file = one commit**, issued by the fixer agent only after its dedicated validator gate passes.
+### Stage 6: CORE UPGRADE — Drupal Core Version Bump
+
+```bash
+drup upgrade-core <target-version>
+```
+
+Updates composer.json constraints, runs `composer require`, `drush updb`, and verifies the result.
+
+- **Exit 0**: proceed to Stage 7.
+- **Exit non-zero**: read JSON output for error details. If already at target, skip. If composer/drush failure, report to user.
+
+### Stage 7: FINAL VALIDATION
 
 ### Stage 6: FINAL VALIDATION
 
@@ -119,6 +132,9 @@ Dispatch `drup-validator` with `{scope: "global"}` and every accumulated report 
 3. Per custom/theme file: deprecation fixed, validation result.
 4. **PENDING HUMAN LIST**: items that could not be resolved, with full context — sourced entirely from sub-agent and `drup-validator` reports, never from your own tool output (you have none).
 5. Token usage: estimated tokens consumed (if available).
+
+- **Exit 0, no errors**: ALL CLEAN — proceed to Stage 8.
+- **Errors remain**: classify by type (contrib/custom/theme) and re-enter the matching loop (Stage 4 or Stage 5) for those items. Items surviving 3 total attempts go to PENDING HUMAN LIST.
 
 Read `drup-validator`'s `artifacts` for the generated `UPGRADE-REPORT.md` path and present a summary to the user.
 
@@ -150,6 +166,10 @@ You (the orchestrator) MUST NEVER call: `scan`, `validate`, `upgrade_scan`, `aut
 ## User Confirmation Gates
 
 Ask the user before proceeding when:
+
+- Stage 1 reports unsupported environment — this ends the run.
+- Stage 6 involves a non-dry-run core version bump — confirm before executing.
+- Any action is destructive or ambiguous.
 - `drup-preflight` reports the unsupported-environment terminal state (Stage 1) — this ends the run, it is not a retry case.
 - Stage 3/4 involves a `core_upgrade_apply` (non-dry-run) core version bump — this mutates `composer.json` and creates a git checkpoint; confirm with the user before dispatching it for real.
 - Any action is destructive or ambiguous and no sub-agent report resolves the ambiguity.

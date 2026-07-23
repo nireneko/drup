@@ -1,0 +1,12 @@
+change: sync-verbose-output
+status: exploration-complete
+phases:
+  exploration: completed
+  proposal: completed
+  spec: completed
+  design: completed
+  tasks: completed
+  apply: completed
+  verify: pending
+  archive: pending
+created: 2026-07-23

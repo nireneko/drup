@@ -2,6 +2,7 @@ package installer
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/json"
@@ -20,6 +21,21 @@ var homeDir = os.UserHomeDir
 // getCWD returns the current working directory. Package-level var for testability.
 var getCWD = os.Getwd
 
+// FileStatus represents the change detection result for a single file.
+type FileStatus string
+
+const (
+	FileNew       FileStatus = "new"
+	FileModified  FileStatus = "modified"
+	FileUnchanged FileStatus = "unchanged"
+)
+
+// SyncFileResult holds the outcome for one synced file.
+type SyncFileResult struct {
+	Path   string     // Absolute path of the file
+	Status FileStatus // new, modified, or unchanged
+}
+
 // AgentAdapter is the interface for agent-specific installation.
 type AgentAdapter interface {
 	ID() string
@@ -32,6 +48,7 @@ type AgentAdapter interface {
 	WriteAgent(name, content string) error
 	WriteCommand(name, content string) error
 	WriteMCPConfig(content string) error
+	RenderMCPConfig(snippet string) (string, error)
 	RemoveSkill(name string, dryRun bool) (string, error)
 	RemoveAgent(name string, dryRun bool) (string, error)
 	RemoveCommand(name string, dryRun bool) (string, error)
@@ -91,7 +108,7 @@ func (a *ClaudeAdapter) WriteCommand(name, content string) error {
 	return nil
 }
 
-func (a *ClaudeAdapter) WriteMCPConfig(content string) error {
+func (a *ClaudeAdapter) RenderMCPConfig(snippet string) (string, error) {
 	configPath := a.MCPConfigPath()
 
 	// Read existing .mcp.json or start fresh.
@@ -99,19 +116,19 @@ func (a *ClaudeAdapter) WriteMCPConfig(content string) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			return fmt.Errorf("read %s: %w", configPath, err)
+			return "", fmt.Errorf("read %s: %w", configPath, err)
 		}
 		config = make(map[string]any)
 	} else {
 		if err := json.Unmarshal(data, &config); err != nil {
-			return fmt.Errorf("corrupt config %s: %w", configPath, err)
+			return "", fmt.Errorf("corrupt config %s: %w", configPath, err)
 		}
 	}
 
 	// Parse the rendered snippet (command + args object).
-	var snippet any
-	if err := json.Unmarshal([]byte(content), &snippet); err != nil {
-		return fmt.Errorf("invalid MCP snippet: %w", err)
+	var snippetVal any
+	if err := json.Unmarshal([]byte(snippet), &snippetVal); err != nil {
+		return "", fmt.Errorf("invalid MCP snippet: %w", err)
 	}
 
 	// Ensure "mcpServers" key exists.
@@ -119,16 +136,23 @@ func (a *ClaudeAdapter) WriteMCPConfig(content string) error {
 	if !ok {
 		mcpServers = make(map[string]any)
 	}
-	mcpServers["drup"] = snippet
+	mcpServers["drup"] = snippetVal
 	config["mcpServers"] = mcpServers
 
-	// Marshal with indent.
 	merged, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal merged config: %w", err)
+		return "", fmt.Errorf("marshal merged config: %w", err)
+	}
+	return string(merged), nil
+}
+
+func (a *ClaudeAdapter) WriteMCPConfig(content string) error {
+	merged, err := a.RenderMCPConfig(content)
+	if err != nil {
+		return err
 	}
 
-	// Atomic write: temp file + rename.
+	configPath := a.MCPConfigPath()
 	dir := filepath.Dir(configPath)
 	if dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -140,7 +164,7 @@ func (a *ClaudeAdapter) WriteMCPConfig(content string) error {
 		return fmt.Errorf("create temp file: %w", err)
 	}
 	tmpName := tmp.Name()
-	if _, err := tmp.Write(merged); err != nil {
+	if _, err := tmp.Write([]byte(merged)); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
 		return fmt.Errorf("write temp file: %w", err)
@@ -313,31 +337,27 @@ func (a *OpenCodeAdapter) WriteCommand(name, content string) error {
 	return os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644)
 }
 
-func (a *OpenCodeAdapter) WriteMCPConfig(content string) error {
+func (a *OpenCodeAdapter) RenderMCPConfig(snippet string) (string, error) {
 	configPath := a.MCPConfigPath()
-	dir := filepath.Dir(configPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
 
 	// Read existing config or start fresh.
 	var config map[string]any
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			return fmt.Errorf("read %s: %w", configPath, err)
+			return "", fmt.Errorf("read %s: %w", configPath, err)
 		}
 		config = make(map[string]any)
 	} else {
 		if err := json.Unmarshal(data, &config); err != nil {
-			return fmt.Errorf("corrupt config %s: %w", configPath, err)
+			return "", fmt.Errorf("corrupt config %s: %w", configPath, err)
 		}
 	}
 
 	// Parse the rendered snippet.
-	var snippet any
-	if err := json.Unmarshal([]byte(content), &snippet); err != nil {
-		return fmt.Errorf("invalid MCP snippet: %w", err)
+	var snippetVal any
+	if err := json.Unmarshal([]byte(snippet), &snippetVal); err != nil {
+		return "", fmt.Errorf("invalid MCP snippet: %w", err)
 	}
 
 	// Ensure "mcp" key exists.
@@ -345,22 +365,34 @@ func (a *OpenCodeAdapter) WriteMCPConfig(content string) error {
 	if !ok {
 		mcp = make(map[string]any)
 	}
-	mcp["drup"] = snippet
+	mcp["drup"] = snippetVal
 	config["mcp"] = mcp
 
-	// Marshal with indent.
 	merged, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal merged config: %w", err)
+		return "", fmt.Errorf("marshal merged config: %w", err)
+	}
+	return string(merged), nil
+}
+
+func (a *OpenCodeAdapter) WriteMCPConfig(content string) error {
+	merged, err := a.RenderMCPConfig(content)
+	if err != nil {
+		return err
 	}
 
-	// Atomic write: temp file + rename.
+	configPath := a.MCPConfigPath()
+	dir := filepath.Dir(configPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+
 	tmp, err := os.CreateTemp(dir, "opencode.json.*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
 	tmpName := tmp.Name()
-	if _, err := tmp.Write(merged); err != nil {
+	if _, err := tmp.Write([]byte(merged)); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
 		return fmt.Errorf("write temp file: %w", err)
@@ -535,12 +567,21 @@ func (a *CodexAdapter) WriteCommand(name, content string) error {
 	return nil
 }
 
+func (a *CodexAdapter) RenderMCPConfig(snippet string) (string, error) {
+	// Codex writes flat — no merge needed.
+	return snippet, nil
+}
+
 func (a *CodexAdapter) WriteMCPConfig(content string) error {
-	dir := filepath.Dir(a.MCPConfigPath())
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	merged, err := a.RenderMCPConfig(content)
+	if err != nil {
 		return err
 	}
-	return os.WriteFile(a.MCPConfigPath(), []byte(content), 0o644)
+	dir := filepath.Dir(a.MCPConfigPath())
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+	return os.WriteFile(a.MCPConfigPath(), []byte(merged), 0o644)
 }
 
 func (a *CodexAdapter) RemoveSkill(name string, dryRun bool) (string, error) {
@@ -837,68 +878,110 @@ func pruneBackups(bDir string, keep int) {
 	}
 }
 
-// Install writes skill files, agent definitions, and MCP config to all detected agents.
-// It creates a backup of existing configs before overwriting.
-// The files map uses paths from packaging.Render (e.g. "SKILL.md", "agents/drup-preflight.md", ".mcp.json").
-func Install(agents []AgentAdapter, binaryPath string, files map[string]string) error {
-	// Backup existing configs before overwriting.
-	for _, agent := range agents {
-		skillsDir := agent.SkillsDir()
-		if err := BackupConfig(skillsDir); err != nil {
-			return fmt.Errorf("backup config for %s: %w", agent.ID(), err)
-		}
+// resolveFilePath maps a logical file path to an absolute path for the given agent.
+func resolveFilePath(agent AgentAdapter, path string) string {
+	switch {
+	case path == "SKILL.md":
+		return filepath.Join(agent.SkillsDir(), "drup", "SKILL.md")
+	case path == ".mcp.json":
+		return agent.MCPConfigPath()
+	case path == "CLAUDE.md":
+		projectDir, _ := getCWD()
+		return filepath.Join(projectDir, "CLAUDE.md")
+	case path == "copilot-instructions.md":
+		projectDir, _ := getCWD()
+		return filepath.Join(projectDir, ".github", "copilot-instructions.md")
+	case strings.HasPrefix(path, "agents/"):
+		name := strings.TrimPrefix(path, "agents/")
+		return filepath.Join(agent.AgentsDir(), name)
+	case strings.HasPrefix(path, "commands/"):
+		name := strings.TrimPrefix(path, "commands/")
+		return filepath.Join(agent.CommandsDir(), name)
+	default:
+		return filepath.Join(agent.SkillsDir(), path, "SKILL.md")
 	}
+}
+
+// computeIntendedContent returns the content to compare/write for a given file.
+// For .mcp.json, it uses the adapter's RenderMCPConfig to get the post-merge content.
+func computeIntendedContent(agent AgentAdapter, path, content string) (string, error) {
+	if path == ".mcp.json" {
+		return agent.RenderMCPConfig(content)
+	}
+	return content, nil
+}
+
+// writeFileContent writes content to the given path, creating parent directories as needed.
+func writeFileContent(agent AgentAdapter, path, content string) error {
+	absPath := resolveFilePath(agent, path)
+	dir := filepath.Dir(absPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create dir for %s: %w", absPath, err)
+	}
+	return os.WriteFile(absPath, []byte(content), 0o644)
+}
+
+// Install writes skill files, agent definitions, and MCP config to all detected agents.
+// It compares intended content against existing files, skips unchanged files,
+// and creates a backup only when at least one file is new or modified.
+// Returns []SyncFileResult with one entry per file per agent.
+func Install(agents []AgentAdapter, binaryPath string, files map[string]string) ([]SyncFileResult, error) {
+	// Phase 1: Compute status for all files across all agents.
+	type filePlan struct {
+		agent   AgentAdapter
+		path    string
+		content string
+		status  FileStatus
+	}
+	var allPlans []filePlan
+	var allResults []SyncFileResult
 
 	for _, agent := range agents {
 		for path, content := range files {
-			switch {
-			case path == "SKILL.md":
-				// Main orchestrator skill → skills/drup/SKILL.md (command: /drup)
-				if err := agent.WriteSkill("drup", content); err != nil {
-					return fmt.Errorf("write orchestrator skill to %s: %w", agent.ID(), err)
-				}
-			case path == "CLAUDE.md":
-				// Claude Code bootstrap → project root
-				projectDir, _ := getCWD()
-				if err := os.WriteFile(filepath.Join(projectDir, "CLAUDE.md"), []byte(content), 0o644); err != nil {
-					return fmt.Errorf("write CLAUDE.md to project root: %w", err)
-				}
-			case path == "copilot-instructions.md":
-				// Codex bootstrap → .github/
-				projectDir, _ := getCWD()
-				githubDir := filepath.Join(projectDir, ".github")
-				if err := os.MkdirAll(githubDir, 0o755); err != nil {
-					return fmt.Errorf("create .github directory: %w", err)
-				}
-				if err := os.WriteFile(filepath.Join(githubDir, "copilot-instructions.md"), []byte(content), 0o644); err != nil {
-					return fmt.Errorf("write copilot-instructions.md: %w", err)
-				}
-			case strings.HasPrefix(path, "agents/"):
-				// Sub-agent definitions → agents/<name>.md
-				agentName := strings.TrimPrefix(path, "agents/")
-				if err := agent.WriteAgent(agentName, content); err != nil {
-					return fmt.Errorf("write agent %s to %s: %w", agentName, agent.ID(), err)
-				}
-			case strings.HasPrefix(path, "commands/"):
-				// Command definitions → commands/<name>.md
-				commandName := strings.TrimPrefix(path, "commands/")
-				if err := agent.WriteCommand(commandName, content); err != nil {
-					return fmt.Errorf("write command %s to %s: %w", commandName, agent.ID(), err)
-				}
-			case path == ".mcp.json":
-				// MCP config — use pre-rendered template content
-				if err := agent.WriteMCPConfig(content); err != nil {
-					return fmt.Errorf("write MCP config to %s: %w", agent.ID(), err)
-				}
-			default:
-				// Legacy: write unknown files as flat skills (backward compat)
-				if err := agent.WriteSkill(path, content); err != nil {
-					return fmt.Errorf("write %s to %s: %w", path, agent.ID(), err)
+			intended, err := computeIntendedContent(agent, path, content)
+			if err != nil {
+				return nil, fmt.Errorf("compute content for %s/%s: %w", agent.ID(), path, err)
+			}
+
+			absPath := resolveFilePath(agent, path)
+			status := FileNew
+
+			existing, err := os.ReadFile(absPath)
+			if err == nil {
+				if bytes.Equal(existing, []byte(intended)) {
+					status = FileUnchanged
+				} else {
+					status = FileModified
 				}
 			}
+
+			allPlans = append(allPlans, filePlan{agent: agent, path: path, content: intended, status: status})
+			allResults = append(allResults, SyncFileResult{Path: absPath, Status: status})
 		}
 	}
-	return nil
+
+	// Phase 2: Backup agents that have any new or modified files.
+	backedUp := make(map[string]bool)
+	for _, p := range allPlans {
+		if p.status != FileUnchanged && !backedUp[p.agent.ID()] {
+			if err := BackupConfig(p.agent.SkillsDir()); err != nil {
+				return nil, fmt.Errorf("backup config for %s: %w", p.agent.ID(), err)
+			}
+			backedUp[p.agent.ID()] = true
+		}
+	}
+
+	// Phase 3: Write only new or modified files.
+	for _, p := range allPlans {
+		if p.status == FileUnchanged {
+			continue
+		}
+		if err := writeFileContent(p.agent, p.path, p.content); err != nil {
+			return nil, fmt.Errorf("write %s to %s: %w", p.path, p.agent.ID(), err)
+		}
+	}
+
+	return allResults, nil
 }
 
 // Uninstall removes skill files, agent definitions, and MCP config from all provided agents.

@@ -168,3 +168,52 @@ func TestRender_BootstrapSkillPathSubstitution(t *testing.T) {
 		t.Error("CLAUDE.md should have {{SKILL_PATH}} substituted")
 	}
 }
+
+// Task 5.4: Verify new skill files exist and contain trigger phrases.
+
+func TestRender_D11FixesSkillExists(t *testing.T) {
+	for _, platform := range Platforms() {
+		t.Run(platform, func(t *testing.T) {
+			files, err := Render(platform, "/usr/local/bin/drup")
+			if err != nil {
+				t.Fatalf("Render error: %v", err)
+			}
+			key := "skills/drupal-custom-d11-fixes/SKILL.md"
+			content, ok := files[key]
+			if !ok {
+				t.Fatalf("missing %s for %s", key, platform)
+			}
+			if !strings.Contains(content, "drupal-custom-d11-fixes") {
+				t.Error("D11 fixes skill should contain its name")
+			}
+			if !strings.Contains(content, "deprecation") {
+				t.Error("D11 fixes skill should contain deprecation patterns")
+			}
+		})
+	}
+}
+
+func TestRender_ContribPatchSkillExists(t *testing.T) {
+	for _, platform := range Platforms() {
+		t.Run(platform, func(t *testing.T) {
+			files, err := Render(platform, "/usr/local/bin/drup")
+			if err != nil {
+				t.Fatalf("Render error: %v", err)
+			}
+			key := "skills/drupal-contrib-patch-writer/SKILL.md"
+			content, ok := files[key]
+			if !ok {
+				t.Fatalf("missing %s for %s", key, platform)
+			}
+			if !strings.Contains(content, "drupal-contrib-patch-writer") {
+				t.Error("Contrib patch skill should contain its name")
+			}
+			// Verify all 4 categories are present.
+			for _, cat := range []string{"Category A", "Category B", "Category C", "Category D"} {
+				if !strings.Contains(content, cat) {
+					t.Errorf("Contrib patch skill missing %s", cat)
+				}
+			}
+		})
+	}
+}
