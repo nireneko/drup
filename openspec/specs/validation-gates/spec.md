@@ -62,7 +62,7 @@ The system SHALL retry failed validations up to 2 times with the same sub-agent 
 
 ### Requirement: Phase Gating
 
-The system SHALL NOT advance to the next pipeline phase until all items in the current phase pass validation.
+The system SHALL NOT advance to the next pipeline phase until all items in the current phase pass validation. Exit code 3 from `upgrade_status:analyze` SHALL be treated as success-with-findings (not error). The validator SHALL parse stdout on exit 3 and only advance when `total_errors == 0`.
 
 #### Scenario: Phase complete
 
@@ -75,6 +75,18 @@ The system SHALL NOT advance to the next pipeline phase until all items in the c
 - GIVEN some contrib modules still have errors
 - WHEN the orchestrator checks phase completion
 - THEN the system SHALL NOT proceed to the custom loop and SHALL iterate remaining errors with the correct sub-agent
+
+#### Scenario: Phase complete with exit code 3
+
+- GIVEN `validate` returns exit code 3 with parseable findings
+- WHEN the orchestrator checks phase completion
+- THEN the system SHALL parse findings, count errors, and proceed only if `total_errors == 0`
+
+#### Scenario: Validate scoped to module under DDEV
+
+- GIVEN a DDEV project and `validate({module_name: "mymodule"})`
+- WHEN validation runs
+- THEN the system SHALL use `RunWithEnv` with `--root=` and handle exit code 3 correctly
 
 ### Requirement: Scope Blocking
 

@@ -112,7 +112,15 @@ The system SHALL detect the Drupal core version from `composer.lock`.
 
 ### Requirement: Dev Dependency Installation
 
-The system SHALL install required dev dependencies if they are not already present: `drupal/upgrade_status`, `palantirnet/drupal-rector`, `mglaman/phpstan-drupal`. Before enabling `upgrade_status`, the system MUST check for and resolve any `update.settings` configuration conflicts by deleting the conflicting configuration.
+The system SHALL install required dev dependencies if they are not already present: `drupal/upgrade_status`, `palantirnet/drupal-rector`, `mglaman/phpstan-drupal`. Before enabling `upgrade_status`, the system MUST check for and resolve any `update.settings` configuration conflicts by deleting the conflicting configuration. The system SHALL detect PHP 8.4+ and auto-patch `settings.php` to suppress `E_DEPRECATED` after the DDEV include block.
+
+| Req | Strength | Behavior |
+|-----|----------|----------|
+| PHP 8.4 detection | MUST | Run `php -v` (or env-equivalent) and parse version |
+| Auto-patch settings.php | MUST | Append `error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED)` |
+| Patch placement | MUST | Insert after DDEV include block (or at end if no DDEV) |
+| Backup before patch | SHOULD | Create `settings.php.bak` before modifying |
+| Idempotent | MUST | Skip patch if suppression line already present |
 
 #### Scenario: All dev deps already installed
 
@@ -137,3 +145,21 @@ The system SHALL install required dev dependencies if they are not already prese
 - GIVEN network issues or dependency conflicts prevent installation
 - WHEN `composer require --dev` is executed
 - THEN the system SHALL report the failure with the composer error output and halt
+
+#### Scenario: PHP 8.4 project under DDEV
+
+- GIVEN a DDEV project running PHP 8.4
+- WHEN `drup preflight` runs
+- THEN the system SHALL detect PHP 8.4, append deprecation suppression to `settings.php` after the DDEV include, and proceed
+
+#### Scenario: PHP 8.3 project
+
+- GIVEN a project running PHP 8.3
+- WHEN preflight runs
+- THEN the system SHALL skip the settings.php patch and proceed normally
+
+#### Scenario: Patch already applied
+
+- GIVEN `settings.php` already contains the deprecation suppression line
+- WHEN preflight runs
+- THEN the system SHALL detect the existing line and skip patching

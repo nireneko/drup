@@ -8,7 +8,13 @@ Query Drupal.org for D11 compatibility of contrib modules using release-history 
 
 ### Requirement: Release History Lookup
 
-The system SHALL fetch and parse Drupal.org release-history XML to determine D11 compatibility.
+The system SHALL fetch and parse Drupal.org release-history XML to determine D11 compatibility. The system SHALL parse `core_version_requirement` from release metadata and support compound constraints with `||` operators (e.g. `^10.3 || ^11.0`).
+
+| Req | Strength | Behavior |
+|-----|----------|----------|
+| Compound constraints | MUST | Parse `||` in `core_version_requirement` |
+| Semver matching | MUST | Use semver comparison, not string comparison |
+| Fallback on parse failure | SHOULD | Fall back to string match if semver parse fails |
 
 #### Scenario: Module with D11 release
 
@@ -27,6 +33,24 @@ The system SHALL fetch and parse Drupal.org release-history XML to determine D11
 - GIVEN a machine name that does not exist on Drupal.org
 - WHEN the system fetches the release history
 - THEN the system SHALL return a 404 error with `{found: false}`
+
+#### Scenario: Module with compound constraint
+
+- GIVEN webform 6.3.0 with `core_version_requirement: "^10.3 || ^11.0"`
+- WHEN `contrib_check({module_machine_name: "webform"})` runs
+- THEN the system SHALL return `{has_d11_release: true}` (matches `^11.0`)
+
+#### Scenario: Module with single constraint
+
+- GIVEN a module with `core_version_requirement: "^11.0"`
+- WHEN contrib_check runs
+- THEN the system SHALL return `{has_d11_release: true}`
+
+#### Scenario: Module incompatible with target
+
+- GIVEN a module with `core_version_requirement: "^9.0 || ^10.0"`
+- WHEN checking D11 compatibility
+- THEN the system SHALL return `{has_d11_release: false}`
 
 ### Requirement: XML Parsing
 

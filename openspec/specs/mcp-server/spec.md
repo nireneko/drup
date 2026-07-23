@@ -354,7 +354,25 @@ The system SHALL register new tool handlers in both `internal/mcp/tools.go` (pla
 
 ### Requirement: Tool Schema Validation
 
-The system SHALL validate all tool inputs against their JSON schemas before execution.
+The system SHALL expose complete JSON Schema `inputSchema` for all 20 tools in the `tools/list` response. Each tool's schema SHALL declare `properties` (with name, type, description) and `required` fields. The system SHALL validate all tool inputs against their JSON schemas before execution.
+
+| Req | Strength | Behavior |
+|-----|----------|----------|
+| Schema properties | MUST | Each tool MUST declare `properties` with parameter definitions |
+| Required fields | MUST | Each tool MUST declare `required` array for mandatory params |
+| No empty schemas | MUST NOT | Return `{"type": "object"}` with no properties |
+
+#### Scenario: Agent discovers scan parameters
+
+- GIVEN an agent calls `tools/list`
+- WHEN the response is received
+- THEN the `scan` tool schema SHALL include `properties: {project_path: {type: "string", description: "..."}}` and `required: ["project_path"]`
+
+#### Scenario: All 20 tools have schemas
+
+- GIVEN the MCP server starts
+- WHEN `tools/list` is called
+- THEN all 20 tools SHALL have non-empty `inputSchema.properties`
 
 #### Scenario: Missing required parameter
 

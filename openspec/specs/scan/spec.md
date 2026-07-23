@@ -103,12 +103,34 @@ The system SHALL have fixture-based unit tests covering known `upgrade_status` p
 
 ### Requirement: Drush Invocation
 
-The system SHALL invoke `drush upgrade_status:analyze` with the `--all` flag to ensure complete analysis results. The `--format=json` flag SHALL NOT be used; the parser handles plain-text output.
+The system SHALL invoke `drush upgrade_status:analyze` with the `--all` flag. The system SHALL use `--root=<path>` instead of `-r <path>` for DDEV compatibility. The system SHALL use `RunWithEnv` with environment detection to prefix commands (e.g. `ddev`) when a container environment is detected. The `--format=json` flag SHALL NOT be used; the parser handles plain-text output.
 
-#### Scenario: CLI scan
+| Req | Strength | Behavior |
+|-----|----------|----------|
+| Root flag | MUST | Use `--root=<path>` instead of `-r <path>` |
+| Env detection | MUST | Call `envdetect.Detect()` and use `RunWithEnv(prefix, ...)` |
+| Exit code 3 | MUST | Treat exit code 3 as success-with-findings, not error |
+| Exit code 1,2,>3 | MUST | Treat as real errors and abort |
+| Stdout on exit 3 | MUST | Parse stdout regardless of exit code 3 |
+| Empty stdout + exit 3 | MUST | Treat as error (drush crashed, not findings) |
 
-- GIVEN `drup scan /path`
-- THEN SHALL run `drush -r /path upgrade_status:analyze --all`
+#### Scenario: Scan with findings under DDEV
+
+- GIVEN a DDEV project with deprecations
+- WHEN `drup scan /path` runs
+- THEN the system SHALL detect DDEV, run `ddev exec drush --root=/var/www/html upgrade_status:analyze --all`, parse stdout, and return exit 0 with findings
+
+#### Scenario: Scan with no findings
+
+- GIVEN a clean project
+- WHEN `drup scan` runs
+- THEN the system SHALL return exit 0 with zero-error model
+
+#### Scenario: Scan with drush crash
+
+- GIVEN drush exits 3 with empty stdout and error on stderr
+- WHEN `drup scan` runs
+- THEN the system SHALL treat this as an error and report stderr content
 
 #### Scenario: Full project scan
 

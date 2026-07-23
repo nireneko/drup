@@ -8,7 +8,13 @@ Generate JSON and markdown reports summarizing the Drupal upgrade with resolved/
 
 ### Requirement: JSON Report Generation
 
-The system SHALL generate a JSON report containing all upgrade results.
+The system SHALL generate a JSON report containing all upgrade results with real scan data. The system SHALL collect actual error counts from `scan.ParseCodeclimateJSON()` or equivalent instead of hardcoded zeros.
+
+| Req | Strength | Behavior |
+|-----|----------|----------|
+| Real error data | MUST | Populate `total_errors` from actual scan results |
+| Real error list | MUST | Populate `resolved` and `pending` from scan data |
+| No hardcoded zeros | MUST NOT | Use `0` only when scan confirms zero findings |
 
 #### Scenario: Full report with resolved and pending
 
@@ -21,6 +27,18 @@ The system SHALL generate a JSON report containing all upgrade results.
 - GIVEN an upgrade session with zero pending errors
 - WHEN report generation runs
 - THEN the system SHALL output JSON with `pending: []` and `total_errors: 0`
+
+#### Scenario: Report after scan with findings
+
+- GIVEN a project with 15 deprecation errors
+- WHEN `drup report` runs
+- THEN the system SHALL output JSON with `total_errors: 15` and populated error arrays
+
+#### Scenario: Report with no scan data available
+
+- GIVEN no prior scan has been run
+- WHEN `drup report` runs
+- THEN the system SHALL run a scan first, then generate the report with real data
 
 ### Requirement: Markdown Report Generation
 
