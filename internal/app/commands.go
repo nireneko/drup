@@ -63,6 +63,17 @@ func isScanExitOK(exitCode int) bool {
 	return exitCode == 0 || exitCode == 3
 }
 
+// cliRun detects the environment for projectPath and runs cmd with the
+// appropriate prefix. Uses --root= instead of -r for drush commands.
+// Returns the same (stdout, stderr, exitCode, err) as drupexec.Run.
+func cliRun(projectPath string, cmd string, args ...string) (string, string, int, error) {
+	detection, err := defaultEnvDetector.Detect(projectPath, false)
+	if err != nil {
+		return "", "", -1, fmt.Errorf("detect environment: %w", err)
+	}
+	return drupexec.RunWithEnv(detection.CommandPrefix, cmd, args...)
+}
+
 // drushExecError wraps a drush execution failure with command context.
 func drushExecError(cmd string, args []string, exitCode int, stderr, stdout string) error {
 	fullCmd := cmd + " " + strings.Join(args, " ")
@@ -78,22 +89,22 @@ func drushExecError(cmd string, args []string, exitCode int, stderr, stdout stri
 
 // RunScan runs upgrade_status:analyze and outputs structured JSON.
 func RunScan(path string) error {
-	stdout, stderr, exitCode, err := drupexec.Run("drush", "-r", path, "upgrade_status:analyze", "--all")
+	stdout, stderr, exitCode, err := cliRun(path, "drush", "upgrade_status:analyze", "--all", "--root="+path)
 	if err != nil {
-		return drushExecError("drush", []string{"-r", path, "upgrade_status:analyze", "--all"}, -1, err.Error(), "")
+		return drushExecError("drush", []string{"upgrade_status:analyze", "--all", "--root=" + path}, -1, err.Error(), "")
 	}
 	if !isScanExitOK(exitCode) {
-		return drushExecError("drush", []string{"-r", path, "upgrade_status:analyze", "--all"}, exitCode, stderr, stdout)
+		return drushExecError("drush", []string{"upgrade_status:analyze", "--all", "--root=" + path}, exitCode, stderr, stdout)
 	}
 
 	// Exit code 3 with empty stdout means drush crashed, not findings.
 	if exitCode == 3 && strings.TrimSpace(stdout) == "" {
-		return fmt.Errorf("drush exited with code 3 but produced no output (command: drush -r %s upgrade_status:analyze --all)\nstderr: %s", path, stderr)
+		return fmt.Errorf("drush exited with code 3 but produced no output (command: drush upgrade_status:analyze --all --root=%s)\nstderr: %s", path, stderr)
 	}
 
 	result, err := scan.Parse(strings.NewReader(stdout))
 	if err != nil {
-		return fmt.Errorf("parse scan output (command: drush -r %s upgrade_status:analyze --all): %w\nstdout (truncated): %.500s", path, err, stdout)
+		return fmt.Errorf("parse scan output (command: drush upgrade_status:analyze --all --root=%s): %w\nstdout (truncated): %.500s", path, err, stdout)
 	}
 
 	result.ProjectPath = path
@@ -223,22 +234,22 @@ func DoValidate(projectPath, module string) (*scan.ScanResult, []scan.DepError, 
 		analyzeTarget = module
 	}
 
-	stdout, stderr, exitCode, err := drupexec.Run("drush", "-r", projectPath, "upgrade_status:analyze", analyzeTarget)
+	stdout, stderr, exitCode, err := cliRun(projectPath, "drush", "upgrade_status:analyze", analyzeTarget, "--root="+projectPath)
 	if err != nil {
-		return nil, nil, drushExecError("drush", []string{"-r", projectPath, "upgrade_status:analyze", analyzeTarget}, -1, err.Error(), "")
+		return nil, nil, drushExecError("drush", []string{"upgrade_status:analyze", analyzeTarget, "--root=" + projectPath}, -1, err.Error(), "")
 	}
 	if !isScanExitOK(exitCode) {
-		return nil, nil, drushExecError("drush", []string{"-r", projectPath, "upgrade_status:analyze", analyzeTarget}, exitCode, stderr, stdout)
+		return nil, nil, drushExecError("drush", []string{"upgrade_status:analyze", analyzeTarget, "--root=" + projectPath}, exitCode, stderr, stdout)
 	}
 
 	// Exit code 3 with empty stdout means drush crashed, not findings.
 	if exitCode == 3 && strings.TrimSpace(stdout) == "" {
-		return nil, nil, fmt.Errorf("drush exited with code 3 but produced no output (command: drush -r %s upgrade_status:analyze %s)\nstderr: %s", projectPath, analyzeTarget, stderr)
+		return nil, nil, fmt.Errorf("drush exited with code 3 but produced no output (command: drush upgrade_status:analyze %s --root=%s)\nstderr: %s", analyzeTarget, projectPath, stderr)
 	}
 
 	result, err := scan.Parse(strings.NewReader(stdout))
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse scan output (command: drush -r %s upgrade_status:analyze %s): %w\nstdout (truncated): %.500s", projectPath, analyzeTarget, err, stdout)
+		return nil, nil, fmt.Errorf("parse scan output (command: drush upgrade_status:analyze %s --root=%s): %w\nstdout (truncated): %.500s", projectPath, analyzeTarget, err, stdout)
 	}
 
 	// Filter by module if specified.
@@ -588,8 +599,8 @@ func RunPreflight() error {
 	// 6. Enable upgrade_status module.
 	fmt.Println("Enabling upgrade_status module...")
 	// Delete conflicting update.settings config before enabling.
-	_, _, _, _ = drupexec.Run("drush", "config:delete", "update.settings")
-	_, stderr, exitCode, err := drupexec.Run("drush", "en", "upgrade_status", "-y")
+	_, _, _, _ = cliRun(cwd, "drush", "config:delete", "update.settings", "--root="+cwd)
+	_, stderr, exitCode, err := cliRun(cwd, "drush", "en", "upgrade_status", "-y", "--root="+cwd)
 	if err != nil || exitCode != 0 {
 		results = append(results, PreflightResult{
 			Check:   "enable_upgrade_status",
@@ -818,7 +829,7 @@ func RunUpgradeCore(args []string) error {
 	}
 
 	// Run drush updb.
-	_, stderr, exitCode, err = execRunFn("drush", "updb", "-y")
+	_, stderr, exitCode, err = cliRun(cwd, "drush", "updb", "-y", "--root="+cwd)
 	if err != nil {
 		return fmt.Errorf("drush not found or failed: %w", err)
 	}
@@ -828,7 +839,7 @@ func RunUpgradeCore(args []string) error {
 	}
 
 	// Verify with drush status.
-	stdout, stderr, exitCode, err := execRunFn("drush", "status", "--format=json")
+	stdout, stderr, exitCode, err := cliRun(cwd, "drush", "status", "--format=json", "--root="+cwd)
 	if err != nil {
 		return fmt.Errorf("drush status failed: %w", err)
 	}

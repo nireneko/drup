@@ -66,18 +66,21 @@ func TestDetectDrupalVersion_NoCore(t *testing.T) {
 func TestRunPreflight_DeletesUpdateSettingsBeforeEnable(t *testing.T) {
 	// This test verifies that RunPreflight calls drush config:delete update.settings
 	// before drush en upgrade_status.
-	// Note: RunPreflight uses drupexec.Run directly, not execRunFn, so we need to
-	// override drupexec.Run for this test.
-	origRun := drupexec.Run
+	// Note: RunPreflight now uses cliRun which calls drupexec.RunWithEnv.
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
 	var drushCalls [][]string
-	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			drushCalls = append(drushCalls, args)
 		}
 		// Return success for all calls.
 		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() { drupexec.RunWithEnv = origRun }()
 
 	// Create a minimal project structure.
 	dir := t.TempDir()

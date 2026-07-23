@@ -74,22 +74,22 @@ func realHandleScan(args json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 
-	stdout, stderr, exitCode, err := drupexec.Run("drush", "-r", params.ProjectPath, "upgrade_status:analyze", "--all")
+	stdout, stderr, exitCode, err := cliRun(params.ProjectPath, "drush", "upgrade_status:analyze", "--all", "--root="+params.ProjectPath)
 	if err != nil {
-		return nil, drushExecError("drush", []string{"-r", params.ProjectPath, "upgrade_status:analyze", "--all"}, -1, err.Error(), "")
+		return nil, drushExecError("drush", []string{"upgrade_status:analyze", "--all", "--root=" + params.ProjectPath}, -1, err.Error(), "")
 	}
 	if !isScanExitOK(exitCode) {
-		return nil, drushExecError("drush", []string{"-r", params.ProjectPath, "upgrade_status:analyze", "--all"}, exitCode, stderr, stdout)
+		return nil, drushExecError("drush", []string{"upgrade_status:analyze", "--all", "--root=" + params.ProjectPath}, exitCode, stderr, stdout)
 	}
 
 	// Exit code 3 with empty stdout means drush crashed, not findings.
 	if exitCode == 3 && strings.TrimSpace(stdout) == "" {
-		return nil, fmt.Errorf("drush exited with code 3 but produced no output (command: drush -r %s upgrade_status:analyze --all)\nstderr: %s", params.ProjectPath, stderr)
+		return nil, fmt.Errorf("drush exited with code 3 but produced no output (command: drush upgrade_status:analyze --all --root=%s)\nstderr: %s", params.ProjectPath, stderr)
 	}
 
 	result, err := scan.Parse(strings.NewReader(stdout))
 	if err != nil {
-		return nil, fmt.Errorf("parse scan (command: drush -r %s upgrade_status:analyze --all): %w\nstdout (truncated): %.500s", params.ProjectPath, err, stdout)
+		return nil, fmt.Errorf("parse scan (command: drush upgrade_status:analyze --all --root=%s): %w\nstdout (truncated): %.500s", params.ProjectPath, err, stdout)
 	}
 	result.ProjectPath = params.ProjectPath
 	return json.Marshal(result)
@@ -123,7 +123,7 @@ func realHandleAutofix(args json.RawMessage) (json.RawMessage, error) {
 	}
 
 	// Re-scan to get remaining errors.
-	scanStdout, _, scanExit, _ := drupexec.Run("drush", "-r", params.ProjectPath, "upgrade_status:analyze", "--all")
+	scanStdout, _, scanExit, _ := cliRun(params.ProjectPath, "drush", "upgrade_status:analyze", "--all", "--root="+params.ProjectPath)
 	remaining := 0
 	if isScanExitOK(scanExit) && strings.TrimSpace(scanStdout) != "" {
 		result, err := scan.Parse(strings.NewReader(scanStdout))

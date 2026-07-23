@@ -558,16 +558,20 @@ func TestPatchReconcile_ReturnsResult(t *testing.T) {
 // --- Phase 1: RED tests for --all flag in MCP tools ---
 
 func TestRealHandleScan_PassesAllFlag(t *testing.T) {
-	origRun := drupexec.Run
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
 	var capturedArgs []string
-	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedArgs = args
 			return "", "", 0, nil // empty plain text = zero errors
 		}
 		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() { drupexec.RunWithEnv = origRun }()
 
 	args := json.RawMessage(`{"project_path":"/tmp/test-project"}`)
 	_, err := realHandleScan(args)
@@ -588,9 +592,18 @@ func TestRealHandleScan_PassesAllFlag(t *testing.T) {
 }
 
 func TestRealHandleAutofix_RemainingErrors(t *testing.T) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
 	origRun := drupexec.Run
+	origRunWithEnv := drupexec.RunWithEnv
 	callCount := 0
 	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		// rector
+		return "rector summary", "", 0, nil
+	}
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			callCount++
 			// Re-scan returns plain text with 2 remaining errors.
@@ -606,10 +619,12 @@ Project: mymod (modules/custom/mymod)
     Rule: r2
 `, "", 0, nil
 		}
-		// rector
-		return "rector summary", "", 0, nil
+		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() {
+		drupexec.Run = origRun
+		drupexec.RunWithEnv = origRunWithEnv
+	}()
 
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, "modules", "custom"), 0o755)
@@ -629,8 +644,12 @@ Project: mymod (modules/custom/mymod)
 }
 
 func TestRealHandleScan_PlainText(t *testing.T) {
-	origRun := drupexec.Run
-	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			return `
 ====================
@@ -644,7 +663,7 @@ Project: token (modules/contrib/token)
 		}
 		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() { drupexec.RunWithEnv = origRun }()
 
 	args := json.RawMessage(`{"project_path":"/tmp/test-project"}`)
 	result, err := realHandleScan(args)
@@ -664,16 +683,20 @@ Project: token (modules/contrib/token)
 }
 
 func TestRealHandleScan_NoFormatJSON(t *testing.T) {
-	origRun := drupexec.Run
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
 	var capturedArgs []string
-	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedArgs = args
 			return "", "", 0, nil
 		}
 		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() { drupexec.RunWithEnv = origRun }()
 
 	args := json.RawMessage(`{"project_path":"/tmp/test-project"}`)
 	realHandleScan(args)
@@ -686,17 +709,28 @@ func TestRealHandleScan_NoFormatJSON(t *testing.T) {
 }
 
 func TestRealHandleAutofix_PassesAllFlagInRescan(t *testing.T) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
 	origRun := drupexec.Run
+	origRunWithEnv := drupexec.RunWithEnv
 	var capturedDrushArgs [][]string
 	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		// rector
+		return "rector output", "", 0, nil
+	}
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedDrushArgs = append(capturedDrushArgs, args)
 			return "", "", 0, nil // empty plain text = zero remaining errors
 		}
-		// rector
-		return "rector output", "", 0, nil
+		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() {
+		drupexec.Run = origRun
+		drupexec.RunWithEnv = origRunWithEnv
+	}()
 
 	// Create temp dir with modules/custom and themes dirs.
 	dir := t.TempDir()
@@ -725,16 +759,20 @@ func TestRealHandleAutofix_PassesAllFlagInRescan(t *testing.T) {
 }
 
 func TestRealHandleValidate_PassesAllFlagWhenNoModule(t *testing.T) {
-	origRun := drupexec.Run
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
 	var capturedArgs []string
-	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedArgs = args
 			return "", "", 0, nil
 		}
 		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() { drupexec.RunWithEnv = origRun }()
 
 	args := json.RawMessage(`{"project_path":"/tmp/test-project"}`)
 	_, err := realHandleValidate(args)
@@ -755,16 +793,20 @@ func TestRealHandleValidate_PassesAllFlagWhenNoModule(t *testing.T) {
 }
 
 func TestRealHandleValidate_PassesModuleNameWhenSet(t *testing.T) {
-	origRun := drupexec.Run
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
 	var capturedArgs []string
-	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedArgs = args
 			return "", "", 0, nil
 		}
 		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() { drupexec.RunWithEnv = origRun }()
 
 	args := json.RawMessage(`{"project_path":"/tmp/test-project","module":"mymodule"}`)
 	_, err := realHandleValidate(args)
@@ -792,8 +834,12 @@ func TestRealHandleValidate_PassesModuleNameWhenSet(t *testing.T) {
 }
 
 func TestRealHandleValidate_PlainText(t *testing.T) {
-	origRun := drupexec.Run
-	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			return `
 Project: mymod (modules/custom/mymod)
@@ -805,7 +851,7 @@ Project: mymod (modules/custom/mymod)
 		}
 		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() { drupexec.RunWithEnv = origRun }()
 
 	args := json.RawMessage(`{"project_path":"/tmp/test-project","module":"mymod"}`)
 	result, err := realHandleValidate(args)

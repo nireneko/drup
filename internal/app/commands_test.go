@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/nireneko/drup/internal/envdetect"
 	drupexec "github.com/nireneko/drup/internal/exec"
 	statepkg "github.com/nireneko/drup/internal/state"
 	"github.com/nireneko/drup/internal/update"
@@ -553,14 +555,19 @@ func TestRunUpgradeCore_Integration(t *testing.T) {
 	origGetwd := getwdFn
 	origIsClean := isCleanFn
 	origExecRun := execRunFn
+	origDetector := defaultEnvDetector
+	origRunWithEnv := drupexec.RunWithEnv
 	defer func() {
 		getwdFn = origGetwd
 		isCleanFn = origIsClean
 		execRunFn = origExecRun
+		defaultEnvDetector = origDetector
+		drupexec.RunWithEnv = origRunWithEnv
 	}()
 
 	getwdFn = func() (string, error) { return dir, nil }
 	isCleanFn = func(path string) (bool, []string, error) { return true, nil, nil }
+	defaultEnvDetector = &mockEnvDetectorDirect{}
 
 	// Track composer calls to verify the new sequence.
 	var composerCalls [][]string
@@ -572,15 +579,23 @@ func TestRunUpgradeCore_Integration(t *testing.T) {
 		case cmd == "composer":
 			composerCalls = append(composerCalls, args)
 			return "", "", 0, nil
+		case cmd == "git":
+			// Let real git commands pass through for coreupgrade.Apply
+			return realExecRun(cmd, args...)
+		default:
+			return "", "", 0, nil
+		}
+	}
+
+	// Mock drupexec.RunWithEnv for drush calls via cliRun
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+		switch {
 		case cmd == "drush" && len(args) > 0 && args[0] == "updb":
 			drushUpdbCalled = true
 			return "", "", 0, nil
 		case cmd == "drush" && len(args) > 0 && args[0] == "status":
 			drushStatusCalled = true
 			return `{"drupal-version":"11.0.0"}`, "", 0, nil
-		case cmd == "git":
-			// Let real git commands pass through for coreupgrade.Apply
-			return realExecRun(cmd, args...)
 		default:
 			return "", "", 0, nil
 		}
@@ -706,27 +721,40 @@ func TestRunUpgradeCore_VersionMismatch(t *testing.T) {
 	origGetwd := getwdFn
 	origIsClean := isCleanFn
 	origExecRun := execRunFn
+	origDetector := defaultEnvDetector
+	origRunWithEnv := drupexec.RunWithEnv
 	defer func() {
 		getwdFn = origGetwd
 		isCleanFn = origIsClean
 		execRunFn = origExecRun
+		defaultEnvDetector = origDetector
+		drupexec.RunWithEnv = origRunWithEnv
 	}()
 
 	getwdFn = func() (string, error) { return dir, nil }
 	isCleanFn = func(path string) (bool, []string, error) { return true, nil, nil }
+	defaultEnvDetector = &mockEnvDetectorDirect{}
 
 	execRunFn = func(cmd string, args ...string) (string, string, int, error) {
 		switch {
 		case cmd == "composer":
 			return "", "", 0, nil
+		case cmd == "git":
+			return realExecRun(cmd, args...)
+		default:
+			return "", "", 0, nil
+		}
+	}
+
+	// Mock drupexec.RunWithEnv for drush calls via cliRun
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+		switch {
 		case cmd == "drush" && len(args) > 0 && args[0] == "updb":
 			// Simulate: updb passed but Drupal actually didn't upgrade.
 			return "", "", 0, nil
 		case cmd == "drush" && len(args) > 0 && args[0] == "status":
 			// Return OLD version — upgrade didn't actually take effect.
 			return `{"drupal-version":"10.3.0"}`, "", 0, nil
-		case cmd == "git":
-			return realExecRun(cmd, args...)
 		default:
 			return "", "", 0, nil
 		}
@@ -803,16 +831,20 @@ func realExecRun(cmd string, args ...string) (string, string, int, error) {
 // --- Phase 1: RED tests for --all flag ---
 
 func TestRunScan_PassesAllFlag(t *testing.T) {
-	origRun := drupexec.Run
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
 	var capturedArgs []string
-	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedArgs = args
 			return "no errors found", "", 0, nil
 		}
 		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() { drupexec.RunWithEnv = origRun }()
 
 	err := RunScan("/tmp/test-project")
 	if err != nil {
@@ -833,8 +865,12 @@ func TestRunScan_PassesAllFlag(t *testing.T) {
 }
 
 func TestRunScan_PlainTextParsing(t *testing.T) {
-	origRun := drupexec.Run
-	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			return `
 ====================
@@ -848,7 +884,7 @@ Project: token (modules/contrib/token)
 		}
 		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() { drupexec.RunWithEnv = origRun }()
 
 	// Capture stdout.
 	oldStdout := os.Stdout
@@ -879,14 +915,18 @@ Project: token (modules/contrib/token)
 }
 
 func TestRunScan_DrushExitNonZero(t *testing.T) {
-	origRun := drupexec.Run
-	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			return "", "drush failed: bootstrap error", 1, nil
 		}
 		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() { drupexec.RunWithEnv = origRun }()
 
 	err := RunScan("/tmp/test-project")
 	if err == nil {
@@ -903,15 +943,19 @@ func TestRunScan_DrushExitNonZero(t *testing.T) {
 }
 
 func TestRunScan_ParseFailure(t *testing.T) {
-	origRun := drupexec.Run
-	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			// Return empty output — parser returns zero-result, not error.
 			return "", "", 0, nil
 		}
 		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() { drupexec.RunWithEnv = origRun }()
 
 	err := RunScan("/tmp/test-project")
 	// Empty output is valid (zero errors), not a parse failure.
@@ -921,16 +965,20 @@ func TestRunScan_ParseFailure(t *testing.T) {
 }
 
 func TestRunScan_NoFormatJSON(t *testing.T) {
-	origRun := drupexec.Run
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
 	var capturedArgs []string
-	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedArgs = args
 			return "", "", 0, nil
 		}
 		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() { drupexec.RunWithEnv = origRun }()
 
 	_ = RunScan("/tmp/test-project")
 
@@ -944,14 +992,18 @@ func TestRunScan_NoFormatJSON(t *testing.T) {
 // --- CLI validate and apply-patch tests ---
 
 func TestRunValidate_CleanProject(t *testing.T) {
-	origRun := drupexec.Run
-	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			return "[warning] No errors found.", "", 0, nil
 		}
 		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() { drupexec.RunWithEnv = origRun }()
 
 	// Capture stdout.
 	oldStdout := os.Stdout
@@ -981,8 +1033,12 @@ func TestRunValidate_CleanProject(t *testing.T) {
 }
 
 func TestRunValidate_ErrorsRemain(t *testing.T) {
-	origRun := drupexec.Run
-	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			return `
 Project: mymod (modules/custom/mymod)
@@ -994,7 +1050,7 @@ Project: mymod (modules/custom/mymod)
 		}
 		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() { drupexec.RunWithEnv = origRun }()
 
 	// Capture stdout.
 	oldStdout := os.Stdout
@@ -1088,8 +1144,12 @@ func TestIsScanExitOK(t *testing.T) {
 }
 
 func TestRunScan_ExitCode3WithFindings(t *testing.T) {
-	origRun := drupexec.Run
-	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			return `
 Project: token (modules/contrib/token)
@@ -1101,7 +1161,7 @@ Project: token (modules/contrib/token)
 		}
 		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() { drupexec.RunWithEnv = origRun }()
 
 	// Capture stdout.
 	oldStdout := os.Stdout
@@ -1131,14 +1191,18 @@ Project: token (modules/contrib/token)
 }
 
 func TestRunScan_ExitCode3EmptyStdoutIsError(t *testing.T) {
-	origRun := drupexec.Run
-	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			return "", "drush crashed: bootstrap failed", 3, nil
 		}
 		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	defer func() { drupexec.RunWithEnv = origRun }()
 
 	err := RunScan("/tmp/test-project")
 	if err == nil {
@@ -1150,4 +1214,71 @@ func TestRunScan_ExitCode3EmptyStdoutIsError(t *testing.T) {
 	if !strings.Contains(err.Error(), "bootstrap failed") {
 		t.Errorf("error = %q, want it to contain stderr", err.Error())
 	}
+}
+
+// --- Phase 2: DDEV-aware execution (RED) ---
+
+func TestCliRun_DetectsEnvironment(t *testing.T) {
+	// Override defaultEnvDetector to return DDEV prefix.
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDDEV{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	// Override RunWithEnv to capture the prefix.
+	origRunWithEnv := drupexec.RunWithEnv
+	var capturedPrefix []string
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+		capturedPrefix = prefix
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRunWithEnv }()
+
+	_, _, _, _ = cliRun("/tmp/test-project", "drush", "status")
+
+	if len(capturedPrefix) == 0 || capturedPrefix[0] != "ddev" {
+		t.Errorf("capturedPrefix = %v, want [ddev]", capturedPrefix)
+	}
+}
+
+func TestCliRun_DirectEnvironment(t *testing.T) {
+	// Override defaultEnvDetector to return direct (empty prefix).
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRunWithEnv := drupexec.RunWithEnv
+	var capturedPrefix []string
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+		capturedPrefix = prefix
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRunWithEnv }()
+
+	_, _, _, _ = cliRun("/tmp/test-project", "drush", "status")
+
+	if len(capturedPrefix) != 0 {
+		t.Errorf("capturedPrefix = %v, want empty for direct environment", capturedPrefix)
+	}
+}
+
+// mockEnvDetectorDDEV returns DDEV environment for testing.
+type mockEnvDetectorDDEV struct{}
+
+func (m *mockEnvDetectorDDEV) Detect(projectPath string, forceDetect bool) (*envdetect.Detection, error) {
+	return &envdetect.Detection{
+		Environment:   envdetect.EnvDdev,
+		CommandPrefix: []string{"ddev"},
+		DetectedAt:    time.Now(),
+	}, nil
+}
+
+// mockEnvDetectorDirect returns direct environment for testing.
+type mockEnvDetectorDirect struct{}
+
+func (m *mockEnvDetectorDirect) Detect(projectPath string, forceDetect bool) (*envdetect.Detection, error) {
+	return &envdetect.Detection{
+		Environment:   envdetect.EnvDirect,
+		CommandPrefix: []string{},
+		DetectedAt:    time.Now(),
+	}, nil
 }
