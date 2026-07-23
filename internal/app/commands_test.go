@@ -1061,3 +1061,93 @@ func TestRunApplyPatch_Dispatch(t *testing.T) {
 		t.Error("apply-patch should be a known command")
 	}
 }
+
+// --- Phase 1: Exit code 3 semantic handling (RED) ---
+
+func TestIsScanExitOK(t *testing.T) {
+	tests := []struct {
+		name     string
+		exitCode int
+		want     bool
+	}{
+		{"exit 0 is OK", 0, true},
+		{"exit 3 is OK (findings exist)", 3, true},
+		{"exit 1 is NOT OK", 1, false},
+		{"exit 2 is NOT OK", 2, false},
+		{"exit 4 is NOT OK", 4, false},
+		{"exit -1 is NOT OK", -1, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isScanExitOK(tt.exitCode)
+			if got != tt.want {
+				t.Errorf("isScanExitOK(%d) = %v, want %v", tt.exitCode, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunScan_ExitCode3WithFindings(t *testing.T) {
+	origRun := drupexec.Run
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			return `
+Project: token (modules/contrib/token)
+
+  - modules/contrib/token/token.module:42
+    Call to deprecated function foo().
+    Rule: deprecation
+`, "", 3, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.Run = origRun }()
+
+	// Capture stdout.
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := RunScan("/tmp/test-project")
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	if err != nil {
+		t.Fatalf("RunScan should succeed with exit code 3 and valid stdout: %v", err)
+	}
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, output)
+	}
+	if result["total_errors"].(float64) != 1 {
+		t.Errorf("total_errors = %v, want 1", result["total_errors"])
+	}
+}
+
+func TestRunScan_ExitCode3EmptyStdoutIsError(t *testing.T) {
+	origRun := drupexec.Run
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			return "", "drush crashed: bootstrap failed", 3, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.Run = origRun }()
+
+	err := RunScan("/tmp/test-project")
+	if err == nil {
+		t.Fatal("expected error for exit code 3 with empty stdout, got nil")
+	}
+	if !strings.Contains(err.Error(), "code 3") {
+		t.Errorf("error = %q, want it to mention exit code 3", err.Error())
+	}
+	if !strings.Contains(err.Error(), "bootstrap failed") {
+		t.Errorf("error = %q, want it to contain stderr", err.Error())
+	}
+}

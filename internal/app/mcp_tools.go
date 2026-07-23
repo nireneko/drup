@@ -78,8 +78,13 @@ func realHandleScan(args json.RawMessage) (json.RawMessage, error) {
 	if err != nil {
 		return nil, drushExecError("drush", []string{"-r", params.ProjectPath, "upgrade_status:analyze", "--all"}, -1, err.Error(), "")
 	}
-	if exitCode != 0 {
+	if !isScanExitOK(exitCode) {
 		return nil, drushExecError("drush", []string{"-r", params.ProjectPath, "upgrade_status:analyze", "--all"}, exitCode, stderr, stdout)
+	}
+
+	// Exit code 3 with empty stdout means drush crashed, not findings.
+	if exitCode == 3 && strings.TrimSpace(stdout) == "" {
+		return nil, fmt.Errorf("drush exited with code 3 but produced no output (command: drush -r %s upgrade_status:analyze --all)\nstderr: %s", params.ProjectPath, stderr)
 	}
 
 	result, err := scan.Parse(strings.NewReader(stdout))
@@ -120,7 +125,7 @@ func realHandleAutofix(args json.RawMessage) (json.RawMessage, error) {
 	// Re-scan to get remaining errors.
 	scanStdout, _, scanExit, _ := drupexec.Run("drush", "-r", params.ProjectPath, "upgrade_status:analyze", "--all")
 	remaining := 0
-	if scanExit == 0 {
+	if isScanExitOK(scanExit) && strings.TrimSpace(scanStdout) != "" {
 		result, err := scan.Parse(strings.NewReader(scanStdout))
 		if err == nil {
 			remaining = result.TotalErrs

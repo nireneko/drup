@@ -57,6 +57,12 @@ func RunInit(args []string) error {
 	return nil
 }
 
+// isScanExitOK returns true for exit codes that carry valid scan data.
+// 0 = no findings, 3 = findings exist. 1, 2, >3 = real errors.
+func isScanExitOK(exitCode int) bool {
+	return exitCode == 0 || exitCode == 3
+}
+
 // drushExecError wraps a drush execution failure with command context.
 func drushExecError(cmd string, args []string, exitCode int, stderr, stdout string) error {
 	fullCmd := cmd + " " + strings.Join(args, " ")
@@ -76,8 +82,13 @@ func RunScan(path string) error {
 	if err != nil {
 		return drushExecError("drush", []string{"-r", path, "upgrade_status:analyze", "--all"}, -1, err.Error(), "")
 	}
-	if exitCode != 0 {
+	if !isScanExitOK(exitCode) {
 		return drushExecError("drush", []string{"-r", path, "upgrade_status:analyze", "--all"}, exitCode, stderr, stdout)
+	}
+
+	// Exit code 3 with empty stdout means drush crashed, not findings.
+	if exitCode == 3 && strings.TrimSpace(stdout) == "" {
+		return fmt.Errorf("drush exited with code 3 but produced no output (command: drush -r %s upgrade_status:analyze --all)\nstderr: %s", path, stderr)
 	}
 
 	result, err := scan.Parse(strings.NewReader(stdout))
@@ -216,8 +227,13 @@ func DoValidate(projectPath, module string) (*scan.ScanResult, []scan.DepError, 
 	if err != nil {
 		return nil, nil, drushExecError("drush", []string{"-r", projectPath, "upgrade_status:analyze", analyzeTarget}, -1, err.Error(), "")
 	}
-	if exitCode != 0 {
+	if !isScanExitOK(exitCode) {
 		return nil, nil, drushExecError("drush", []string{"-r", projectPath, "upgrade_status:analyze", analyzeTarget}, exitCode, stderr, stdout)
+	}
+
+	// Exit code 3 with empty stdout means drush crashed, not findings.
+	if exitCode == 3 && strings.TrimSpace(stdout) == "" {
+		return nil, nil, fmt.Errorf("drush exited with code 3 but produced no output (command: drush -r %s upgrade_status:analyze %s)\nstderr: %s", projectPath, analyzeTarget, stderr)
 	}
 
 	result, err := scan.Parse(strings.NewReader(stdout))
