@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/nireneko/drup/internal/metrics"
 )
 
 func sampleReportData() *ReportData {
@@ -109,5 +111,79 @@ func TestGenerateJSON_EmptyReport(t *testing.T) {
 	json.Unmarshal(result, &parsed)
 	if parsed["total_errors"].(float64) != 0 {
 		t.Errorf("total_errors = %v, want 0", parsed["total_errors"])
+	}
+}
+
+// Task 4.3: Report includes pipeline metrics.
+func TestGenerateJSON_WithMetrics(t *testing.T) {
+	m := &metrics.Metrics{
+		TotalDurationMS:  5000,
+		StageDurations:   map[string]int64{"preflight": 1000, "scan": 2000},
+		CommandsExecuted: 15,
+		FilesModified:    3,
+		Retries:          1,
+		Interventions:    0,
+	}
+	data := &ReportData{
+		ProjectPath:     "/path/to/drupal",
+		TotalErrors:     0,
+		Resolved:        []ResolvedItem{},
+		Pending:         []PendingItem{},
+		PipelineMetrics: m,
+	}
+
+	result, err := GenerateJSON(data)
+	if err != nil {
+		t.Fatalf("GenerateJSON error: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	pm, ok := parsed["pipeline_metrics"]
+	if !ok || pm == nil {
+		t.Fatal("pipeline_metrics missing from JSON output")
+	}
+	pmMap := pm.(map[string]interface{})
+	if pmMap["total_duration_ms"].(float64) != 5000 {
+		t.Errorf("total_duration_ms = %v, want 5000", pmMap["total_duration_ms"])
+	}
+	if pmMap["commands_executed"].(float64) != 15 {
+		t.Errorf("commands_executed = %v, want 15", pmMap["commands_executed"])
+	}
+}
+
+func TestGenerateMarkdown_WithMetrics(t *testing.T) {
+	m := &metrics.Metrics{
+		TotalDurationMS:  5000,
+		StageDurations:   map[string]int64{"preflight": 1000},
+		CommandsExecuted: 10,
+		FilesModified:    2,
+		Retries:          0,
+		Interventions:    1,
+	}
+	data := &ReportData{
+		ProjectPath:     "/path",
+		TotalErrors:     0,
+		Resolved:        []ResolvedItem{},
+		Pending:         []PendingItem{},
+		PipelineMetrics: m,
+	}
+
+	result, err := GenerateMarkdown(data)
+	if err != nil {
+		t.Fatalf("GenerateMarkdown error: %v", err)
+	}
+
+	if !strings.Contains(result, "# Pipeline Metrics") {
+		t.Error("missing Pipeline Metrics section in markdown")
+	}
+	if !strings.Contains(result, "5000") {
+		t.Error("missing total duration in markdown")
+	}
+	if !strings.Contains(result, "10") {
+		t.Error("missing commands executed in markdown")
 	}
 }

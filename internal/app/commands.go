@@ -8,19 +8,21 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 
+	"github.com/nireneko/drup/internal/composerutil"
 	"github.com/nireneko/drup/internal/coreupgrade"
 	"github.com/nireneko/drup/internal/drupalorg"
 	drupexec "github.com/nireneko/drup/internal/exec"
 	"github.com/nireneko/drup/internal/gitops"
 	"github.com/nireneko/drup/internal/installer"
 	"github.com/nireneko/drup/internal/mcp"
+	"github.com/nireneko/drup/internal/metrics"
 	"github.com/nireneko/drup/internal/packaging"
 	"github.com/nireneko/drup/internal/patch"
 	"github.com/nireneko/drup/internal/report"
 	"github.com/nireneko/drup/internal/scan"
+	"github.com/nireneko/drup/internal/semver"
 	statepkg "github.com/nireneko/drup/internal/state"
 	"github.com/nireneko/drup/internal/update"
 )
@@ -64,6 +66,28 @@ func isScanExitOK(exitCode int) bool {
 	return exitCode == 0 || exitCode == 3
 }
 
+// hasNoCustomCode returns true if both web/modules/custom/ and web/themes/custom/
+// have no subdirectories (i.e., no custom modules or themes exist).
+func hasNoCustomCode(projectPath string) bool {
+	customModules := filepath.Join(projectPath, "modules", "custom")
+	customThemes := filepath.Join(projectPath, "themes", "custom")
+	return dirHasNoSubdirs(customModules) && dirHasNoSubdirs(customThemes)
+}
+
+// dirHasNoSubdirs returns true if the directory doesn't exist or has no subdirectories.
+func dirHasNoSubdirs(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return true // Directory doesn't exist → no custom code.
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
 // cliRun detects the environment for projectPath and runs cmd with the
 // appropriate prefix. Uses --root= instead of -r for drush commands.
 // Returns the same (stdout, stderr, exitCode, err) as drupexec.Run.
@@ -90,6 +114,22 @@ func drushExecError(cmd string, args []string, exitCode int, stderr, stdout stri
 
 // RunScan runs upgrade_status:analyze and outputs structured JSON.
 func RunScan(path string) error {
+	// Smart no-op bypass: skip if both custom dirs are empty.
+	if hasNoCustomCode(path) {
+		fmt.Fprintln(os.Stderr, "scan: no custom code found, skipping rector and custom analysis")
+		result := &scan.ScanResult{
+			ProjectPath: path,
+			Modules:     []scan.ModuleStatus{},
+			TotalErrs:   0,
+		}
+		data, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal result: %w", err)
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+
 	stdout, stderr, exitCode, err := cliRun(path, "drush", "upgrade_status:analyze", "--all", "--root="+path)
 	if err != nil {
 		return drushExecError("drush", []string{"upgrade_status:analyze", "--all", "--root=" + path}, -1, err.Error(), "")
@@ -171,12 +211,12 @@ func RunContrib(module string) error {
 
 // RunIssue extracts patch/diff/MR links from Drupal.org issues.
 func RunIssue(query string) error {
-	patches, err := drupalorg.SearchPatches(query)
+	result, err := drupalorg.SearchPatches(query)
 	if err != nil {
 		return fmt.Errorf("search patches: %w", err)
 	}
 
-	data, err := json.MarshalIndent(patches, "", "  ")
+	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal JSON: %w", err)
 	}
@@ -195,10 +235,11 @@ func RunReport(path string) error {
 
 	// Populate report data from scan results
 	reportData := &report.ReportData{
-		ProjectPath: path,
-		TotalErrors: len(filtered),
-		Resolved:    []report.ResolvedItem{},
-		Pending:     []report.PendingItem{},
+		ProjectPath:     path,
+		TotalErrors:     len(filtered),
+		Resolved:        []report.ResolvedItem{},
+		Pending:         []report.PendingItem{},
+		PipelineMetrics: snapshotMetrics(),
 	}
 
 	// Convert scan errors to pending items
@@ -250,6 +291,13 @@ func extractModuleName(filePath string) string {
 	return "unknown"
 }
 
+// snapshotMetrics returns a metrics snapshot, recovering from any panic.
+func snapshotMetrics() *metrics.Metrics {
+	defer func() { recover() }()
+	snap := metrics.Default().Snapshot()
+	return &snap
+}
+
 // RunMCP starts the MCP stdio server.
 func RunMCP() error {
 	server := mcp.NewServer(os.Stdout, Version)
@@ -259,7 +307,26 @@ func RunMCP() error {
 
 // DoValidate runs upgrade_status:analyze and returns parsed results.
 // Shared between CLI and MCP handlers.
+// For Drupal >= 11.x, uses drush updb/cr/status as primary gates.
 func DoValidate(projectPath, module string) (*scan.ScanResult, []scan.DepError, error) {
+	// Detect core version to determine gate strategy.
+	coreVersion := detectDrupalVersion(projectPath)
+	isPostD11 := false
+	if coreVersion != "" {
+		v, err := semver.Parse(coreVersion)
+		if err == nil && v.Major >= 11 {
+			isPostD11 = true
+		}
+	}
+
+	if isPostD11 {
+		return doValidatePostD11(projectPath, module)
+	}
+	return doValidatePreD11(projectPath, module)
+}
+
+// doValidatePreD11 uses upgrade_status:analyze as the primary gate.
+func doValidatePreD11(projectPath, module string) (*scan.ScanResult, []scan.DepError, error) {
 	analyzeTarget := "--all"
 	if module != "" {
 		analyzeTarget = module
@@ -290,6 +357,64 @@ func DoValidate(projectPath, module string) (*scan.ScanResult, []scan.DepError, 
 			continue
 		}
 		filtered = append(filtered, mod.Errors...)
+	}
+
+	return result, filtered, nil
+}
+
+// doValidatePostD11 uses drush updb/cr/status as primary gates.
+// upgrade_status:analyze is run as informational output only.
+func doValidatePostD11(projectPath, module string) (*scan.ScanResult, []scan.DepError, error) {
+	// Gate 1: drush updb -y.
+	_, stderr, exitCode, err := cliRun(projectPath, "drush", "updb", "-y", "--root="+projectPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("drush updb: %w", err)
+	}
+	if exitCode != 0 {
+		return nil, nil, fmt.Errorf("drush updb failed (exit %d): %s", exitCode, stderr)
+	}
+
+	// Gate 2: drush cr.
+	_, stderr, exitCode, err = cliRun(projectPath, "drush", "cr", "--root="+projectPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("drush cr: %w", err)
+	}
+	if exitCode != 0 {
+		return nil, nil, fmt.Errorf("drush cr failed (exit %d): %s", exitCode, stderr)
+	}
+
+	// Gate 3: drush status (must exit 0 = site bootstraps).
+	_, stderr, exitCode, err = cliRun(projectPath, "drush", "status", "--root="+projectPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("drush status: %w", err)
+	}
+	if exitCode != 0 {
+		return nil, nil, fmt.Errorf("site bootstrap failed: drush status exit %d: %s", exitCode, stderr)
+	}
+
+	// Informational: run upgrade_status:analyze but don't gate on it.
+	analyzeTarget := "--all"
+	if module != "" {
+		analyzeTarget = module
+	}
+	stdout, _, analyzeExit, _ := cliRun(projectPath, "drush", "upgrade_status:analyze", analyzeTarget, "--root="+projectPath)
+
+	result := &scan.ScanResult{
+		ProjectPath: projectPath,
+		Modules:     []scan.ModuleStatus{},
+	}
+	var filtered []scan.DepError
+
+	if isScanExitOK(analyzeExit) && strings.TrimSpace(stdout) != "" {
+		if parsed, err := scan.Parse(strings.NewReader(stdout)); err == nil {
+			result = parsed
+			for _, mod := range parsed.Modules {
+				if module != "" && mod.Name != module {
+					continue
+				}
+				filtered = append(filtered, mod.Errors...)
+			}
+		}
 	}
 
 	return result, filtered, nil
@@ -685,6 +810,15 @@ func RunPreflight() error {
 		})
 	}
 
+	// 7. Core readiness check.
+	coreResults, _ := checkCoreReadiness(cwd)
+	for _, cr := range coreResults {
+		results = append(results, cr)
+		if !cr.Pass {
+			allPass = false
+		}
+	}
+
 	// Output results.
 	data, _ := json.MarshalIndent(results, "", "  ")
 	fmt.Println(string(data))
@@ -723,6 +857,150 @@ func detectDrupalVersion(projectPath string) string {
 			if v, ok := pkg["version"].(string); ok {
 				return v
 			}
+		}
+	}
+	return ""
+}
+
+// checkCoreReadiness verifies that composer.json constraints and custom module/theme
+// core_version_requirement values allow Drupal 11.
+func checkCoreReadiness(projectPath string) ([]PreflightResult, error) {
+	var results []PreflightResult
+
+	// 1. Check composer.json drupal/core constraint.
+	composerPath := filepath.Join(projectPath, "composer.json")
+	composerData, err := os.ReadFile(composerPath)
+	if err != nil {
+		results = append(results, PreflightResult{
+			Check:   "core_composer_constraint",
+			Pass:    false,
+			Message: "composer.json not found",
+		})
+		return results, nil
+	}
+
+	var composer map[string]interface{}
+	if err := json.Unmarshal(composerData, &composer); err != nil {
+		results = append(results, PreflightResult{
+			Check:   "core_composer_constraint",
+			Pass:    false,
+			Message: "composer.json parse error",
+		})
+		return results, nil
+	}
+
+	require, _ := composer["require"].(map[string]interface{})
+	coreConstraint := ""
+	for _, pkg := range []string{"drupal/core", "drupal/core-recommended"} {
+		if c, ok := require[pkg].(string); ok {
+			coreConstraint = c
+			break
+		}
+	}
+
+	if coreConstraint == "" {
+		results = append(results, PreflightResult{
+			Check:   "core_composer_constraint",
+			Pass:    false,
+			Message: "drupal/core not found in composer.json require",
+		})
+		return results, nil
+	}
+
+	// Check if constraint allows Drupal 11.
+	d11Version, _ := semver.Parse("11.0.0")
+	if semver.Satisfies(d11Version, coreConstraint) {
+		results = append(results, PreflightResult{
+			Check:   "core_composer_constraint",
+			Pass:    true,
+			Message: fmt.Sprintf("composer.json constraint %q allows Drupal 11", coreConstraint),
+		})
+	} else {
+		results = append(results, PreflightResult{
+			Check:   "core_composer_constraint",
+			Pass:    false,
+			Message: fmt.Sprintf("composer.json constraint %s does not permit Drupal 11", coreConstraint),
+		})
+	}
+
+	// 2. Scan custom modules/themes for core_version_requirement.
+	webRoot := composerutil.ReadWebRoot(projectPath)
+	customModulesDir := filepath.Join(projectPath, webRoot, "modules", "custom")
+	customThemesDir := filepath.Join(projectPath, webRoot, "themes", "custom")
+
+	infoFiles := findInfoYMLFiles(customModulesDir)
+	infoFiles = append(infoFiles, findInfoYMLFiles(customThemesDir)...)
+
+	if len(infoFiles) == 0 {
+		results = append(results, PreflightResult{
+			Check:   "core_module_compat",
+			Pass:    true,
+			Message: "no custom code to check",
+		})
+		return results, nil
+	}
+
+	var blockers []string
+	for _, infoFile := range infoFiles {
+		data, err := os.ReadFile(infoFile)
+		if err != nil {
+			continue
+		}
+		constraint := parseCoreVersionRequirementFromInfo(string(data))
+		if constraint == "" {
+			continue
+		}
+		if !semver.Satisfies(d11Version, constraint) {
+			// Extract module/theme name from path.
+			name := filepath.Base(filepath.Dir(infoFile))
+			blockers = append(blockers, fmt.Sprintf("%s (constraint: %s)", name, constraint))
+		}
+	}
+
+	if len(blockers) > 0 {
+		results = append(results, PreflightResult{
+			Check:   "core_module_compat",
+			Pass:    false,
+			Message: fmt.Sprintf("blockers: %s", strings.Join(blockers, ", ")),
+		})
+	} else {
+		results = append(results, PreflightResult{
+			Check:   "core_module_compat",
+			Pass:    true,
+			Message: fmt.Sprintf("all %d custom modules/themes allow Drupal 11", len(infoFiles)),
+		})
+	}
+
+	return results, nil
+}
+
+// findInfoYMLFiles finds all .info.yml files in subdirectories of dir.
+func findInfoYMLFiles(dir string) []string {
+	var files []string
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			infoPath := filepath.Join(dir, e.Name(), e.Name()+".info.yml")
+			if _, err := os.Stat(infoPath); err == nil {
+				files = append(files, infoPath)
+			}
+		}
+	}
+	return files
+}
+
+// parseCoreVersionRequirementFromInfo extracts core_version_requirement from .info.yml content.
+func parseCoreVersionRequirementFromInfo(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "core_version_requirement:") {
+			val := strings.TrimPrefix(line, "core_version_requirement:")
+			val = strings.TrimSpace(val)
+			val = strings.Trim(val, `"'`)
+			return val
 		}
 	}
 	return ""
@@ -862,7 +1140,7 @@ func RunUpgradeCore(args []string) error {
 	os.WriteFile(backupPath, composerData, 0o644)
 
 	// Disable advisory blocking before require.
-	_, stderr, exitCode, err := execRunFn("composer", "config", "policy.advisories.block", "false")
+	_, stderr, exitCode, err := cliRun(cwd, "composer", "config", "policy.advisories.block", "false")
 	if err != nil {
 		return fmt.Errorf("composer config failed: %w", err)
 	}
@@ -879,7 +1157,7 @@ func RunUpgradeCore(args []string) error {
 		"-W",
 		"--no-update",
 	}
-	_, stderr, exitCode, err = execRunFn("composer", composerArgs...)
+	_, stderr, exitCode, err = cliRun(cwd, "composer", composerArgs...)
 	if err != nil {
 		return fmt.Errorf("composer not found or failed: %w", err)
 	}
@@ -889,7 +1167,7 @@ func RunUpgradeCore(args []string) error {
 	}
 
 	// Run composer update -W for full dependency resolution.
-	_, stderr, exitCode, err = execRunFn("composer", "update", "-W")
+	_, stderr, exitCode, err = cliRun(cwd, "composer", "update", "-W")
 	if err != nil {
 		return fmt.Errorf("composer update failed: %w", err)
 	}
@@ -992,19 +1270,11 @@ func detectPHPVersion(projectPath string) (string, error) {
 
 // isPHP84OrLater checks if the PHP version is 8.4 or later.
 func isPHP84OrLater(version string) bool {
-	parts := strings.Split(version, ".")
-	if len(parts) < 2 {
-		return false
-	}
-	major, err := strconv.Atoi(parts[0])
+	v, err := semver.Parse(version)
 	if err != nil {
 		return false
 	}
-	minor, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return false
-	}
-	return major > 8 || (major == 8 && minor >= 4)
+	return semver.Satisfies(v, ">=8.4")
 }
 
 // patchSettingsPHP patches settings.php to suppress E_DEPRECATED warnings for PHP 8.4+.

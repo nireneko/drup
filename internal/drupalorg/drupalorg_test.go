@@ -162,11 +162,11 @@ func TestSearchPatches_API_D7Primary(t *testing.T) {
 	if htmlCalled {
 		t.Error("HTML scraping should not be called when api-d7 returns results")
 	}
-	if len(patches) != 1 {
-		t.Fatalf("len(patches) = %d, want 1", len(patches))
+	if len(patches.Patches) != 1 {
+		t.Fatalf("len(patches) = %d, want 1", len(patches.Patches))
 	}
-	if patches[0].IssueNID != "99" {
-		t.Errorf("IssueNID = %q, want %q", patches[0].IssueNID, "99")
+	if patches.Patches[0].IssueNID != "99" {
+		t.Errorf("IssueNID = %q, want %q", patches.Patches[0].IssueNID, "99")
 	}
 }
 
@@ -206,17 +206,17 @@ func TestSearchPatches_FixtureHTML(t *testing.T) {
 	}
 
 	// Should find 3 patches (.patch and .diff), not the .png
-	if len(patches) != 3 {
-		t.Fatalf("len(patches) = %d, want 3", len(patches))
+	if len(patches.Patches) != 3 {
+		t.Fatalf("len(patches) = %d, want 3", len(patches.Patches))
 	}
 
 	// First should be RTBC (highest priority).
-	if patches[0].Status != "RTBC" {
-		t.Errorf("first patch status = %q, want RTBC", patches[0].Status)
+	if patches.Patches[0].Status != "RTBC" {
+		t.Errorf("first patch status = %q, want RTBC", patches.Patches[0].Status)
 	}
 
 	// Check that all have is_patch=true for .patch/.diff.
-	for _, p := range patches {
+	for _, p := range patches.Patches {
 		if !p.IsPatch {
 			t.Errorf("patch %q should have is_patch=true", p.URL)
 		}
@@ -578,5 +578,115 @@ version: 6.3.0`
 	}
 	if info.Latest != "6.3.0" {
 		t.Errorf("Latest = %q, want %q", info.Latest, "6.3.0")
+	}
+}
+
+// Task 2.7: Structured PatchSearchResult tests.
+
+func TestSearchPatches_StructuredResult_PatchesFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"list": [{"node": {"nid": "123", "title": "Fix D11", "status": "RTBC"}}]}`))
+	}))
+	defer srv.Close()
+
+	orig := HTTPClient
+	HTTPClient = srv.Client()
+	defer func() { HTTPClient = orig }()
+
+	origAPI := APID7BaseURL
+	APID7BaseURL = srv.URL + "/api-d7/node.json?field_project_machine_name=%s"
+	defer func() { APID7BaseURL = origAPI }()
+
+	result, err := SearchPatches("token")
+	if err != nil {
+		t.Fatalf("SearchPatches error: %v", err)
+	}
+	if result.Status != "patches_found" {
+		t.Errorf("Status = %q, want %q", result.Status, "patches_found")
+	}
+	if result.Module != "token" {
+		t.Errorf("Module = %q, want %q", result.Module, "token")
+	}
+	if len(result.Patches) != 1 {
+		t.Fatalf("len(Patches) = %d, want 1", len(result.Patches))
+	}
+	if result.Message == "" {
+		t.Error("Message should not be empty")
+	}
+	if result.Suggestion == "" {
+		t.Error("Suggestion should not be empty")
+	}
+}
+
+func TestSearchPatches_StructuredResult_NoPatches(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "api-d7") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"list": []}`))
+			return
+		}
+		// HTML with no patches.
+		w.Write([]byte(`<html><body>No issues here</body></html>`))
+	}))
+	defer srv.Close()
+
+	orig := HTTPClient
+	HTTPClient = srv.Client()
+	defer func() { HTTPClient = orig }()
+
+	origAPI := APID7BaseURL
+	APID7BaseURL = srv.URL + "/api-d7/node.json?field_project_machine_name=%s"
+	defer func() { APID7BaseURL = origAPI }()
+
+	origIssue := issueBaseURL
+	issueBaseURL = srv.URL + "/project/issues/%s"
+	defer func() { issueBaseURL = origIssue }()
+
+	result, err := SearchPatches("nonexistent_module")
+	if err != nil {
+		t.Fatalf("SearchPatches error: %v", err)
+	}
+	if result.Status != "no_patches_found" {
+		t.Errorf("Status = %q, want %q", result.Status, "no_patches_found")
+	}
+	if result.Module != "nonexistent_module" {
+		t.Errorf("Module = %q, want %q", result.Module, "nonexistent_module")
+	}
+	if result.Suggestion == "" {
+		t.Error("Suggestion should not be empty for no_patches_found")
+	}
+	if result.Searched == "" {
+		t.Error("Searched URL should not be empty")
+	}
+}
+
+func TestSearchPatches_StructuredResult_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	orig := HTTPClient
+	HTTPClient = srv.Client()
+	defer func() { HTTPClient = orig }()
+
+	origAPI := APID7BaseURL
+	APID7BaseURL = srv.URL + "/api-d7/node.json?field_project_machine_name=%s"
+	defer func() { APID7BaseURL = origAPI }()
+
+	origIssue := issueBaseURL
+	issueBaseURL = srv.URL + "/project/issues/%s"
+	defer func() { issueBaseURL = origIssue }()
+
+	result, err := SearchPatches("error_module")
+	if err != nil {
+		t.Fatalf("SearchPatches error: %v", err)
+	}
+	if result.Status != "error" {
+		t.Errorf("Status = %q, want %q", result.Status, "error")
+	}
+	if result.Suggestion == "" {
+		t.Error("Suggestion should not be empty for error status")
 	}
 }

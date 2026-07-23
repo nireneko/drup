@@ -8,19 +8,22 @@ Generate JSON and markdown reports summarizing the Drupal upgrade with resolved/
 
 ### Requirement: JSON Report Generation
 
-The system SHALL generate a JSON report containing all upgrade results with real scan data. The system SHALL collect actual error counts from `scan.ParseCodeclimateJSON()` or equivalent instead of hardcoded zeros.
+The system SHALL generate a JSON report containing all upgrade results with real scan data. The system SHALL collect actual error counts from `scan.ParseCodeclimateJSON()` or equivalent instead of hardcoded zeros. The system SHALL include a `pipeline_metrics` section with timing, command counts, and retry data.
 
 | Req | Strength | Behavior |
 |-----|----------|----------|
 | Real error data | MUST | Populate `total_errors` from actual scan results |
 | Real error list | MUST | Populate `resolved` and `pending` from scan data |
 | No hardcoded zeros | MUST NOT | Use `0` only when scan confirms zero findings |
+| Pipeline metrics | MUST | Include `pipeline_metrics` section in JSON output |
+
+(Previously: no pipeline metrics in report)
 
 #### Scenario: Full report with resolved and pending
 
 - GIVEN an upgrade session with some resolved and some pending errors
 - WHEN report generation runs
-- THEN the system SHALL output JSON with `{resolved: [...], pending: [...], total_errors: N, token_accounting: {...}}`
+- THEN the system SHALL output JSON with `{resolved: [...], pending: [...], total_errors: N, token_accounting: {...}, pipeline_metrics: {...}}`
 
 #### Scenario: All errors resolved
 
@@ -39,6 +42,12 @@ The system SHALL generate a JSON report containing all upgrade results with real
 - GIVEN no prior scan has been run
 - WHEN `drup report` runs
 - THEN the system SHALL run a scan first, then generate the report with real data
+
+#### Scenario: Report with pipeline metrics
+
+- GIVEN a completed pipeline run
+- WHEN report generation runs
+- THEN the system SHALL include `pipeline_metrics` with `total_duration_ms`, `stage_durations`, `commands_executed`, `files_modified`, `retries`, `human_interventions`
 
 ### Requirement: Markdown Report Generation
 

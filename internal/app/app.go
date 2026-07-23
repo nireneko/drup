@@ -67,6 +67,11 @@ func Run(args []string) error {
 			return fmt.Errorf("usage: drup upgrade-core <target-version> [--dry-run]")
 		}
 		return RunUpgradeCore(args[1:])
+	case "cleanup":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: drup cleanup <project-path> [--validate-passed|--validate-failed]")
+		}
+		return RunCleanup(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q — run 'drup help' for available commands", args[0])
 	}
@@ -93,6 +98,7 @@ Commands:
   validate <path> [mod] Re-run scan and return error state (exit 1 if errors)
   apply-patch <url> <p> Download and apply a patch to the project
   upgrade-core <ver>    Upgrade Drupal core to target major version
+  cleanup <path>        Post-validation cleanup (remove upgrade_status)
   version               Print version
   help                  Show this help message
 

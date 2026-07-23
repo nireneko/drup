@@ -1037,3 +1037,64 @@ func (m *mockEnvDetector) Detect(projectPath string, forceDetect bool) (*envdete
 		DetectedAt:    time.Now(),
 	}, nil
 }
+
+// Task 2.5: create_patch uses project_path + web root from composer.json.
+func TestRealHandleCreatePatch_UsesProjectPath(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create composer.json with custom web-root.
+	composerJSON := `{
+		"extra": {
+			"drupal-scaffold": {
+				"locations": {
+					"web-root": "docroot"
+				}
+			}
+		}
+	}`
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(composerJSON), 0o644)
+
+	// Create the module directory at docroot/modules/contrib/testmod.
+	modulePath := filepath.Join(dir, "docroot", "modules", "contrib", "testmod")
+	os.MkdirAll(modulePath, 0o755)
+	os.WriteFile(filepath.Join(modulePath, "testmod.info.yml"), []byte("name: testmod"), 0o644)
+
+	// Initialize git repo.
+	runGitCmd(t, dir, "init")
+	runGitCmd(t, dir, "config", "user.email", "test@test.com")
+	runGitCmd(t, dir, "config", "user.name", "Test")
+	runGitCmd(t, dir, "add", ".")
+	runGitCmd(t, dir, "commit", "-m", "initial")
+
+	// Override exec to capture rector and git calls.
+	origRun := drupexec.Run
+	var capturedCmds []string
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		full := cmd + " " + strings.Join(args, " ")
+		capturedCmds = append(capturedCmds, full)
+		// Return empty diff so it reports "not applied".
+		if cmd == "git" {
+			return "", "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.Run = origRun }()
+
+	args := json.RawMessage(fmt.Sprintf(`{"module_name":"testmod","deprecation_details":"test","project_path":%q}`, dir))
+	_, err := realHandleCreatePatch(args)
+	if err != nil {
+		t.Fatalf("realHandleCreatePatch error: %v", err)
+	}
+
+	// Verify rector was called with the docroot-based path.
+	rectorFound := false
+	for _, cmd := range capturedCmds {
+		if strings.Contains(cmd, "rector") && strings.Contains(cmd, filepath.Join(dir, "docroot", "modules", "contrib", "testmod")) {
+			rectorFound = true
+			break
+		}
+	}
+	if !rectorFound {
+		t.Errorf("rector should be called with docroot-based path, got commands: %v", capturedCmds)
+	}
+}

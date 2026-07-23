@@ -56,6 +56,17 @@ type PatchInfo struct {
 	IssueNID string `json:"issue_nid"`
 }
 
+// PatchSearchResult is the structured response from SearchPatches.
+// It always includes status, module, message, and suggestion — never a bare empty array.
+type PatchSearchResult struct {
+	Status     string      `json:"status"`     // "patches_found" | "no_patches_found" | "error"
+	Module     string      `json:"module"`
+	Searched   string      `json:"searched"`
+	Message    string      `json:"message"`
+	Suggestion string      `json:"suggestion"`
+	Patches    []PatchInfo `json:"patches"`
+}
+
 // XML structures for release-history parsing.
 type releaseHistory struct {
 	XMLName  xml.Name  `xml:"project"`
@@ -219,35 +230,94 @@ func parseAPI_D7(data []byte) ([]PatchInfo, error) {
 
 // SearchPatches searches Drupal.org for patches related to a module.
 // It tries api-d7 as primary source, then falls back to HTML scraping.
-// Results are sorted by RTBC priority.
-func SearchPatches(query string) ([]PatchInfo, error) {
+// Results are returned as a structured PatchSearchResult with status, message, and suggestion.
+func SearchPatches(query string) (*PatchSearchResult, error) {
+	searchURL := fmt.Sprintf(issueBaseURL, query)
+
 	// Try api-d7 first.
 	patches, err := SearchIssuesAPI(query)
 	if err == nil && len(patches) > 0 {
 		sort.Slice(patches, func(i, j int) bool {
 			return priority(patches[i].Status) < priority(patches[j].Status)
 		})
-		return patches, nil
+		return &PatchSearchResult{
+			Status:     "patches_found",
+			Module:     query,
+			Searched:   searchURL,
+			Message:    fmt.Sprintf("%d patches found", len(patches)),
+			Suggestion: "Apply highest-date RTBC patch first",
+			Patches:    patches,
+		}, nil
 	}
 
 	// Fall back to HTML scraping.
-	url := fmt.Sprintf(issueBaseURL, query)
-	resp, err := HTTPClient.Get(url)
+	resp, err := HTTPClient.Get(searchURL)
 	if err != nil {
-		return nil, fmt.Errorf("fetch issues for %s: %w", query, err)
+		return &PatchSearchResult{
+			Status:     "error",
+			Module:     query,
+			Searched:   searchURL,
+			Message:    fmt.Sprintf("fetch issues: %v", err),
+			Suggestion: "Retry later or check manually",
+			Patches:    []PatchInfo{},
+		}, nil
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("issues for %s: HTTP %d", query, resp.StatusCode)
+		return &PatchSearchResult{
+			Status:     "error",
+			Module:     query,
+			Searched:   searchURL,
+			Message:    fmt.Sprintf("issues for %s: HTTP %d", query, resp.StatusCode),
+			Suggestion: "Retry later or check manually",
+			Patches:    []PatchInfo{},
+		}, nil
 	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read issues: %w", err)
+		return &PatchSearchResult{
+			Status:     "error",
+			Module:     query,
+			Searched:   searchURL,
+			Message:    fmt.Sprintf("read issues: %v", err),
+			Suggestion: "Retry later or check manually",
+			Patches:    []PatchInfo{},
+		}, nil
 	}
 
-	return parseIssueHTML(string(data))
+	htmlPatches, err := parseIssueHTML(string(data))
+	if err != nil {
+		return &PatchSearchResult{
+			Status:     "error",
+			Module:     query,
+			Searched:   searchURL,
+			Message:    fmt.Sprintf("parse issues: %v", err),
+			Suggestion: "Retry later or check manually",
+			Patches:    []PatchInfo{},
+		}, nil
+	}
+
+	if len(htmlPatches) > 0 {
+		return &PatchSearchResult{
+			Status:     "patches_found",
+			Module:     query,
+			Searched:   searchURL,
+			Message:    fmt.Sprintf("%d patches found", len(htmlPatches)),
+			Suggestion: "Apply highest-date RTBC patch first",
+			Patches:    htmlPatches,
+		}, nil
+	}
+
+	return &PatchSearchResult{
+		Status:     "no_patches_found",
+		Module:     query,
+		Searched:   searchURL,
+		Message:    "No patches found on Drupal.org",
+		Suggestion: fmt.Sprintf("Create a custom patch or check issue queue manually at %s", searchURL),
+		Patches:    []PatchInfo{},
+	}, nil
 }
 
 func parseIssueHTML(html string) ([]PatchInfo, error) {

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nireneko/drup/internal/composerutil"
 	"github.com/nireneko/drup/internal/coreupgrade"
 	"github.com/nireneko/drup/internal/drupalorg"
 	"github.com/nireneko/drup/internal/envdetect"
@@ -17,6 +19,7 @@ import (
 	"github.com/nireneko/drup/internal/patchreconcile"
 	"github.com/nireneko/drup/internal/report"
 	"github.com/nireneko/drup/internal/scan"
+	"github.com/nireneko/drup/internal/semver"
 )
 
 // defaultEnvDetector is the shared environment detector.
@@ -64,6 +67,7 @@ func WireMCPTools(s *mcp.Server) {
 	s.RegisterTool("core_upgrade_check", realHandleCoreUpgradeCheck)
 	s.RegisterTool("core_upgrade_apply", realHandleCoreUpgradeApply)
 	s.RegisterTool("patch_reconcile", realHandlePatchReconcile)
+	s.RegisterTool("cleanup", realHandleCleanup)
 }
 
 func realHandleScan(args json.RawMessage) (json.RawMessage, error) {
@@ -171,11 +175,11 @@ func realHandleIssuePatches(args json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("module_name or issue_nid required")
 	}
 
-	patches, err := drupalorg.SearchPatches(query)
+	result, err := drupalorg.SearchPatches(query)
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(patches)
+	return json.Marshal(result)
 }
 
 func realHandleApplyPatch(args json.RawMessage) (json.RawMessage, error) {
@@ -234,31 +238,38 @@ func realHandleCreatePatch(args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ModuleName         string `json:"module_name"`
 		DeprecationDetails string `json:"deprecation_details"`
+		ProjectPath        string `json:"project_path,omitempty"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, err
 	}
 
-	// Generate a patch using git diff after applying rector fixes to the specific module.
-	// This is a simplified implementation — creates a diff of the module directory.
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, err
+	// Resolve project path: use provided project_path or fall back to cwd.
+	projectPath := params.ProjectPath
+	if projectPath == "" {
+		var err error
+		projectPath, err = os.Getwd()
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	modulePath := filepath.Join(cwd, "modules", "contrib", params.ModuleName)
+	// Determine web root from composer.json scaffold config.
+	webRoot := composerutil.ReadWebRoot(projectPath)
+
+	modulePath := filepath.Join(projectPath, webRoot, "modules", "contrib", params.ModuleName)
 	if _, err := os.Stat(modulePath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("module %s not found at %s", params.ModuleName, modulePath)
 	}
 
 	// Run rector on the specific module.
-	_, _, _, err = drupexec.Run(filepath.Join(cwd, "vendor", "bin", "rector"), "process", modulePath)
+	_, _, _, err := drupexec.Run(filepath.Join(projectPath, "vendor", "bin", "rector"), "process", modulePath)
 	if err != nil {
 		return nil, fmt.Errorf("rector process: %w", err)
 	}
 
 	// Generate diff.
-	stdout, _, exitCode, err := drupexec.Run("git", "-C", cwd, "diff", "--", modulePath)
+	stdout, _, exitCode, err := drupexec.Run("git", "-C", projectPath, "diff", "--", modulePath)
 	if err != nil {
 		return nil, fmt.Errorf("git diff: %w", err)
 	}
@@ -991,9 +1002,10 @@ func realHandleGenerateReport(args json.RawMessage) (json.RawMessage, error) {
 
 	// Collect report data.
 	data := &report.ReportData{
-		ProjectPath: params.ProjectPath,
-		Resolved:    []report.ResolvedItem{},
-		Pending:     []report.PendingItem{},
+		ProjectPath:     params.ProjectPath,
+		Resolved:        []report.ResolvedItem{},
+		Pending:         []report.PendingItem{},
+		PipelineMetrics: snapshotMetrics(),
 	}
 
 	// Get live scan data if requested
@@ -1203,8 +1215,11 @@ func realHandleDrupalVersionMatrix(args json.RawMessage) (json.RawMessage, error
 }
 
 func isPHPCompatible(phpVer, phpMin, phpRecommended string) bool {
-	// Simple comparison: phpVer >= phpMin.
-	return phpVer >= phpMin
+	v, err := semver.Parse(phpVer)
+	if err != nil {
+		return false
+	}
+	return semver.Satisfies(v, ">="+phpMin)
 }
 
 // --- Core upgrade + patch reconcile tool handlers ---
@@ -1363,4 +1378,52 @@ func realHandlePatchReconcile(args json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 	return json.Marshal(result)
+}
+
+func realHandleCleanup(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath    string `json:"project_path"`
+		ValidatePassed bool   `json:"validate_passed"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if params.ProjectPath == "" {
+		return nil, fmt.Errorf("project_path is required")
+	}
+
+	cliArgs := []string{params.ProjectPath}
+	if params.ValidatePassed {
+		cliArgs = append(cliArgs, "--validate-passed")
+	} else {
+		cliArgs = append(cliArgs, "--validate-failed")
+	}
+
+	// Capture stdout from RunCleanup.
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := RunCleanup(cliArgs)
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse the JSON output from RunCleanup and return it.
+	var result interface{}
+	if jsonErr := json.Unmarshal(buf.Bytes(), &result); jsonErr == nil {
+		return json.Marshal(result)
+	}
+	// If not valid JSON, wrap the output.
+	return json.Marshal(map[string]interface{}{
+		"success": true,
+		"output":  buf.String(),
+	})
 }

@@ -4,15 +4,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/nireneko/drup/internal/metrics"
 )
 
 // ReportData contains all data needed to generate upgrade reports.
 type ReportData struct {
-	ProjectPath     string          `json:"project_path"`
-	TotalErrors     int             `json:"total_errors"`
-	Resolved        []ResolvedItem  `json:"resolved"`
-	Pending         []PendingItem   `json:"pending"`
-	TokenAccounting TokenAccounting `json:"token_accounting"`
+	ProjectPath     string           `json:"project_path"`
+	TotalErrors     int              `json:"total_errors"`
+	Resolved        []ResolvedItem   `json:"resolved"`
+	Pending         []PendingItem    `json:"pending"`
+	TokenAccounting TokenAccounting  `json:"token_accounting"`
+	PipelineMetrics *metrics.Metrics `json:"pipeline_metrics,omitempty"`
 }
 
 // ResolvedItem represents a successfully resolved error.
@@ -86,6 +89,22 @@ func GenerateMarkdown(data *ReportData) (string, error) {
 		b.WriteString("- **By agent**:\n")
 		for agent, tokens := range data.TokenAccounting.ByAgent {
 			b.WriteString(fmt.Sprintf("  - %s: %d\n", agent, tokens))
+		}
+	}
+
+	// Pipeline Metrics.
+	if data.PipelineMetrics != nil {
+		b.WriteString("\n# Pipeline Metrics\n\n")
+		b.WriteString(fmt.Sprintf("- **Total duration**: %d ms\n", data.PipelineMetrics.TotalDurationMS))
+		b.WriteString(fmt.Sprintf("- **Commands executed**: %d\n", data.PipelineMetrics.CommandsExecuted))
+		b.WriteString(fmt.Sprintf("- **Files modified**: %d\n", data.PipelineMetrics.FilesModified))
+		b.WriteString(fmt.Sprintf("- **Retries**: %d\n", data.PipelineMetrics.Retries))
+		b.WriteString(fmt.Sprintf("- **Human interventions**: %d\n", data.PipelineMetrics.Interventions))
+		if len(data.PipelineMetrics.StageDurations) > 0 {
+			b.WriteString("- **Stage durations**:\n")
+			for stage, dur := range data.PipelineMetrics.StageDurations {
+				b.WriteString(fmt.Sprintf("  - %s: %d ms\n", stage, dur))
+			}
 		}
 	}
 

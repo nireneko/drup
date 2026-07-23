@@ -64,6 +64,10 @@ The system SHALL retry failed validations up to 2 times with the same sub-agent 
 
 The system SHALL NOT advance to the next pipeline phase until all items in the current phase pass validation. Exit code 3 from `upgrade_status:analyze` SHALL be treated as success-with-findings (not error). The validator SHALL parse stdout on exit 3 and only advance when `total_errors == 0`.
 
+**Post-D11 behavior (core >= 11.x):** When the detected Drupal core version is 11.x or higher, the system SHALL use `drush updb -y` + `drush cr` + `drush status` as the primary success gates. The `upgrade_status:analyze` command SHALL be run as optional informational output only and MUST NOT block pipeline progression. Success criteria: site bootstraps (`drush status` returns exit 0), no pending updates (`drush updb -y` completes cleanly), no fatal log errors.
+
+(Previously: upgrade_status:analyze was the sole gate for all Drupal versions)
+
 #### Scenario: Phase complete
 
 - GIVEN all contrib modules pass individual validation
@@ -87,6 +91,24 @@ The system SHALL NOT advance to the next pipeline phase until all items in the c
 - GIVEN a DDEV project and `validate({module_name: "mymodule"})`
 - WHEN validation runs
 - THEN the system SHALL use `RunWithEnv` with `--root=` and handle exit code 3 correctly
+
+#### Scenario: Post-D11 validation gates (core >= 11.x)
+
+- GIVEN Drupal core version is 11.0.0 or higher
+- WHEN the validation stage runs
+- THEN the system SHALL execute `drush updb -y`, then `drush cr`, then `drush status` as success gates, and MAY run `upgrade_status:analyze` for informational output only
+
+#### Scenario: Post-D11 drush status fails
+
+- GIVEN Drupal core >= 11.x and `drush status` returns non-zero
+- WHEN post-D11 validation runs
+- THEN the system SHALL report "site bootstrap failed" with drush stderr and halt
+
+#### Scenario: Post-D11 pending updates remain
+
+- GIVEN Drupal core >= 11.x and `drush updb -y` reports pending updates that fail
+- WHEN post-D11 validation runs
+- THEN the system SHALL report the failed update and halt
 
 ### Requirement: Scope Blocking
 

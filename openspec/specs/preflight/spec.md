@@ -163,3 +163,73 @@ The system SHALL install required dev dependencies if they are not already prese
 - GIVEN `settings.php` already contains the deprecation suppression line
 - WHEN preflight runs
 - THEN the system SHALL detect the existing line and skip patching
+
+### Requirement: Core Readiness Check
+
+The system SHALL verify that `composer.json` constraints allow Drupal 11 before proceeding with the upgrade pipeline. The system MUST parse all `core_version_requirement` values in `web/modules/custom/*/` and `web/themes/custom/*/*.info.yml` files and compare them against the target Drupal version.
+
+| Req | Strength | Behavior |
+|-----|----------|----------|
+| Constraint check | MUST | Parse `composer.json` `require.drupal/core` constraint and verify it permits target major version |
+| Module scan | MUST | Scan all custom module/theme `.info.yml` files for `core_version_requirement` |
+| Blockers report | MUST | List every module/theme with incompatible `core_version_requirement` |
+| Early abort | MUST | Halt pipeline with exit code and blockers report if any incompatibility found |
+
+#### Scenario: All constraints allow Drupal 11
+
+- GIVEN `composer.json` with `"drupal/core": "^10.3 || ^11"` and all `.info.yml` files with `core_version_requirement: ">=10.0 || ^11"`
+- WHEN preflight runs core readiness check
+- THEN the system SHALL report "core readiness: OK" and proceed
+
+#### Scenario: Composer constraint blocks Drupal 11
+
+- GIVEN `composer.json` with `"drupal/core": "^10.3"` (no `^11` allowance)
+- WHEN preflight runs core readiness check
+- THEN the system SHALL halt with message "composer.json constraint ^10.3 does not permit Drupal 11" and list the constraint
+
+#### Scenario: Custom modules with incompatible core_version_requirement
+
+- GIVEN 3 custom modules where 2 have `core_version_requirement: "<11"` and 1 has `">=10.0"`
+- WHEN preflight runs core readiness check
+- THEN the system SHALL halt and report: `blockers: [{module: "mod_a", constraint: "<11"}, {module: "mod_b", constraint: "<11"}]`
+
+#### Scenario: No custom modules exist
+
+- GIVEN a project with empty `web/modules/custom/` and `web/themes/custom/`
+- WHEN preflight runs core readiness check
+- THEN the system SHALL skip the module scan and report "no custom code to check"
+
+### Requirement: Semver-Based PHP Compatibility Check
+
+The system SHALL replace string-based PHP version comparison with proper semantic version comparison. The system MUST parse PHP version constraints (e.g., `">=8.1"`, `"^8.2"`) and compare them against the detected PHP version using semver rules.
+
+| Req | Strength | Behavior |
+|-----|----------|----------|
+| Semver parsing | MUST | Parse version strings into comparable semver components |
+| Constraint evaluation | MUST | Evaluate constraint operators (`>=`, `^`, `~`, `||`) correctly |
+| No string comparison | MUST NOT | Use lexicographic string comparison for versions |
+| Implementation | SHOULD | Use stdlib-only minimal semver implementation (no external deps) |
+
+#### Scenario: Compatible PHP version
+
+- GIVEN PHP 8.3 detected and constraint `">=8.1"`
+- WHEN `isPHPCompatible` runs
+- THEN the system SHALL return `true`
+
+#### Scenario: Incompatible PHP version
+
+- GIVEN PHP 8.0 detected and constraint `">=8.1"`
+- WHEN `isPHPCompatible` runs
+- THEN the system SHALL return `false`
+
+#### Scenario: Caret constraint
+
+- GIVEN PHP 8.2 detected and constraint `"^8.1"`
+- WHEN `isPHPCompatible` runs
+- THEN the system SHALL return `true` (8.2 is within ^8.1 range)
+
+#### Scenario: Invalid version string
+
+- GIVEN an unparseable version string `"abc"`
+- WHEN `isPHPCompatible` runs
+- THEN the system SHALL return an error, not panic
