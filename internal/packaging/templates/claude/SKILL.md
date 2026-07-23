@@ -78,18 +78,7 @@ drup scan <project-path>
 - **Module clean**: commit and move to next module.
 - **Module still has errors**: retry (max 2 attempts), then add to PENDING HUMAN LIST.
 
-### Stage 5: CORE UPGRADE — Drupal Core Version Bump
-
-```bash
-drup upgrade-core <target-version>
-```
-
-Updates composer.json constraints, runs `composer require`, `drush updb`, and verifies the result.
-
-- **Exit 0**: proceed to Stage 6.
-- **Exit non-zero**: read JSON output for error details. If already at target, skip. If composer/drush failure, report to user.
-
-### Stage 6: CUSTOM LOOP — Custom Code and Theme Files
+### Stage 5: CUSTOM LOOP — Custom Code and Theme Files
 
 For each custom module file or theme file with deprecation errors:
 
@@ -102,6 +91,17 @@ drup scan <project-path>
 
 - **File clean**: commit with conventional message and move to next file.
 - **File still has errors**: retry (max 2 attempts), then add to PENDING HUMAN LIST.
+
+### Stage 6: CORE UPGRADE — Drupal Core Version Bump
+
+```bash
+drup upgrade-core <target-version>
+```
+
+Updates composer.json constraints, runs `composer require`, `drush updb`, and verifies the result.
+
+- **Exit 0**: proceed to Stage 7.
+- **Exit non-zero**: read JSON output for error details. If already at target, skip. If composer/drush failure, report to user.
 
 ### Stage 7: FINAL VALIDATION
 
@@ -118,7 +118,7 @@ drup scan <project-path>
 ```
 
 - **Exit 0, no errors**: ALL CLEAN — proceed to Stage 8.
-- **Errors remain**: classify by type (contrib/custom/theme) and re-enter the matching loop (Stage 4 or Stage 6) for those items. Items surviving 3 total attempts go to PENDING HUMAN LIST.
+- **Errors remain**: classify by type (contrib/custom/theme) and re-enter the matching loop (Stage 4 or Stage 5) for those items. Items surviving 3 total attempts go to PENDING HUMAN LIST.
 
 ### Stage 8: REPORT
 
@@ -153,5 +153,5 @@ Branch: `upgrade/drupal-11`
 
 Ask the user before proceeding when:
 - Stage 1 reports unsupported environment — this ends the run.
-- Stage 5 involves a non-dry-run core version bump — confirm before executing.
+- Stage 6 involves a non-dry-run core version bump — confirm before executing.
 - Any action is destructive or ambiguous.
