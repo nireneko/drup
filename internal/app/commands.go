@@ -494,10 +494,11 @@ func RunInstall() error {
 		if err != nil {
 			return fmt.Errorf("render templates for %s: %w", agent.ID(), err)
 		}
-		if err := installer.Install([]installer.AgentAdapter{agent}, binaryPath, files); err != nil {
+		results, err := installer.Install([]installer.AgentAdapter{agent}, binaryPath, files)
+		if err != nil {
 			return fmt.Errorf("install to %s: %w", agent.ID(), err)
 		}
-		fmt.Printf("Installed drup to %s\n", agent.ID())
+		printSyncResults(agent.ID(), results)
 	}
 
 	// Update state.
@@ -538,10 +539,11 @@ func RunSync() error {
 		if err != nil {
 			return fmt.Errorf("render templates for %s: %w", agent.ID(), err)
 		}
-		if err := installer.Install([]installer.AgentAdapter{agent}, binaryPath, files); err != nil {
+		results, err := installer.Install([]installer.AgentAdapter{agent}, binaryPath, files)
+		if err != nil {
 			return fmt.Errorf("sync to %s: %w", agent.ID(), err)
 		}
-		fmt.Printf("Synced drup to %s\n", agent.ID())
+		printSyncResults(agent.ID(), results)
 	}
 
 	// Clear PendingSync flag.
@@ -551,6 +553,14 @@ func RunSync() error {
 	}
 
 	return nil
+}
+
+// printSyncResults displays per-file sync status grouped by agent.
+func printSyncResults(agentID string, results []installer.SyncFileResult) {
+	fmt.Printf("Synced drup to %s\n", agentID)
+	for _, r := range results {
+		fmt.Printf("  %s: %s\n", r.Status, r.Path)
+	}
 }
 
 // checkLatestFn and upgradeFn wrap the update package's entry points.

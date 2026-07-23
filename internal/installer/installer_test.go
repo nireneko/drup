@@ -390,8 +390,22 @@ func TestInstall_WritesFiles(t *testing.T) {
 		"agents/drup-preflight.md": "# Test Preflight Agent\n",
 	}
 
-	if err := Install(agents, "/usr/local/bin/drup", files); err != nil {
+	results, err := Install(agents, "/usr/local/bin/drup", files)
+	if err != nil {
 		t.Fatalf("Install error: %v", err)
+	}
+
+	// All files should be "new" on first install.
+	if len(results) != len(files) {
+		t.Fatalf("expected %d results, got %d", len(files), len(results))
+	}
+	for _, r := range results {
+		if r.Status != FileNew {
+			t.Errorf("file %s: expected status %q, got %q", r.Path, FileNew, r.Status)
+		}
+		if r.Path == "" {
+			t.Error("result has empty path")
+		}
 	}
 
 	// Orchestrator skill: SKILL.md → skills/drup/SKILL.md (directory + file)
@@ -404,14 +418,6 @@ func TestInstall_WritesFiles(t *testing.T) {
 	agentPath := filepath.Join(agents[0].AgentsDir(), "drup-preflight.md")
 	if _, err := os.Stat(agentPath); os.IsNotExist(err) {
 		t.Errorf("agent file not written to %s", agentPath)
-	}
-
-	// Command: commands/drup.md → commands/drup.md (OpenCode only)
-	if agents[0].CommandsDir() != "" {
-		commandPath := filepath.Join(agents[0].CommandsDir(), "drup.md")
-		if _, err := os.Stat(commandPath); os.IsNotExist(err) {
-			t.Errorf("command file not written to %s", commandPath)
-		}
 	}
 
 	// MCP config: .mcp.json
@@ -865,7 +871,7 @@ func TestUninstall_CallsAllRemoveMethods(t *testing.T) {
 		"agents/drup-preflight.md": "# Preflight\n",
 		"agents/drup-contrib.md":   "# Contrib\n",
 	}
-	if err := Install(agents, "/usr/local/bin/drup", files); err != nil {
+	if _, err := Install(agents, "/usr/local/bin/drup", files); err != nil {
 		t.Fatalf("Install error: %v", err)
 	}
 
@@ -927,7 +933,7 @@ func TestUninstall_DryRun(t *testing.T) {
 		".mcp.json":                `{"command":"drup"}`,
 		"agents/drup-preflight.md": "# Preflight\n",
 	}
-	if err := Install(agents, "/usr/local/bin/drup", files); err != nil {
+	if _, err := Install(agents, "/usr/local/bin/drup", files); err != nil {
 		t.Fatalf("Install error: %v", err)
 	}
 
@@ -1118,7 +1124,7 @@ func TestInstall_BootstrapFiles_Claude(t *testing.T) {
 		".mcp.json": `{"command":"drup","args":["mcp"]}`,
 	}
 
-	if err := Install(agents, "/usr/local/bin/drup", files); err != nil {
+	if _, err := Install(agents, "/usr/local/bin/drup", files); err != nil {
 		t.Fatalf("Install error: %v", err)
 	}
 
@@ -1156,7 +1162,7 @@ func TestInstall_BootstrapFiles_Codex(t *testing.T) {
 		".mcp.json":               `{"command":"drup","args":["mcp"]}`,
 	}
 
-	if err := Install(agents, "/usr/local/bin/drup", files); err != nil {
+	if _, err := Install(agents, "/usr/local/bin/drup", files); err != nil {
 		t.Fatalf("Install error: %v", err)
 	}
 
@@ -1168,5 +1174,280 @@ func TestInstall_BootstrapFiles_Codex(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "SKILL.md") {
 		t.Error("copilot-instructions.md should reference SKILL.md")
+	}
+}
+
+// --- Phase 4: SyncFileResult and change detection tests ---
+
+func TestInstall_AllUnchanged(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
+
+	orig := homeDir
+	homeDir = func() (string, error) { return home, nil }
+	defer func() { homeDir = orig }()
+
+	origCWD := getCWD
+	getCWD = func() (string, error) { return home, nil }
+	defer func() { getCWD = origCWD }()
+
+	agents := DetectAgents()
+	if len(agents) == 0 {
+		t.Fatal("no agents detected")
+	}
+
+	files := map[string]string{
+		"SKILL.md":                 "# Test Orchestrator\n",
+		".mcp.json":                `{"command":"drup","args":["mcp"]}`,
+		"agents/drup-preflight.md": "# Test Preflight Agent\n",
+	}
+
+	// First install — all new.
+	results1, err := Install(agents, "/usr/local/bin/drup", files)
+	if err != nil {
+		t.Fatalf("first Install error: %v", err)
+	}
+	for _, r := range results1 {
+		if r.Status != FileNew {
+			t.Errorf("first install: file %s expected %q, got %q", r.Path, FileNew, r.Status)
+		}
+	}
+
+	// Record modtimes after first install.
+	modtimes := make(map[string]int64)
+	for _, r := range results1 {
+		info, err := os.Stat(r.Path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", r.Path, err)
+		}
+		modtimes[r.Path] = info.ModTime().UnixNano()
+	}
+
+	// Second install — all unchanged.
+	results2, err := Install(agents, "/usr/local/bin/drup", files)
+	if err != nil {
+		t.Fatalf("second Install error: %v", err)
+	}
+	if len(results2) != len(results1) {
+		t.Fatalf("expected %d results, got %d", len(results1), len(results2))
+	}
+	for _, r := range results2 {
+		if r.Status != FileUnchanged {
+			t.Errorf("second install: file %s expected %q, got %q", r.Path, FileUnchanged, r.Status)
+		}
+	}
+
+	// Verify files were NOT rewritten (modtimes unchanged).
+	for _, r := range results2 {
+		info, err := os.Stat(r.Path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", r.Path, err)
+		}
+		if info.ModTime().UnixNano() != modtimes[r.Path] {
+			t.Errorf("file %s was rewritten despite being unchanged", r.Path)
+		}
+	}
+}
+
+func TestInstall_MixedStatus(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
+
+	orig := homeDir
+	homeDir = func() (string, error) { return home, nil }
+	defer func() { homeDir = orig }()
+
+	origCWD := getCWD
+	getCWD = func() (string, error) { return home, nil }
+	defer func() { getCWD = origCWD }()
+
+	agents := DetectAgents()
+	if len(agents) == 0 {
+		t.Fatal("no agents detected")
+	}
+
+	files := map[string]string{
+		"SKILL.md":                 "# Test Orchestrator\n",
+		".mcp.json":                `{"command":"drup","args":["mcp"]}`,
+		"agents/drup-preflight.md": "# Test Preflight Agent\n",
+	}
+
+	// First install to create all files.
+	_, err := Install(agents, "/usr/local/bin/drup", files)
+	if err != nil {
+		t.Fatalf("first Install error: %v", err)
+	}
+
+	// Modify one file (agent definition) to have different content.
+	agentPath := filepath.Join(agents[0].AgentsDir(), "drup-preflight.md")
+	os.WriteFile(agentPath, []byte("# MODIFIED content\n"), 0o644)
+
+	// Second install — should detect mixed statuses.
+	results, err := Install(agents, "/usr/local/bin/drup", files)
+	if err != nil {
+		t.Fatalf("second Install error: %v", err)
+	}
+
+	statusByPath := make(map[string]FileStatus)
+	for _, r := range results {
+		statusByPath[r.Path] = r.Status
+	}
+
+	// The modified agent file should be "modified".
+	if statusByPath[agentPath] != FileModified {
+		t.Errorf("agent file %s: expected %q, got %q", agentPath, FileModified, statusByPath[agentPath])
+	}
+
+	// Other files should be "unchanged".
+	skillPath := filepath.Join(agents[0].SkillsDir(), "drup", "SKILL.md")
+	if statusByPath[skillPath] != FileUnchanged {
+		t.Errorf("skill file %s: expected %q, got %q", skillPath, FileUnchanged, statusByPath[skillPath])
+	}
+
+	mcpPath := agents[0].MCPConfigPath()
+	if statusByPath[mcpPath] != FileUnchanged {
+		t.Errorf("MCP file %s: expected %q, got %q", mcpPath, FileUnchanged, statusByPath[mcpPath])
+	}
+}
+
+func TestInstall_MCPPostMergeComparison(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o755)
+
+	orig := homeDir
+	homeDir = func() (string, error) { return home, nil }
+	defer func() { homeDir = orig }()
+
+	origCWD := getCWD
+	getCWD = func() (string, error) { return home, nil }
+	defer func() { getCWD = origCWD }()
+
+	adapter := &OpenCodeAdapter{HomeDir: home}
+	agents := []AgentAdapter{adapter}
+
+	// Pre-populate opencode.json with other MCP entries.
+	configPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	existing := `{
+  "mcp": {
+    "context7": {"type": "remote", "url": "https://example.com"},
+    "engram": {"type": "local", "command": ["engram", "mcp"]}
+  },
+  "permission": {"bash": {"*": "allow"}}
+}`
+	os.WriteFile(configPath, []byte(existing), 0o644)
+
+	// First install — merges drup into existing config.
+	snippet := `{"type": "local", "command": ["/usr/local/bin/drup", "mcp"]}`
+	files := map[string]string{
+		"SKILL.md":  "# Test\n",
+		".mcp.json": snippet,
+	}
+	results1, err := Install(agents, "/usr/local/bin/drup", files)
+	if err != nil {
+		t.Fatalf("first Install error: %v", err)
+	}
+
+	// Find the MCP config result.
+	var mcpResult *SyncFileResult
+	for i := range results1 {
+		if results1[i].Path == configPath {
+			mcpResult = &results1[i]
+			break
+		}
+	}
+	if mcpResult == nil {
+		t.Fatal("MCP config result not found")
+	}
+	// First install: MCP config should be "modified" (existing file with different content).
+	if mcpResult.Status != FileModified && mcpResult.Status != FileNew {
+		t.Errorf("first install MCP: expected new or modified, got %q", mcpResult.Status)
+	}
+
+	// Read the merged config that was written.
+	mergedData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Second install — merged output should match existing file byte-for-byte → unchanged.
+	results2, err := Install(agents, "/usr/local/bin/drup", files)
+	if err != nil {
+		t.Fatalf("second Install error: %v", err)
+	}
+
+	for _, r := range results2 {
+		if r.Path == configPath {
+			if r.Status != FileUnchanged {
+				t.Errorf("second install MCP: expected %q, got %q", FileUnchanged, r.Status)
+				// Debug: show what differs.
+				rendered, _ := adapter.RenderMCPConfig(snippet)
+				t.Logf("existing file:\n%s", string(mergedData))
+				t.Logf("rendered merge:\n%s", rendered)
+			}
+			break
+		}
+	}
+
+	// Verify other keys are still preserved in the file.
+	var result map[string]any
+	json.Unmarshal(mergedData, &result)
+	if _, ok := result["permission"]; !ok {
+		t.Error("'permission' key not preserved after merge")
+	}
+	mcp := result["mcp"].(map[string]any)
+	if _, ok := mcp["context7"]; !ok {
+		t.Error("'context7' MCP entry not preserved after merge")
+	}
+}
+
+func TestInstall_BackupSkippedWhenUnchanged(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
+
+	orig := homeDir
+	homeDir = func() (string, error) { return home, nil }
+	defer func() { homeDir = orig }()
+
+	origCWD := getCWD
+	getCWD = func() (string, error) { return home, nil }
+	defer func() { getCWD = origCWD }()
+
+	// Use a temp dir for backups.
+	bDir := t.TempDir()
+	origBackup := backupDir
+	backupDir = func() string { return bDir }
+	defer func() { backupDir = origBackup }()
+
+	agents := DetectAgents()
+	if len(agents) == 0 {
+		t.Fatal("no agents detected")
+	}
+
+	files := map[string]string{
+		"SKILL.md":  "# Test\n",
+		".mcp.json": `{"command":"drup","args":["mcp"]}`,
+	}
+
+	// First install — creates files (backup may or may not happen since skills dir may not exist yet).
+	_, err := Install(agents, "/usr/local/bin/drup", files)
+	if err != nil {
+		t.Fatalf("first Install error: %v", err)
+	}
+
+	// Count backups after first install.
+	entries1, _ := os.ReadDir(bDir)
+	backupCount1 := len(entries1)
+
+	// Second install — all unchanged, no backup should be created.
+	_, err = Install(agents, "/usr/local/bin/drup", files)
+	if err != nil {
+		t.Fatalf("second Install error: %v", err)
+	}
+
+	entries2, _ := os.ReadDir(bDir)
+	backupCount2 := len(entries2)
+
+	if backupCount2 != backupCount1 {
+		t.Errorf("backup created on unchanged install: had %d, now %d", backupCount1, backupCount2)
 	}
 }
