@@ -47,6 +47,193 @@ type Server struct {
 // ToolHandler is a function that handles a tool call.
 type ToolHandler func(args json.RawMessage) (json.RawMessage, error)
 
+// jsonSchemaProperty defines a single property in a JSON Schema.
+type jsonSchemaProperty struct {
+	Type        string `json:"type"`
+	Description string `json:"description"`
+}
+
+// toolSchema defines the schema for a tool's input parameters.
+type toolSchema struct {
+	Description string                        `json:"description"`
+	Properties  map[string]jsonSchemaProperty `json:"properties"`
+	Required    []string                      `json:"required"`
+}
+
+// toolRegistry maps tool names to their schemas.
+var toolRegistry = map[string]toolSchema{
+	"scan": {
+		Description: "Run upgrade_status:analyze on a Drupal project",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+		},
+		Required: []string{"project_path"},
+	},
+	"autofix": {
+		Description: "Run drupal-rector on custom modules and themes",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+		},
+		Required: []string{"project_path"},
+	},
+	"contrib_check": {
+		Description: "Check Drupal.org for D11 compatibility of a module",
+		Properties: map[string]jsonSchemaProperty{
+			"module_machine_name": {Type: "string", Description: "Module machine name"},
+		},
+		Required: []string{"module_machine_name"},
+	},
+	"issue_patches": {
+		Description: "Extract patch/diff/MR links from Drupal.org issues",
+		Properties: map[string]jsonSchemaProperty{
+			"issue_nid":     {Type: "string", Description: "Issue node ID"},
+			"module_name":   {Type: "string", Description: "Module machine name"},
+		},
+		Required: []string{},
+	},
+	"apply_patch": {
+		Description: "Download and apply a patch to the project",
+		Properties: map[string]jsonSchemaProperty{
+			"patch_url":    {Type: "string", Description: "URL of the patch file"},
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+		},
+		Required: []string{"patch_url", "project_path"},
+	},
+	"validate": {
+		Description: "Re-run scan and return error state",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+			"scope":        {Type: "string", Description: "Scope filter (optional)"},
+			"module":       {Type: "string", Description: "Module name filter (optional)"},
+			"file":         {Type: "string", Description: "File path filter (optional)"},
+		},
+		Required: []string{"project_path"},
+	},
+	"create_patch": {
+		Description: "Generate a patch from rector fixes",
+		Properties: map[string]jsonSchemaProperty{
+			"module_name":          {Type: "string", Description: "Module machine name"},
+			"deprecation_details":  {Type: "string", Description: "Deprecation details"},
+		},
+		Required: []string{"module_name"},
+	},
+	"detect_env": {
+		Description: "Detect the development environment",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+			"force_detect": {Type: "boolean", Description: "Force re-detection"},
+		},
+		Required: []string{"project_path"},
+	},
+	"composer_require": {
+		Description: "Run composer require with environment awareness",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+			"package":      {Type: "string", Description: "Composer package name"},
+			"dev":          {Type: "boolean", Description: "Install as dev dependency"},
+			"no_update":    {Type: "boolean", Description: "Skip composer update"},
+		},
+		Required: []string{"project_path", "package"},
+	},
+	"drush_exec": {
+		Description: "Execute drush commands with environment awareness",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+			"command":      {Type: "string", Description: "Drush command"},
+			"args":         {Type: "array", Description: "Command arguments"},
+			"format":       {Type: "string", Description: "Output format (json, table, etc.)"},
+		},
+		Required: []string{"project_path", "command"},
+	},
+	"contrib_upgrade_path": {
+		Description: "Get upgrade path for a contrib module",
+		Properties: map[string]jsonSchemaProperty{
+			"module_machine_name":    {Type: "string", Description: "Module machine name"},
+			"current_drupal_version": {Type: "string", Description: "Current Drupal version"},
+			"target_drupal_version":  {Type: "string", Description: "Target Drupal version"},
+		},
+		Required: []string{"module_machine_name", "current_drupal_version", "target_drupal_version"},
+	},
+	"upgrade_scan": {
+		Description: "Run upgrade scan with environment setup",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+			"scope":        {Type: "string", Description: "Scope filter"},
+			"module":       {Type: "string", Description: "Module name filter"},
+		},
+		Required: []string{"project_path"},
+	},
+	"patch_status": {
+		Description: "Check if a patch is applied",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path":     {Type: "string", Description: "Absolute path to the Drupal project"},
+			"patch_url":        {Type: "string", Description: "URL of the patch"},
+			"composer_package": {Type: "string", Description: "Composer package name"},
+		},
+		Required: []string{"project_path", "patch_url", "composer_package"},
+	},
+	"patch_rollback": {
+		Description: "Rollback a patch",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path":     {Type: "string", Description: "Absolute path to the Drupal project"},
+			"patch_url":        {Type: "string", Description: "URL of the patch"},
+			"composer_package": {Type: "string", Description: "Composer package name"},
+		},
+		Required: []string{"project_path", "patch_url", "composer_package"},
+	},
+	"generate_report": {
+		Description: "Generate upgrade report",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path":      {Type: "string", Description: "Absolute path to the Drupal project"},
+			"report_type":       {Type: "string", Description: "Report type (json, markdown, both)"},
+			"include_scan_data": {Type: "boolean", Description: "Include scan data in report"},
+			"include_patch_list": {Type: "boolean", Description: "Include patch list in report"},
+		},
+		Required: []string{"project_path"},
+	},
+	"module_info": {
+		Description: "Get module metadata from Drupal.org",
+		Properties: map[string]jsonSchemaProperty{
+			"module_machine_name":  {Type: "string", Description: "Module machine name"},
+			"include_maintainers":  {Type: "boolean", Description: "Include maintainer info"},
+			"include_dependencies": {Type: "boolean", Description: "Include dependency info"},
+		},
+		Required: []string{"module_machine_name"},
+	},
+	"drupal_version_matrix": {
+		Description: "Get Drupal/PHP version compatibility matrix",
+		Properties: map[string]jsonSchemaProperty{
+			"drupal_version": {Type: "string", Description: "Drupal version"},
+			"php_version":    {Type: "string", Description: "PHP version"},
+		},
+		Required: []string{},
+	},
+	"core_upgrade_check": {
+		Description: "Check if core upgrade is available",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+		},
+		Required: []string{"project_path"},
+	},
+	"core_upgrade_apply": {
+		Description: "Apply core upgrade",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path":   {Type: "string", Description: "Absolute path to the Drupal project"},
+			"target_version": {Type: "string", Description: "Target Drupal version"},
+			"dry_run":        {Type: "boolean", Description: "Dry run mode"},
+		},
+		Required: []string{"project_path", "target_version"},
+	},
+	"patch_reconcile": {
+		Description: "Reconcile patches with upstream",
+		Properties: map[string]jsonSchemaProperty{
+			"module_machine_name": {Type: "string", Description: "Module machine name"},
+			"current_patch_url":   {Type: "string", Description: "Current patch URL"},
+		},
+		Required: []string{"module_machine_name", "current_patch_url"},
+	},
+}
+
 // NewServer creates a new MCP server writing to out.
 func NewServer(out io.Writer, version string) *Server {
 	return &Server{
@@ -103,13 +290,40 @@ func (s *Server) handleListTools(id interface{}) error {
 	tools := []map[string]interface{}{}
 	for name, handler := range s.tools {
 		_ = handler
-		tools = append(tools, map[string]interface{}{
-			"name":        name,
-			"description": fmt.Sprintf("Tool: %s", name),
-			"inputSchema": map[string]interface{}{
+		
+		// Look up schema from registry
+		schema, hasSchema := toolRegistry[name]
+		
+		tool := map[string]interface{}{
+			"name": name,
+		}
+		
+		if hasSchema {
+			tool["description"] = schema.Description
+			
+			// Build properties map
+			properties := make(map[string]interface{})
+			for propName, propDef := range schema.Properties {
+				properties[propName] = map[string]interface{}{
+					"type":        propDef.Type,
+					"description": propDef.Description,
+				}
+			}
+			
+			tool["inputSchema"] = map[string]interface{}{
+				"type":       "object",
+				"properties": properties,
+				"required":   schema.Required,
+			}
+		} else {
+			// Fallback for tools not in registry
+			tool["description"] = fmt.Sprintf("Tool: %s", name)
+			tool["inputSchema"] = map[string]interface{}{
 				"type": "object",
-			},
-		})
+			}
+		}
+		
+		tools = append(tools, tool)
 	}
 
 	result, _ := json.Marshal(map[string]interface{}{"tools": tools})

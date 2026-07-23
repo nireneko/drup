@@ -140,3 +140,110 @@ func TestServer_Run_ReadsStdin(t *testing.T) {
 		t.Errorf("unexpected error: %v", resp.Error)
 	}
 }
+
+// Phase 3: MCP Tool Schemas - RED tests
+
+func TestServer_ListTools_HasInputSchemaProperties(t *testing.T) {
+	req := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/list",
+	}
+
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+
+	err := server.handleRequest(req)
+	if err != nil {
+		t.Fatalf("handleRequest error: %v", err)
+	}
+
+	var resp JSONRPCResponse
+	json.Unmarshal(buf.Bytes(), &resp)
+
+	var result map[string]interface{}
+	json.Unmarshal(resp.Result, &result)
+
+	tools := result["tools"].([]interface{})
+	for _, tool := range tools {
+		toolMap := tool.(map[string]interface{})
+		inputSchema := toolMap["inputSchema"].(map[string]interface{})
+		properties, ok := inputSchema["properties"]
+		if !ok {
+			t.Errorf("tool %s missing inputSchema.properties", toolMap["name"])
+		}
+		propsMap, ok := properties.(map[string]interface{})
+		if !ok {
+			t.Errorf("tool %s inputSchema.properties is not a map", toolMap["name"])
+		}
+		if len(propsMap) == 0 {
+			t.Errorf("tool %s has empty inputSchema.properties", toolMap["name"])
+		}
+	}
+}
+
+func TestServer_ListTools_ScanToolSchema(t *testing.T) {
+	req := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/list",
+	}
+
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+
+	err := server.handleRequest(req)
+	if err != nil {
+		t.Fatalf("handleRequest error: %v", err)
+	}
+
+	var resp JSONRPCResponse
+	json.Unmarshal(buf.Bytes(), &resp)
+
+	var result map[string]interface{}
+	json.Unmarshal(resp.Result, &result)
+
+	tools := result["tools"].([]interface{})
+	var scanTool map[string]interface{}
+	for _, tool := range tools {
+		toolMap := tool.(map[string]interface{})
+		if toolMap["name"] == "scan" {
+			scanTool = toolMap
+			break
+		}
+	}
+
+	if scanTool == nil {
+		t.Fatal("scan tool not found in tools list")
+	}
+
+	inputSchema := scanTool["inputSchema"].(map[string]interface{})
+	properties := inputSchema["properties"].(map[string]interface{})
+	
+	projectPath, ok := properties["project_path"]
+	if !ok {
+		t.Fatal("scan tool missing project_path property")
+	}
+
+	propMap := projectPath.(map[string]interface{})
+	if propMap["type"] != "string" {
+		t.Errorf("project_path type = %v, want string", propMap["type"])
+	}
+
+	required, ok := inputSchema["required"].([]interface{})
+	if !ok {
+		t.Fatal("scan tool missing required array")
+	}
+
+	found := false
+	for _, r := range required {
+		if r == "project_path" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("scan tool required array does not include project_path")
+	}
+}
+

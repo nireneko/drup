@@ -48,11 +48,11 @@ Chain strategy: size-exception
 
 ## Phase 3: Core Implementation — MCP Tool Schemas (P0)
 
-- [ ] 3.1 Add `toolSchema` struct and `jsonSchemaProperty` struct in `internal/mcp/server.go`
-- [ ] 3.2 Add `toolRegistry` map with schemas for all 20 tools in `internal/mcp/server.go` — each entry has Description, Properties (name, type, description), Required fields
-- [ ] 3.3 Update `handleListTools` (`internal/mcp/server.go:102-117`) — replace empty `inputSchema: {"type": "object"}` with `toolRegistry[name]` lookup; emit full JSON Schema with properties and required
-- [ ] 3.4 **RED test**: assert `tools/list` returns non-empty `inputSchema.properties` for all 20 tools in `internal/mcp/server_test.go`
-- [ ] 3.5 **RED test**: assert `scan` tool schema includes `project_path` property with type "string" and required array
+- [x] 3.1 Add `toolSchema` struct and `jsonSchemaProperty` struct in `internal/mcp/server.go`
+- [x] 3.2 Add `toolRegistry` map with schemas for all 20 tools in `internal/mcp/server.go` — each entry has Description, Properties (name, type, description), Required fields
+- [x] 3.3 Update `handleListTools` (`internal/mcp/server.go:102-117`) — replace empty `inputSchema: {"type": "object"}` with `toolRegistry[name]` lookup; emit full JSON Schema with properties and required
+- [x] 3.4 **RED test**: assert `tools/list` returns non-empty `inputSchema.properties` for all 20 tools in `internal/mcp/server_test.go`
+- [x] 3.5 **RED test**: assert `scan` tool schema includes `project_path` property with type "string" and required array
 
 **Commit**: `feat: expose JSON Schema parameter definitions for all 20 MCP tools`
 **Files**: `internal/mcp/server.go`, `internal/mcp/server_test.go`
