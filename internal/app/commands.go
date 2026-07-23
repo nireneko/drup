@@ -187,13 +187,32 @@ func RunIssue(query string) error {
 
 // RunReport generates JSON and markdown reports.
 func RunReport(path string) error {
-	// Placeholder — in a real implementation, this would gather scan results.
+	// Call DoValidate to get live scan data
+	result, filtered, err := doValidateFn(path, "")
+	if err != nil {
+		return fmt.Errorf("scan for report: %w", err)
+	}
+
+	// Populate report data from scan results
 	reportData := &report.ReportData{
 		ProjectPath: path,
-		TotalErrors: 0,
+		TotalErrors: len(filtered),
 		Resolved:    []report.ResolvedItem{},
 		Pending:     []report.PendingItem{},
 	}
+
+	// Convert scan errors to pending items
+	for _, depErr := range filtered {
+		reportData.Pending = append(reportData.Pending, report.PendingItem{
+			Module:          extractModuleName(depErr.File),
+			Type:            string(depErr.Severity),
+			Error:           depErr.Message,
+			SuggestedAction: fmt.Sprintf("Fix deprecation at %s:%d", depErr.File, depErr.Line),
+		})
+	}
+
+	// Use result for additional context if needed
+	_ = result
 
 	jsonData, err := report.GenerateJSON(reportData)
 	if err != nil {
@@ -218,6 +237,17 @@ func RunReport(path string) error {
 
 	fmt.Printf("Reports written to %s and %s\n", jsonPath, mdPath)
 	return nil
+}
+
+// extractModuleName extracts the module name from a file path.
+func extractModuleName(filePath string) string {
+	parts := strings.Split(filePath, "/")
+	for i, part := range parts {
+		if part == "modules" && i+2 < len(parts) {
+			return parts[i+2]
+		}
+	}
+	return "unknown"
 }
 
 // RunMCP starts the MCP stdio server.
@@ -413,6 +443,9 @@ var stateRemoveFn = statepkg.Remove
 var getwdFn = os.Getwd
 var isCleanFn = gitops.IsClean
 var execRunFn = drupexec.Run
+
+// doValidateFn wraps DoValidate for testability.
+var doValidateFn = DoValidate
 
 // RunUpgrade self-updates the binary. It uses the runtime's actual
 // GOOS/GOARCH for asset selection — GOOS/GOARCH environment overrides are

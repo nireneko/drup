@@ -86,9 +86,9 @@ Chain strategy: size-exception
 
 ## Phase 6: Integration — Report Data Collection (P2)
 
-- [ ] 6.1 Update `RunReport` (`internal/app/commands.go:166-198`) — call `DoValidate(path, "")` to get live scan data, populate `TotalErrors` from `len(filtered)`, populate `Resolved` and `Pending` from scan results
-- [ ] 6.2 Update `realHandleGenerateReport` (`internal/app/mcp_tools.go:968-1047`) — same pattern: call `DoValidate` when `IncludeScanData` is true, populate `data.TotalErrors` and error arrays
-- [ ] 6.3 **RED test**: `RunReport` with mocked `DoValidate` returning 15 errors → report JSON has `total_errors: 15` and populated arrays in `internal/app/commands_test.go`
+- [x] 6.1 Update `RunReport` (`internal/app/commands.go:166-198`) — call `DoValidate(path, "")` to get live scan data, populate `TotalErrors` from `len(filtered)`, populate `Resolved` and `Pending` from scan results
+- [x] 6.2 Update `realHandleGenerateReport` (`internal/app/mcp_tools.go:968-1047`) — same pattern: call `DoValidate` when `IncludeScanData` is true, populate `data.TotalErrors` and error arrays
+- [x] 6.3 **RED test**: `RunReport` with mocked `DoValidate` returning 15 errors → report JSON has `total_errors: 15` and populated arrays in `internal/app/commands_test.go`
 
 **Commit**: `fix: populate report with real scan data instead of hardcoded zeros`
 **Files**: `internal/app/commands.go`, `internal/app/mcp_tools.go`, `internal/app/commands_test.go`

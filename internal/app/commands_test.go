@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/nireneko/drup/internal/envdetect"
 	drupexec "github.com/nireneko/drup/internal/exec"
+	"github.com/nireneko/drup/internal/scan"
 	statepkg "github.com/nireneko/drup/internal/state"
 	"github.com/nireneko/drup/internal/update"
 )
@@ -1187,6 +1189,102 @@ $settings['some_key'] = 'value';
 	content2, _ := os.ReadFile(settingsPath)
 	if string(content) != string(content2) {
 		t.Error("second patch changed the file (not idempotent)")
+	}
+}
+
+// Phase 6: Report Data Collection - RED test
+
+func TestRunReport_PopulatesRealData(t *testing.T) {
+	dir := t.TempDir()
+	
+	// Mock DoValidate to return 15 errors
+	origDoValidate := doValidateFn
+	doValidateFn = func(projectPath, module string) (*scan.ScanResult, []scan.DepError, error) {
+		result := &scan.ScanResult{
+			TotalErrs: 15,
+			Modules: []scan.ModuleStatus{
+				{
+					Name: "custom_module",
+					Type: scan.ClassCustom,
+					Errors: []scan.DepError{
+						{
+							File:     "modules/custom/mymod/mymod.module",
+							Line:     42,
+							Message:  "Deprecated function call",
+							Rule:     "deprecation",
+							Severity: "warning",
+							Source:   "upgrade_status",
+						},
+					},
+				},
+			},
+		}
+		// Return 15 errors total
+		errors := make([]scan.DepError, 15)
+		for i := 0; i < 15; i++ {
+			errors[i] = scan.DepError{
+				File:     fmt.Sprintf("modules/custom/mymod/file%d.module", i),
+				Line:     i + 1,
+				Message:  fmt.Sprintf("Error %d", i),
+				Rule:     "deprecation",
+				Severity: "warning",
+				Source:   "upgrade_status",
+			}
+		}
+		return result, errors, nil
+	}
+	defer func() { doValidateFn = origDoValidate }()
+
+	// Capture stdout
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := RunReport(dir)
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	if err != nil {
+		t.Fatalf("RunReport error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	// Verify report files were created
+	jsonPath := filepath.Join(dir, "drup-report.json")
+	mdPath := filepath.Join(dir, "drup-report.md")
+
+	if _, err := os.Stat(jsonPath); os.IsNotExist(err) {
+		t.Error("JSON report was not created")
+	}
+	if _, err := os.Stat(mdPath); os.IsNotExist(err) {
+		t.Error("Markdown report was not created")
+	}
+
+	// Read and verify JSON report
+	jsonData, _ := os.ReadFile(jsonPath)
+	var reportData map[string]interface{}
+	if err := json.Unmarshal(jsonData, &reportData); err != nil {
+		t.Fatalf("failed to parse JSON report: %v", err)
+	}
+
+	totalErrors, ok := reportData["total_errors"].(float64)
+	if !ok {
+		t.Fatal("total_errors not found in report")
+	}
+	if totalErrors != 15 {
+		t.Errorf("total_errors = %v, want 15", totalErrors)
+	}
+
+	// Verify output mentions the reports
+	if !strings.Contains(output, "drup-report.json") {
+		t.Error("output does not mention JSON report")
+	}
+	if !strings.Contains(output, "drup-report.md") {
+		t.Error("output does not mention markdown report")
 	}
 }
 

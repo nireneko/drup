@@ -992,6 +992,28 @@ func realHandleGenerateReport(args json.RawMessage) (json.RawMessage, error) {
 	// Collect report data.
 	data := &report.ReportData{
 		ProjectPath: params.ProjectPath,
+		Resolved:    []report.ResolvedItem{},
+		Pending:     []report.PendingItem{},
+	}
+
+	// Get live scan data if requested
+	if params.IncludeScanData {
+		result, filtered, err := DoValidate(params.ProjectPath, "")
+		if err != nil {
+			return nil, fmt.Errorf("scan for report: %w", err)
+		}
+		data.TotalErrors = len(filtered)
+		
+		// Convert scan errors to pending items
+		for _, depErr := range filtered {
+			data.Pending = append(data.Pending, report.PendingItem{
+				Module:          extractModuleName(depErr.File),
+				Type:            string(depErr.Severity),
+				Error:           depErr.Message,
+				SuggestedAction: fmt.Sprintf("Fix deprecation at %s:%d", depErr.File, depErr.Line),
+			})
+		}
+		_ = result // Use result for additional context if needed
 	}
 
 	// Count patches from composer.json.
