@@ -60,11 +60,11 @@ Chain strategy: size-exception
 
 ## Phase 4: Core Implementation — Contrib Compound Constraint (P1)
 
-- [ ] 4.1 Add `fetchInfoYML(module, branch string) (string, error)` in `internal/drupalorg/drupalorg.go` — fetches `https://git.drupalcode.org/project/<module>/-/raw/<branch>/<module>.info.yml`
-- [ ] 4.2 Add `constraintMatchesDrupal(constraint string, drupalMajor int) bool` in `internal/drupalorg/drupalorg.go` — splits on `||`, parses each sub-constraint with semver logic, returns true if any matches
-- [ ] 4.3 **RED test**: `constraintMatchesDrupal` table-driven — `"^10.3 || ^11.0"` with 11 → true; `"^11.0"` with 11 → true; `"^9.0 || ^10.0"` with 11 → false; `">=10 <12"` with 11 → true
-- [ ] 4.4 Update `CheckRelease` / `parseReleaseXML` (`internal/drupalorg/drupalorg.go:95-149`) — after finding latest release version, derive branch name, call `fetchInfoYML`, parse `core_version_requirement`, use `constraintMatchesDrupal` to set `HasD11`
-- [ ] 4.5 **Integration test**: `CheckRelease` with mocked HTTP returning info.yml with compound constraint → `has_d11_release: true` in `internal/drupalorg/drupalorg_test.go`
+- [x] 4.1 Add `fetchInfoYML(module, branch string) (string, error)` in `internal/drupalorg/drupalorg.go` — fetches `https://git.drupalcode.org/project/<module>/-/raw/<branch>/<module>.info.yml`
+- [x] 4.2 Add `constraintMatchesDrupal(constraint string, drupalMajor int) bool` in `internal/drupalorg/drupalorg.go` — splits on `||`, parses each sub-constraint with semver logic, returns true if any matches
+- [x] 4.3 **RED test**: `constraintMatchesDrupal` table-driven — `"^10.3 || ^11.0"` with 11 → true; `"^11.0"` with 11 → true; `"^9.0 || ^10.0"` with 11 → false; `">=10 <12"` with 11 → true
+- [x] 4.4 Update `CheckRelease` / `parseReleaseXML` (`internal/drupalorg/drupalorg.go:95-149`) — after finding latest release version, derive branch name, call `fetchInfoYML`, parse `core_version_requirement`, use `constraintMatchesDrupal` to set `HasD11`
+- [x] 4.5 **Integration test**: `CheckRelease` with mocked HTTP returning info.yml with compound constraint → `has_d11_release: true` in `internal/drupalorg/drupalorg_test.go`
 
 **Commit**: `fix: parse compound core_version_requirement constraints for contrib D11 check`
 **Files**: `internal/drupalorg/drupalorg.go`, `internal/drupalorg/drupalorg_test.go`

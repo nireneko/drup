@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -145,7 +146,32 @@ func parseReleaseXML(module string, data []byte) (*ReleaseInfo, error) {
 		info.Branches = append(info.Branches, b)
 	}
 
+	// If HasD11 not set from terms, try to check core_version_requirement from info.yml
+	if !info.HasD11 && info.Latest != "" {
+		// Derive branch name from latest version (e.g., "6.3.0" -> "6.x", "1.13.0" -> "1.x")
+		branch := deriveBranch(info.Latest)
+		if branch != "" {
+			infoYML, err := fetchInfoYML(module, branch)
+			if err == nil {
+				constraint := parseCoreVersionRequirement(infoYML)
+				if constraint != "" {
+					info.HasD11 = constraintMatchesDrupal(constraint, 11)
+				}
+			}
+		}
+	}
+
 	return info, nil
+}
+
+// deriveBranch extracts the branch name from a version string.
+// e.g., "6.3.0" -> "6.x", "1.13.0" -> "1.x"
+func deriveBranch(version string) string {
+	parts := strings.Split(version, ".")
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[0] + ".x"
 }
 
 // SearchIssuesAPI queries the Drupal api-d7 endpoint for issue nodes.
@@ -546,4 +572,94 @@ func ModuleInfo(module string) (*ModuleMetadata, error) {
 	}
 
 	return meta, nil
+}
+
+// constraintMatchesDrupal checks if a core_version_requirement constraint
+// (e.g., "^10.3 || ^11.0") is satisfied by the given Drupal major version.
+func constraintMatchesDrupal(constraint string, drupalMajor int) bool {
+	// Split on || for OR conditions
+	parts := strings.Split(constraint, "||")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if matchesConstraint(part, drupalMajor) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesConstraint checks if a single constraint (without ||) matches the Drupal major version.
+func matchesConstraint(constraint string, drupalMajor int) bool {
+	constraint = strings.TrimSpace(constraint)
+	
+	// Handle caret constraints like ^10.3 or ^11.0
+	if strings.HasPrefix(constraint, "^") {
+		version := strings.TrimPrefix(constraint, "^")
+		major, _ := parseMajor(version)
+		return major == drupalMajor
+	}
+	
+	// Handle range constraints like >=10 <12
+	if strings.Contains(constraint, ">=") && strings.Contains(constraint, "<") {
+		parts := strings.Fields(constraint)
+		var minMajor, maxMajor int
+		for _, part := range parts {
+			if strings.HasPrefix(part, ">=") {
+				minMajor, _ = parseMajor(strings.TrimPrefix(part, ">="))
+			} else if strings.HasPrefix(part, "<") {
+				maxMajor, _ = parseMajor(strings.TrimPrefix(part, "<"))
+			}
+		}
+		return drupalMajor >= minMajor && drupalMajor < maxMajor
+	}
+	
+	// Handle simple version like 11.0
+	major, _ := parseMajor(constraint)
+	return major == drupalMajor
+}
+
+// parseMajor extracts the major version from a version string like "10.3.0" or "11.0".
+func parseMajor(version string) (int, error) {
+	parts := strings.Split(version, ".")
+	if len(parts) == 0 {
+		return 0, fmt.Errorf("invalid version: %s", version)
+	}
+	return strconv.Atoi(parts[0])
+}
+
+// fetchInfoYML fetches the .info.yml file for a module from git.drupalcode.org.
+func fetchInfoYML(module, branch string) (string, error) {
+	url := fmt.Sprintf("https://git.drupalcode.org/project/%s/-/raw/%s/%s.info.yml", module, branch, module)
+	resp, err := HTTPClient.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("fetch info.yml for %s: %w", module, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("info.yml for %s/%s: HTTP %d", module, branch, resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read info.yml: %w", err)
+	}
+
+	return string(data), nil
+}
+
+// parseCoreVersionRequirement extracts core_version_requirement from info.yml content.
+func parseCoreVersionRequirement(infoYML string) string {
+	lines := strings.Split(infoYML, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "core_version_requirement:") {
+			value := strings.TrimPrefix(line, "core_version_requirement:")
+			value = strings.TrimSpace(value)
+			// Remove quotes if present
+			value = strings.Trim(value, `"'`)
+			return value
+		}
+	}
+	return ""
 }
