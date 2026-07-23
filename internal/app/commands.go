@@ -1010,31 +1010,31 @@ func isPHP84OrLater(version string) bool {
 // patchSettingsPHP patches settings.php to suppress E_DEPRECATED warnings for PHP 8.4+.
 func patchSettingsPHP(projectPath string) error {
 	settingsPath := filepath.Join(projectPath, "web", "sites", "default", "settings.php")
-	
+
 	// Read current content
 	content, err := os.ReadFile(settingsPath)
 	if err != nil {
 		return fmt.Errorf("read settings.php: %w", err)
 	}
-	
+
 	contentStr := string(content)
 	suppressionLine := "error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);"
-	
+
 	// Check if already patched (idempotent)
 	if strings.Contains(contentStr, suppressionLine) {
 		return nil
 	}
-	
+
 	// Create backup
 	backupPath := settingsPath + ".bak"
 	if err := os.WriteFile(backupPath, content, 0o644); err != nil {
 		return fmt.Errorf("create backup: %w", err)
 	}
-	
+
 	// Find DDEV include block end or EOF
 	ddevBlockEnd := strings.Index(contentStr, "if (file_exists(__DIR__ . '/settings.ddev.php')) {")
 	insertPos := len(contentStr)
-	
+
 	if ddevBlockEnd != -1 {
 		// Find the closing brace of the DDEV block
 		blockStart := ddevBlockEnd
@@ -1054,15 +1054,15 @@ func patchSettingsPHP(projectPath string) error {
 			}
 		}
 	}
-	
+
 	// Insert suppression line after DDEV block
 	newContent := contentStr[:insertPos] + "\n" + suppressionLine + "\n" + contentStr[insertPos:]
-	
+
 	// Write updated content
 	if err := os.WriteFile(settingsPath, []byte(newContent), 0o644); err != nil {
 		return fmt.Errorf("write settings.php: %w", err)
 	}
-	
+
 	return nil
 }
 

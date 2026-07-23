@@ -1149,7 +1149,7 @@ func TestPatchSettingsPHP_Idempotent(t *testing.T) {
 	dir := t.TempDir()
 	settingsPath := filepath.Join(dir, "web", "sites", "default", "settings.php")
 	os.MkdirAll(filepath.Dir(settingsPath), 0o755)
-	
+
 	// Create initial settings.php with DDEV include block
 	initialContent := `<?php
 // DDEV include block
@@ -1196,7 +1196,7 @@ $settings['some_key'] = 'value';
 
 func TestRunReport_PopulatesRealData(t *testing.T) {
 	dir := t.TempDir()
-	
+
 	// Mock DoValidate to return 15 errors
 	origDoValidate := doValidateFn
 	doValidateFn = func(projectPath, module string) (*scan.ScanResult, []scan.DepError, error) {

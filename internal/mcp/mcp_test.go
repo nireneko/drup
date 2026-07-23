@@ -219,7 +219,7 @@ func TestServer_ListTools_ScanToolSchema(t *testing.T) {
 
 	inputSchema := scanTool["inputSchema"].(map[string]interface{})
 	properties := inputSchema["properties"].(map[string]interface{})
-	
+
 	projectPath, ok := properties["project_path"]
 	if !ok {
 		t.Fatal("scan tool missing project_path property")
@@ -246,4 +246,3 @@ func TestServer_ListTools_ScanToolSchema(t *testing.T) {
 		t.Error("scan tool required array does not include project_path")
 	}
 }
-

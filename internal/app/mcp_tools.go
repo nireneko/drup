@@ -1003,7 +1003,7 @@ func realHandleGenerateReport(args json.RawMessage) (json.RawMessage, error) {
 			return nil, fmt.Errorf("scan for report: %w", err)
 		}
 		data.TotalErrors = len(filtered)
-		
+
 		// Convert scan errors to pending items
 		for _, depErr := range filtered {
 			data.Pending = append(data.Pending, report.PendingItem{

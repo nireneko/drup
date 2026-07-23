@@ -86,8 +86,8 @@ var toolRegistry = map[string]toolSchema{
 	"issue_patches": {
 		Description: "Extract patch/diff/MR links from Drupal.org issues",
 		Properties: map[string]jsonSchemaProperty{
-			"issue_nid":     {Type: "string", Description: "Issue node ID"},
-			"module_name":   {Type: "string", Description: "Module machine name"},
+			"issue_nid":   {Type: "string", Description: "Issue node ID"},
+			"module_name": {Type: "string", Description: "Module machine name"},
 		},
 		Required: []string{},
 	},
@@ -112,8 +112,8 @@ var toolRegistry = map[string]toolSchema{
 	"create_patch": {
 		Description: "Generate a patch from rector fixes",
 		Properties: map[string]jsonSchemaProperty{
-			"module_name":          {Type: "string", Description: "Module machine name"},
-			"deprecation_details":  {Type: "string", Description: "Deprecation details"},
+			"module_name":         {Type: "string", Description: "Module machine name"},
+			"deprecation_details": {Type: "string", Description: "Deprecation details"},
 		},
 		Required: []string{"module_name"},
 	},
@@ -184,9 +184,9 @@ var toolRegistry = map[string]toolSchema{
 	"generate_report": {
 		Description: "Generate upgrade report",
 		Properties: map[string]jsonSchemaProperty{
-			"project_path":      {Type: "string", Description: "Absolute path to the Drupal project"},
-			"report_type":       {Type: "string", Description: "Report type (json, markdown, both)"},
-			"include_scan_data": {Type: "boolean", Description: "Include scan data in report"},
+			"project_path":       {Type: "string", Description: "Absolute path to the Drupal project"},
+			"report_type":        {Type: "string", Description: "Report type (json, markdown, both)"},
+			"include_scan_data":  {Type: "boolean", Description: "Include scan data in report"},
 			"include_patch_list": {Type: "boolean", Description: "Include patch list in report"},
 		},
 		Required: []string{"project_path"},
@@ -290,17 +290,17 @@ func (s *Server) handleListTools(id interface{}) error {
 	tools := []map[string]interface{}{}
 	for name, handler := range s.tools {
 		_ = handler
-		
+
 		// Look up schema from registry
 		schema, hasSchema := toolRegistry[name]
-		
+
 		tool := map[string]interface{}{
 			"name": name,
 		}
-		
+
 		if hasSchema {
 			tool["description"] = schema.Description
-			
+
 			// Build properties map
 			properties := make(map[string]interface{})
 			for propName, propDef := range schema.Properties {
@@ -309,7 +309,7 @@ func (s *Server) handleListTools(id interface{}) error {
 					"description": propDef.Description,
 				}
 			}
-			
+
 			tool["inputSchema"] = map[string]interface{}{
 				"type":       "object",
 				"properties": properties,
@@ -322,7 +322,7 @@ func (s *Server) handleListTools(id interface{}) error {
 				"type": "object",
 			}
 		}
-		
+
 		tools = append(tools, tool)
 	}
 

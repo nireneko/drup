@@ -97,9 +97,9 @@ Chain strategy: size-exception
 
 ## Phase 7: Verification
 
-- [ ] 7.1 Run `go test ./...` — all tests pass
-- [ ] 7.2 Run `go vet ./...` — no warnings
-- [ ] 7.3 Run `gofmt -l .` — no formatting issues
-- [ ] 7.4 Verify each spec scenario has corresponding test coverage
-- [ ] 7.5 Manual smoke test: `drup scan` under DDEV returns exit 0 with findings
-- [ ] 7.6 Manual smoke test: `drup contrib webform` returns `has_d11_release: true`
+- [x] 7.1 Run `go test ./...` — all tests pass
+- [x] 7.2 Run `go vet ./...` — no warnings
+- [x] 7.3 Run `gofmt -l .` — no formatting issues
+- [x] 7.4 Verify each spec scenario has corresponding test coverage
+- [x] 7.5 Manual smoke test: `drup scan` under DDEV returns exit 0 with findings
+- [x] 7.6 Manual smoke test: `drup contrib webform` returns `has_d11_release: true`

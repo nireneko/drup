@@ -591,14 +591,14 @@ func constraintMatchesDrupal(constraint string, drupalMajor int) bool {
 // matchesConstraint checks if a single constraint (without ||) matches the Drupal major version.
 func matchesConstraint(constraint string, drupalMajor int) bool {
 	constraint = strings.TrimSpace(constraint)
-	
+
 	// Handle caret constraints like ^10.3 or ^11.0
 	if strings.HasPrefix(constraint, "^") {
 		version := strings.TrimPrefix(constraint, "^")
 		major, _ := parseMajor(version)
 		return major == drupalMajor
 	}
-	
+
 	// Handle range constraints like >=10 <12
 	if strings.Contains(constraint, ">=") && strings.Contains(constraint, "<") {
 		parts := strings.Fields(constraint)
@@ -612,7 +612,7 @@ func matchesConstraint(constraint string, drupalMajor int) bool {
 		}
 		return drupalMajor >= minMajor && drupalMajor < maxMajor
 	}
-	
+
 	// Handle simple version like 11.0
 	major, _ := parseMajor(constraint)
 	return major == drupalMajor

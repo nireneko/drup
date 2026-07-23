@@ -463,10 +463,10 @@ func TestModuleInfo_NotFound(t *testing.T) {
 
 func TestConstraintMatchesDrupal(t *testing.T) {
 	tests := []struct {
-		name         string
-		constraint   string
-		drupalMajor  int
-		want         bool
+		name        string
+		constraint  string
+		drupalMajor int
+		want        bool
 	}{
 		{
 			name:        "compound OR with matching second",
@@ -569,7 +569,7 @@ version: 6.3.0`
 	if err != nil {
 		t.Fatalf("CheckRelease error: %v", err)
 	}
-	
+
 	// HasD11 should be false because the terms don't mention Drupal 11
 	// and we can't mock the info.yml fetch in this test setup.
 	// The constraintMatchesDrupal function is tested separately.
