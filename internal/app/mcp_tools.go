@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nireneko/drup/internal/backup"
 	"github.com/nireneko/drup/internal/composerutil"
 	"github.com/nireneko/drup/internal/coreupgrade"
 	"github.com/nireneko/drup/internal/drupalorg"
@@ -68,6 +69,78 @@ func WireMCPTools(s *mcp.Server) {
 	s.RegisterTool("core_upgrade_apply", realHandleCoreUpgradeApply)
 	s.RegisterTool("patch_reconcile", realHandlePatchReconcile)
 	s.RegisterTool("cleanup", realHandleCleanup)
+	s.RegisterTool("test_backup_create", realHandleTestBackupCreate)
+	s.RegisterTool("test_backup_list", realHandleTestBackupList)
+	s.RegisterTool("test_backup_restore", realHandleTestBackupRestore)
+	s.RegisterTool("test_backup_delete", realHandleTestBackupDelete)
+}
+
+func backupParams(args json.RawMessage) (string, error) {
+	var p struct {
+		ProjectPath string `json:"project_path"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	if p.ProjectPath == "" {
+		return "", fmt.Errorf("project_path is required")
+	}
+	return p.ProjectPath, nil
+}
+func realHandleTestBackupCreate(args json.RawMessage) (json.RawMessage, error) {
+	p, err := backupParams(args)
+	if err != nil {
+		return nil, err
+	}
+	m, err := backup.NewManager(p).Create(p)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(m)
+}
+func realHandleTestBackupList(args json.RawMessage) (json.RawMessage, error) {
+	p, err := backupParams(args)
+	if err != nil {
+		return nil, err
+	}
+	v, err := backup.NewManager(p).List(p)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(v)
+}
+func realHandleTestBackupRestore(args json.RawMessage) (json.RawMessage, error) {
+	var p struct {
+		ProjectPath string `json:"project_path"`
+		BackupID    string `json:"backup_id"`
+		Confirm     bool   `json:"confirm"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return nil, err
+	}
+	if p.ProjectPath == "" || p.BackupID == "" {
+		return nil, fmt.Errorf("project_path and backup_id are required")
+	}
+	if err := backup.NewManager(p.ProjectPath).Restore(p.ProjectPath, p.BackupID, p.Confirm); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]interface{}{"backup_id": p.BackupID, "restored": true})
+}
+func realHandleTestBackupDelete(args json.RawMessage) (json.RawMessage, error) {
+	var p struct {
+		ProjectPath string `json:"project_path"`
+		BackupID    string `json:"backup_id"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return nil, err
+	}
+	if p.ProjectPath == "" || p.BackupID == "" {
+		return nil, fmt.Errorf("project_path and backup_id are required")
+	}
+	if err := backup.NewManager(p.ProjectPath).Delete(p.ProjectPath, p.BackupID); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]interface{}{"backup_id": p.BackupID, "deleted": true})
 }
 
 func realHandleScan(args json.RawMessage) (json.RawMessage, error) {
