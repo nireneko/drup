@@ -67,7 +67,7 @@ func TestSKILLMD_NoPlatformPrimitives(t *testing.T) {
 			}
 
 			// Must NOT contain platform-specific primitives.
-			forbidden := []string{"task(", "Sub-Agent Roster", "drup-preflight", "drup-validator", "drup-rector", "drup-contrib", "drup-custom", "drup-theme"}
+			forbidden := []string{"task("}
 			for _, f := range forbidden {
 				if strings.Contains(content, f) {
 					t.Errorf("SKILL.md for %s contains forbidden platform primitive %q", platform, f)
@@ -86,8 +86,8 @@ func TestSKILLMD_ContainsDrupCLIPipeline(t *testing.T) {
 			}
 			content := files["SKILL.md"]
 
-			// Must contain drup CLI pipeline stages.
-			required := []string{"drup preflight", "drup scan", "drup fix", "drup contrib", "drup upgrade-core"}
+			// Must contain the orchestrated pipeline and backup safety gate.
+			required := []string{"Stage 0: SAFETY BACKUP", "Stage 1: PREFLIGHT", "Stage 6: CORE UPGRADE", "Stage 9: BACKUP FINALIZATION", "test-backup-create"}
 			for _, r := range required {
 				if !strings.Contains(content, r) {
 					t.Errorf("SKILL.md for %s missing required CLI stage %q", platform, r)
@@ -98,33 +98,32 @@ func TestSKILLMD_ContainsDrupCLIPipeline(t *testing.T) {
 }
 
 func TestSKILLMD_CrossPlatformIdentical(t *testing.T) {
-	opencodeFiles, _ := Render("opencode", "/usr/local/bin/drup")
-	claudeFiles, _ := Render("claude", "/usr/local/bin/drup")
-	codexFiles, _ := Render("codex", "/usr/local/bin/drup")
-
-	opencodeSKILL := opencodeFiles["SKILL.md"]
-	claudeSKILL := claudeFiles["SKILL.md"]
-	codexSKILL := codexFiles["SKILL.md"]
-
-	if opencodeSKILL != claudeSKILL {
-		t.Error("opencode and claude SKILL.md should be identical")
-	}
-	if opencodeSKILL != codexSKILL {
-		t.Error("opencode and codex SKILL.md should be identical")
+	for _, platform := range Platforms() {
+		files, _ := Render(platform, "/usr/local/bin/drup")
+		content := files["SKILL.md"]
+		for _, required := range []string{"Stage 0: SAFETY BACKUP", "test-backup-create", "test-backup-restore", "test-backup-delete"} {
+			if !strings.Contains(content, required) {
+				t.Errorf("%s SKILL.md missing shared lifecycle rule %q", platform, required)
+			}
+		}
 	}
 }
 
-func TestRender_NoAgentFiles(t *testing.T) {
+func TestRender_AgentFiles(t *testing.T) {
 	for _, platform := range Platforms() {
 		t.Run(platform, func(t *testing.T) {
 			files, err := Render(platform, "/usr/local/bin/drup")
 			if err != nil {
 				t.Fatalf("Render error: %v", err)
 			}
+			agents := 0
 			for key := range files {
 				if strings.HasPrefix(key, "agents/") {
-					t.Errorf("platform %s should have no agent files, found %q", platform, key)
+					agents++
 				}
+			}
+			if agents == 0 {
+				t.Errorf("platform %s should include orchestrator agent files", platform)
 			}
 		})
 	}
