@@ -142,7 +142,7 @@ func setupMockProject(t *testing.T, dir, drupalVersion string) {
 
 	composerJSON := map[string]interface{}{
 		"require": map[string]interface{}{
-			"drupal/core":            "^" + strings.Split(drupalVersion, ".")[0] + ".0",
+			"drupal/core":             "^" + strings.Split(drupalVersion, ".")[0] + ".0",
 			"drupal/core-recommended": "^" + strings.Split(drupalVersion, ".")[0] + ".0",
 		},
 	}

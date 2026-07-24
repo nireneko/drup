@@ -3,9 +3,12 @@ package backup
 import (
 	"archive/tar"
 	"compress/gzip"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/nireneko/drup/internal/envdetect"
 )
 
 func TestArchiveExtractRoundTrip(t *testing.T) {
@@ -26,6 +29,55 @@ func TestArchiveExtractRoundTrip(t *testing.T) {
 	}
 	if string(data) != "test" {
 		t.Fatalf("content = %q", data)
+	}
+}
+
+func TestManagerCreateRestoreListDelete(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "settings.php"), []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	originalRun, originalInput, originalDetect := run, runInput, detectEnv
+	defer func() { run, runInput, detectEnv = originalRun, originalInput, originalDetect }()
+	detectEnv = func(string) (*envdetect.Detection, error) { return &envdetect.Detection{}, nil }
+	run = func(_ []string, _ string, args ...string) (string, string, int, error) {
+		for _, arg := range args {
+			if len(arg) > len("--result-file=") && arg[:len("--result-file=")] == "--result-file=" {
+				if err := os.WriteFile(arg[len("--result-file="):], []byte("database"), 0o600); err != nil {
+					return "", "", -1, err
+				}
+			}
+		}
+		return "", "", 0, nil
+	}
+	runInput = func([]string, io.Reader, string, ...string) (string, string, int, error) {
+		return "", "", 0, nil
+	}
+
+	manifest, err := NewManager(project).Create(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.BackupID == "" || manifest.FilesChecksum == "" || manifest.DatabaseChecksum == "" {
+		t.Fatalf("incomplete manifest: %+v", manifest)
+	}
+	if err := os.WriteFile(filepath.Join(project, "settings.php"), []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewManager(project).Restore(project, manifest.BackupID, true); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(project, "settings.php"))
+	if err != nil || string(data) != "original" {
+		t.Fatalf("restored settings = %q, err = %v", data, err)
+	}
+	backups, err := NewManager(project).List(project)
+	if err != nil || len(backups) != 1 || backups[0].BackupID != manifest.BackupID {
+		t.Fatalf("backups = %+v, err = %v", backups, err)
+	}
+	if err := NewManager(project).Delete(project, manifest.BackupID); err != nil {
+		t.Fatal(err)
 	}
 }
 
