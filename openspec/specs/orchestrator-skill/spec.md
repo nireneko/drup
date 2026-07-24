@@ -72,13 +72,13 @@ The orchestrator SHALL delegate every validation check to `drup validate` and `d
 
 ### Requirement: Pipeline Definition
 
-The system SHALL define an 8-stage pipeline: preflight → dep check → rector → contrib loop → **core upgrade** → custom loop → final validation → report. Each stage maps to a `drup <stage>` CLI command. The AI SHALL check each command's exit code before advancing.
+The system SHALL define an 8-stage pipeline: preflight → dep check → rector → contrib loop → custom loop → **core upgrade** → final validation → report. Each stage maps to a `drup <stage>` CLI command. The AI SHALL check each command's exit code before advancing.
 
 #### Scenario: Pipeline stages in order
 
 - GIVEN the skill is loaded
 - WHEN the pipeline executes
-- THEN stages SHALL execute in order: preflight, dep check, rector, contrib loop, core upgrade, custom loop, final validation, report
+- THEN stages SHALL execute in order: preflight, dep check, rector, contrib loop, custom loop, core upgrade, final validation, report
 
 #### Scenario: Stage gate via exit code
 

@@ -454,19 +454,25 @@ func TestRunUpgradeCore_ComposerNotFound(t *testing.T) {
 	dir := t.TempDir()
 	origGetwd := getwdFn
 	origIsClean := isCleanFn
-	origExecRun := execRunFn
+	origDetector := defaultEnvDetector
+	origRunWithEnv := drupexec.RunWithEnv
 	getwdFn = func() (string, error) { return dir, nil }
 	isCleanFn = func(path string) (bool, []string, error) { return true, nil, nil }
-	execRunFn = func(cmd string, args ...string) (string, string, int, error) {
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "composer" {
 			return "", "", -1, errors.New("composer not found")
+		}
+		if cmd == "git" {
+			return realExecRun(cmd, args...)
 		}
 		return "", "", 0, nil
 	}
 	defer func() {
 		getwdFn = origGetwd
 		isCleanFn = origIsClean
-		execRunFn = origExecRun
+		defaultEnvDetector = origDetector
+		drupexec.RunWithEnv = origRunWithEnv
 	}()
 
 	// Initialize git repo and commit composer.json so coreupgrade.Apply's internal clean check passes.
@@ -489,22 +495,28 @@ func TestRunUpgradeCore_DrushNotFound(t *testing.T) {
 	dir := t.TempDir()
 	origGetwd := getwdFn
 	origIsClean := isCleanFn
-	origExecRun := execRunFn
+	origDetector := defaultEnvDetector
+	origRunWithEnv := drupexec.RunWithEnv
 	getwdFn = func() (string, error) { return dir, nil }
 	isCleanFn = func(path string) (bool, []string, error) { return true, nil, nil }
-	execRunFn = func(cmd string, args ...string) (string, string, int, error) {
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "composer" {
 			return "", "", 0, nil
 		}
 		if cmd == "drush" {
 			return "", "", -1, errors.New("drush not found")
 		}
+		if cmd == "git" {
+			return realExecRun(cmd, args...)
+		}
 		return "", "", 0, nil
 	}
 	defer func() {
 		getwdFn = origGetwd
 		isCleanFn = origIsClean
-		execRunFn = origExecRun
+		defaultEnvDetector = origDetector
+		drupexec.RunWithEnv = origRunWithEnv
 	}()
 
 	initTestGitRepo(t, dir)
@@ -556,13 +568,11 @@ func TestRunUpgradeCore_Integration(t *testing.T) {
 
 	origGetwd := getwdFn
 	origIsClean := isCleanFn
-	origExecRun := execRunFn
 	origDetector := defaultEnvDetector
 	origRunWithEnv := drupexec.RunWithEnv
 	defer func() {
 		getwdFn = origGetwd
 		isCleanFn = origIsClean
-		execRunFn = origExecRun
 		defaultEnvDetector = origDetector
 		drupexec.RunWithEnv = origRunWithEnv
 	}()
@@ -576,28 +586,20 @@ func TestRunUpgradeCore_Integration(t *testing.T) {
 	drushUpdbCalled := false
 	drushStatusCalled := false
 
-	execRunFn = func(cmd string, args ...string) (string, string, int, error) {
+	// All commands (composer, drush) now go through cliRun → drupexec.RunWithEnv.
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		switch {
 		case cmd == "composer":
 			composerCalls = append(composerCalls, args)
 			return "", "", 0, nil
-		case cmd == "git":
-			// Let real git commands pass through for coreupgrade.Apply
-			return realExecRun(cmd, args...)
-		default:
-			return "", "", 0, nil
-		}
-	}
-
-	// Mock drupexec.RunWithEnv for drush calls via cliRun
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
-		switch {
 		case cmd == "drush" && len(args) > 0 && args[0] == "updb":
 			drushUpdbCalled = true
 			return "", "", 0, nil
 		case cmd == "drush" && len(args) > 0 && args[0] == "status":
 			drushStatusCalled = true
 			return `{"drupal-version":"11.0.0"}`, "", 0, nil
+		case cmd == "git":
+			return realExecRun(cmd, args...)
 		default:
 			return "", "", 0, nil
 		}
@@ -722,13 +724,11 @@ func TestRunUpgradeCore_VersionMismatch(t *testing.T) {
 
 	origGetwd := getwdFn
 	origIsClean := isCleanFn
-	origExecRun := execRunFn
 	origDetector := defaultEnvDetector
 	origRunWithEnv := drupexec.RunWithEnv
 	defer func() {
 		getwdFn = origGetwd
 		isCleanFn = origIsClean
-		execRunFn = origExecRun
 		defaultEnvDetector = origDetector
 		drupexec.RunWithEnv = origRunWithEnv
 	}()
@@ -737,26 +737,16 @@ func TestRunUpgradeCore_VersionMismatch(t *testing.T) {
 	isCleanFn = func(path string) (bool, []string, error) { return true, nil, nil }
 	defaultEnvDetector = &mockEnvDetectorDirect{}
 
-	execRunFn = func(cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		switch {
 		case cmd == "composer":
 			return "", "", 0, nil
-		case cmd == "git":
-			return realExecRun(cmd, args...)
-		default:
-			return "", "", 0, nil
-		}
-	}
-
-	// Mock drupexec.RunWithEnv for drush calls via cliRun
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
-		switch {
 		case cmd == "drush" && len(args) > 0 && args[0] == "updb":
-			// Simulate: updb passed but Drupal actually didn't upgrade.
 			return "", "", 0, nil
 		case cmd == "drush" && len(args) > 0 && args[0] == "status":
-			// Return OLD version — upgrade didn't actually take effect.
 			return `{"drupal-version":"10.3.0"}`, "", 0, nil
+		case cmd == "git":
+			return realExecRun(cmd, args...)
 		default:
 			return "", "", 0, nil
 		}
@@ -791,22 +781,24 @@ func TestRunUpgradeCore_ErrorMessageIncludesCheckpoint(t *testing.T) {
 
 	origGetwd := getwdFn
 	origIsClean := isCleanFn
-	origExecRun := execRunFn
+	origDetector := defaultEnvDetector
+	origRunWithEnv := drupexec.RunWithEnv
 	defer func() {
 		getwdFn = origGetwd
 		isCleanFn = origIsClean
-		execRunFn = origExecRun
+		defaultEnvDetector = origDetector
+		drupexec.RunWithEnv = origRunWithEnv
 	}()
 
 	getwdFn = func() (string, error) { return dir, nil }
 	isCleanFn = func(path string) (bool, []string, error) { return true, nil, nil }
+	defaultEnvDetector = &mockEnvDetectorDirect{}
 
-	execRunFn = func(cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		switch {
 		case cmd == "composer":
 			return "", "", 0, nil
 		case cmd == "drush" && len(args) > 0 && args[0] == "updb":
-			// Simulate updb failure.
 			return "", "updb failed", 1, nil
 		case cmd == "git":
 			return realExecRun(cmd, args...)
@@ -833,6 +825,9 @@ func realExecRun(cmd string, args ...string) (string, string, int, error) {
 // --- Phase 1: RED tests for --all flag ---
 
 func TestRunScan_PassesAllFlag(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "modules", "custom", "mymod"), 0o755)
+
 	origDetector := defaultEnvDetector
 	defaultEnvDetector = &mockEnvDetectorDirect{}
 	defer func() { defaultEnvDetector = origDetector }()
@@ -848,7 +843,7 @@ func TestRunScan_PassesAllFlag(t *testing.T) {
 	}
 	defer func() { drupexec.RunWithEnv = origRun }()
 
-	err := RunScan("/tmp/test-project")
+	err := RunScan(dir)
 	if err != nil {
 		t.Fatalf("RunScan error: %v", err)
 	}
@@ -867,6 +862,9 @@ func TestRunScan_PassesAllFlag(t *testing.T) {
 }
 
 func TestRunScan_PlainTextParsing(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "modules", "custom", "mymod"), 0o755)
+
 	origDetector := defaultEnvDetector
 	defaultEnvDetector = &mockEnvDetectorDirect{}
 	defer func() { defaultEnvDetector = origDetector }()
@@ -893,7 +891,7 @@ Project: token (modules/contrib/token)
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	err := RunScan("/tmp/test-project")
+	err := RunScan(dir)
 
 	w.Close()
 	os.Stdout = oldStdout
@@ -917,6 +915,9 @@ Project: token (modules/contrib/token)
 }
 
 func TestRunScan_DrushExitNonZero(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "modules", "custom", "mymod"), 0o755)
+
 	origDetector := defaultEnvDetector
 	defaultEnvDetector = &mockEnvDetectorDirect{}
 	defer func() { defaultEnvDetector = origDetector }()
@@ -930,7 +931,7 @@ func TestRunScan_DrushExitNonZero(t *testing.T) {
 	}
 	defer func() { drupexec.RunWithEnv = origRun }()
 
-	err := RunScan("/tmp/test-project")
+	err := RunScan(dir)
 	if err == nil {
 		t.Fatal("expected error for non-zero drush exit, got nil")
 	}
@@ -945,6 +946,9 @@ func TestRunScan_DrushExitNonZero(t *testing.T) {
 }
 
 func TestRunScan_ParseFailure(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "modules", "custom", "mymod"), 0o755)
+
 	origDetector := defaultEnvDetector
 	defaultEnvDetector = &mockEnvDetectorDirect{}
 	defer func() { defaultEnvDetector = origDetector }()
@@ -959,7 +963,7 @@ func TestRunScan_ParseFailure(t *testing.T) {
 	}
 	defer func() { drupexec.RunWithEnv = origRun }()
 
-	err := RunScan("/tmp/test-project")
+	err := RunScan(dir)
 	// Empty output is valid (zero errors), not a parse failure.
 	if err != nil {
 		t.Fatalf("RunScan should not error on empty output: %v", err)
@@ -967,6 +971,9 @@ func TestRunScan_ParseFailure(t *testing.T) {
 }
 
 func TestRunScan_NoFormatJSON(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "modules", "custom", "mymod"), 0o755)
+
 	origDetector := defaultEnvDetector
 	defaultEnvDetector = &mockEnvDetectorDirect{}
 	defer func() { defaultEnvDetector = origDetector }()
@@ -982,7 +989,7 @@ func TestRunScan_NoFormatJSON(t *testing.T) {
 	}
 	defer func() { drupexec.RunWithEnv = origRun }()
 
-	_ = RunScan("/tmp/test-project")
+	_ = RunScan(dir)
 
 	for _, arg := range capturedArgs {
 		if arg == "--format=json" {
@@ -1314,6 +1321,9 @@ func TestIsScanExitOK(t *testing.T) {
 }
 
 func TestRunScan_ExitCode3WithFindings(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "modules", "custom", "mymod"), 0o755)
+
 	origDetector := defaultEnvDetector
 	defaultEnvDetector = &mockEnvDetectorDirect{}
 	defer func() { defaultEnvDetector = origDetector }()
@@ -1338,7 +1348,7 @@ Project: token (modules/contrib/token)
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	err := RunScan("/tmp/test-project")
+	err := RunScan(dir)
 
 	w.Close()
 	os.Stdout = oldStdout
@@ -1361,6 +1371,9 @@ Project: token (modules/contrib/token)
 }
 
 func TestRunScan_ExitCode3EmptyStdoutIsError(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "modules", "custom", "mymod"), 0o755)
+
 	origDetector := defaultEnvDetector
 	defaultEnvDetector = &mockEnvDetectorDirect{}
 	defer func() { defaultEnvDetector = origDetector }()
@@ -1374,7 +1387,7 @@ func TestRunScan_ExitCode3EmptyStdoutIsError(t *testing.T) {
 	}
 	defer func() { drupexec.RunWithEnv = origRun }()
 
-	err := RunScan("/tmp/test-project")
+	err := RunScan(dir)
 	if err == nil {
 		t.Fatal("expected error for exit code 3 with empty stdout, got nil")
 	}
@@ -1431,6 +1444,215 @@ func TestCliRun_DirectEnvironment(t *testing.T) {
 	}
 }
 
+// Task 2.9: Smart no-op bypass — both empty dirs skip scan.
+func TestRunScan_EmptyCustomDirs_SkipBypass(t *testing.T) {
+	dir := t.TempDir()
+	// Create empty custom dirs.
+	os.MkdirAll(filepath.Join(dir, "modules", "custom"), 0o755)
+	os.MkdirAll(filepath.Join(dir, "themes", "custom"), 0o755)
+
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	drushCalled := false
+	origRun := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			drushCalled = true
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRun }()
+
+	// Capture stdout.
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := RunScan(dir)
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	if err != nil {
+		t.Fatalf("RunScan error: %v", err)
+	}
+	if drushCalled {
+		t.Error("drush should NOT be called when both custom dirs are empty")
+	}
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, output)
+	}
+	if result["total_errors"].(float64) != 0 {
+		t.Errorf("total_errors = %v, want 0", result["total_errors"])
+	}
+}
+
+// Task 2.9: Custom modules exist — should NOT skip.
+func TestRunScan_CustomModulesExist_ProceedsNormally(t *testing.T) {
+	dir := t.TempDir()
+	// Create custom dir with a module.
+	os.MkdirAll(filepath.Join(dir, "modules", "custom", "mymod"), 0o755)
+	os.MkdirAll(filepath.Join(dir, "themes", "custom"), 0o755)
+
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	drushCalled := false
+	origRun := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			drushCalled = true
+			return "no errors found", "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRun }()
+
+	oldStdout := os.Stdout
+	_, w, _ := os.Pipe()
+	os.Stdout = w
+
+	_ = RunScan(dir)
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	if !drushCalled {
+		t.Error("drush should be called when custom modules exist")
+	}
+}
+
+// Task 3.8: Post-D11 validation gate swap tests.
+
+func TestDoValidate_PostD11_UsesDrushGates(t *testing.T) {
+	dir := t.TempDir()
+	// Create composer.lock with Drupal 11.
+	os.MkdirAll(dir, 0o755)
+	lockJSON := `{"packages":[{"name":"drupal/core","version":"11.0.0"}]}`
+	os.WriteFile(filepath.Join(dir, "composer.lock"), []byte(lockJSON), 0o644)
+
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	var drushCommands []string
+	origRunWithEnv := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" && len(args) > 0 {
+			drushCommands = append(drushCommands, args[0])
+		}
+		// Return clean output for all drush commands.
+		if cmd == "drush" && len(args) > 0 && args[0] == "status" {
+			return `{"drupal-version":"11.0.0"}`, "", 0, nil
+		}
+		return "No errors found.", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRunWithEnv }()
+
+	_, _, err := DoValidate(dir, "")
+	if err != nil {
+		t.Fatalf("DoValidate error: %v", err)
+	}
+
+	// Verify post-D11 gates were called.
+	updbFound := false
+	crFound := false
+	statusFound := false
+	for _, cmd := range drushCommands {
+		if cmd == "updb" {
+			updbFound = true
+		}
+		if cmd == "cr" || cmd == "cache:rebuild" {
+			crFound = true
+		}
+		if cmd == "status" {
+			statusFound = true
+		}
+	}
+	if !updbFound {
+		t.Errorf("drush updb should be called for post-D11 validation, got: %v", drushCommands)
+	}
+	if !crFound {
+		t.Errorf("drush cr should be called for post-D11 validation, got: %v", drushCommands)
+	}
+	if !statusFound {
+		t.Errorf("drush status should be called for post-D11 validation, got: %v", drushCommands)
+	}
+}
+
+func TestDo_validate_PreD11_UsesUpgradeStatus(t *testing.T) {
+	dir := t.TempDir()
+	// Create composer.lock with Drupal 10.
+	lockJSON := `{"packages":[{"name":"drupal/core","version":"10.3.0"}]}`
+	os.WriteFile(filepath.Join(dir, "composer.lock"), []byte(lockJSON), 0o644)
+
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	var drushCommands []string
+	origRunWithEnv := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" && len(args) > 0 {
+			drushCommands = append(drushCommands, args[0])
+		}
+		return "No errors found.", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRunWithEnv }()
+
+	_, _, err := DoValidate(dir, "")
+	if err != nil {
+		t.Fatalf("DoValidate error: %v", err)
+	}
+
+	// Verify upgrade_status:analyze was called (pre-D11 behavior).
+	analyzeFound := false
+	for _, cmd := range drushCommands {
+		if strings.Contains(cmd, "upgrade_status") {
+			analyzeFound = true
+		}
+	}
+	if !analyzeFound {
+		t.Errorf("upgrade_status:analyze should be called for pre-D11 validation, got: %v", drushCommands)
+	}
+}
+
+func TestDoValidate_PostD11_DrushStatusFails(t *testing.T) {
+	dir := t.TempDir()
+	lockJSON := `{"packages":[{"name":"drupal/core","version":"11.0.0"}]}`
+	os.WriteFile(filepath.Join(dir, "composer.lock"), []byte(lockJSON), 0o644)
+
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRunWithEnv := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" && len(args) > 0 && args[0] == "status" {
+			return "", "site bootstrap failed", 1, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRunWithEnv }()
+
+	_, _, err := DoValidate(dir, "")
+	if err == nil {
+		t.Fatal("expected error when drush status fails post-D11, got nil")
+	}
+	if !strings.Contains(err.Error(), "bootstrap") || !strings.Contains(err.Error(), "failed") {
+		t.Errorf("error = %q, want site bootstrap failure", err.Error())
+	}
+}
+
 // mockEnvDetectorDDEV returns DDEV environment for testing.
 type mockEnvDetectorDDEV struct{}
 
@@ -1451,4 +1673,66 @@ func (m *mockEnvDetectorDirect) Detect(projectPath string, forceDetect bool) (*e
 		CommandPrefix: []string{},
 		DetectedAt:    time.Now(),
 	}, nil
+}
+
+// Task 2.3: DDEV composer — verify cliRun passes correct args when DDEV detected.
+func TestRunUpgradeCore_DDEVComposerPrefix(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	dir := t.TempDir()
+	initTestGitRepo(t, dir)
+
+	composerJSON := `{"require":{"drupal/core-recommended":"^10.3"}}`
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(composerJSON), 0o644)
+	runGitCmd(t, dir, "add", "composer.json")
+	runGitCmd(t, dir, "commit", "-m", "add composer.json")
+
+	origGetwd := getwdFn
+	origIsClean := isCleanFn
+	origDetector := defaultEnvDetector
+	origRunWithEnv := drupexec.RunWithEnv
+	defer func() {
+		getwdFn = origGetwd
+		isCleanFn = origIsClean
+		defaultEnvDetector = origDetector
+		drupexec.RunWithEnv = origRunWithEnv
+	}()
+
+	getwdFn = func() (string, error) { return dir, nil }
+	isCleanFn = func(path string) (bool, []string, error) { return true, nil, nil }
+	// Use DDEV detector so cliRun passes ["ddev"] prefix.
+	defaultEnvDetector = &mockEnvDetectorDDEV{}
+
+	var capturedCalls []struct {
+		prefix []string
+		cmd    string
+		args   []string
+	}
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+		capturedCalls = append(capturedCalls, struct {
+			prefix []string
+			cmd    string
+			args   []string
+		}{prefix, cmd, args})
+		if cmd == "git" {
+			return realExecRun(cmd, args...)
+		}
+		return "", "", 0, nil
+	}
+
+	_ = RunUpgradeCore([]string{"11"})
+
+	// Verify composer calls have "ddev" prefix.
+	composerHasDdev := false
+	for _, call := range capturedCalls {
+		if call.cmd == "composer" && len(call.prefix) > 0 && call.prefix[0] == "ddev" {
+			composerHasDdev = true
+			break
+		}
+	}
+	if !composerHasDdev {
+		t.Error("composer calls should have 'ddev' prefix when DDEV is detected")
+	}
 }

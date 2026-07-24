@@ -8,35 +8,52 @@ Extract patch, diff, and merge request links from Drupal.org issues with RTBC pr
 
 ### Requirement: Issue Lookup by Module Name
 
-The system SHALL search Drupal.org for issues related to a module and extract patch/diff/MR links.
+The system SHALL search Drupal.org for issues related to a module and extract patch/diff/MR links. The system SHALL return structured JSON responses with `status`, `module`, `searched`, `message`, and `suggestion` fields instead of empty arrays or null values.
+
+| Req | Strength | Behavior |
+|-----|----------|----------|
+| Structured response | MUST | Return `{status, module, searched, message, suggestion, patches[]}` |
+| Status field | MUST | One of: `patches_found`, `no_patches_found`, `error` |
+| Suggestion field | MUST | Include actionable next step (e.g., "check manually at https://...") |
+| No empty arrays | MUST NOT | Return bare `[]` or `null` without context |
+
+(Previously: returned empty array `[]` when no issues found, with no context)
 
 #### Scenario: Module with patch issues
 
 - GIVEN a module machine name with issues containing patches
 - WHEN the system queries for issues
-- THEN the system SHALL return `[{url, status, date, is_patch}]` for each issue with attachable files
+- THEN the system SHALL return `{status: "patches_found", module: "<name>", patches: [{url, status, date, is_patch}], message: "N patches found", suggestion: "Apply highest-date RTBC patch first"}`
 
 #### Scenario: Module with no issues
 
 - GIVEN a module machine name with no relevant issues
 - WHEN the system queries for issues
-- THEN the system SHALL return an empty array `[]`
+- THEN the system SHALL return `{status: "no_patches_found", module: "<name>", searched: "<url>", message: "No patches found on Drupal.org", suggestion: "Create a custom patch or check issue queue manually at <url>"}`
+
+#### Scenario: API error during lookup
+
+- GIVEN Drupal.org API returns an error or is unreachable
+- WHEN the system queries for issues
+- THEN the system SHALL return `{status: "error", module: "<name>", message: "<error detail>", suggestion: "Retry later or check manually"}`
 
 ### Requirement: Issue Lookup by NID
 
-The system SHALL extract patch/diff/MR links from a specific Drupal.org issue by NID.
+The system SHALL extract patch/diff/MR links from a specific Drupal.org issue by NID. The system SHALL return structured JSON with the same fields as module lookup.
+
+(Previously: returned empty array `[]` when no patches found)
 
 #### Scenario: Issue with multiple patches
 
 - GIVEN an issue NID with multiple file attachments
 - WHEN the system scrapes the issue page
-- THEN the system SHALL return all patch/diff/MR URLs with their upload dates and statuses
+- THEN the system SHALL return all patch/diff/MR URLs with their upload dates and statuses in a structured response
 
 #### Scenario: Issue with no patches
 
 - GIVEN an issue NID with no file attachments
 - WHEN the system scrapes the issue page
-- THEN the system SHALL return an empty array `[]`
+- THEN the system SHALL return `{status: "no_patches_found", module: "<from-nid>", searched: "https://www.drupal.org/node/<NID>", message: "No patches in this issue", suggestion: "Check related issues"}`
 
 ### Requirement: RTBC Prioritization
 

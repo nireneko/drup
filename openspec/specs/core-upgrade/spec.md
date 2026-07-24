@@ -40,7 +40,9 @@ The system MUST accept a target version argument and update the `drupal/core-rec
 
 ### Requirement: Composer Execution
 
-The system MUST run `composer config policy.advisories.block false` before the require command to disable advisory blocking, then run `composer require drupal/core-recommended:^<target> drupal/core:^<target> --with-all-dependencies`, followed by `composer update --with-all-dependencies` to ensure full dependency resolution.
+The system MUST run `composer config policy.advisories.block false` before the require command to disable advisory blocking, then run `composer require drupal/core-recommended:^<target> drupal/core:^<target> --with-all-dependencies`, followed by `composer update --with-all-dependencies` to ensure full dependency resolution. When DDEV is detected via `envdetect.Detect()`, the system SHALL prefix all composer commands with `ddev composer` instead of bare `composer`.
+
+(Previously: always used bare `composer` regardless of environment)
 
 #### Scenario: Composer update with advisory bypass
 
@@ -53,6 +55,18 @@ The system MUST run `composer config policy.advisories.block false` before the r
 - GIVEN `composer` is not in PATH
 - WHEN composer execution runs
 - THEN it MUST exit non-zero with "composer not found" error
+
+#### Scenario: DDEV environment detected
+
+- GIVEN a DDEV project (`.ddev/` directory present)
+- WHEN composer execution runs
+- THEN the system SHALL execute `ddev composer config policy.advisories.block false`, `ddev composer require ...`, and `ddev composer update ...`
+
+#### Scenario: Non-DDEV environment
+
+- GIVEN a direct composer project (no DDEV)
+- WHEN composer execution runs
+- THEN the system SHALL use bare `composer` commands as before
 
 ### Requirement: Database Update
 

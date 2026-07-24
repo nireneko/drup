@@ -30,7 +30,16 @@ The system SHALL download patch files from URLs using `net/http`.
 
 ### Requirement: Git Apply
 
-The system SHALL apply downloaded patches using `git apply`.
+The system SHALL apply downloaded patches using `git apply`. The system SHALL determine the project web root by reading `composer.json` → `extra.drupal-scaffold.locations.web-root` and use it as the base path for patch operations. If the scaffold config is not present, the system SHALL fall back to `web/` as the default web root. The system MUST NOT use `os.Getwd()` to determine the web root.
+
+| Req | Strength | Behavior |
+|-----|----------|----------|
+| Web root from composer | MUST | Read `extra.drupal-scaffold.locations.web-root` from `composer.json` |
+| Fallback | MUST | Default to `web/` if scaffold config absent |
+| No os.Getwd() | MUST NOT | Use `os.Getwd()` for web root determination |
+| Project path based | MUST | Resolve web root relative to `project_path` parameter |
+
+(Previously: used `os.Getwd()` which fails when drup runs from a different working directory than the Drupal project root)
 
 #### Scenario: Clean apply
 
@@ -49,6 +58,18 @@ The system SHALL apply downloaded patches using `git apply`.
 - GIVEN a patch with whitespace differences
 - WHEN the system runs `git apply --whitespace=nowarn <patch_file>`
 - THEN the system SHALL attempt apply with whitespace tolerance before reporting failure
+
+#### Scenario: Custom web root from composer scaffold
+
+- GIVEN `composer.json` with `extra.drupal-scaffold.locations.web-root: "docroot"`
+- WHEN create_patch resolves the web root
+- THEN the system SHALL use `<project_path>/docroot` as the base path
+
+#### Scenario: No scaffold config present
+
+- GIVEN `composer.json` without `extra.drupal-scaffold`
+- WHEN create_patch resolves the web root
+- THEN the system SHALL fall back to `<project_path>/web`
 
 ### Requirement: Composer-Patches Registration
 

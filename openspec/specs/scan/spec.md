@@ -105,6 +105,8 @@ The system SHALL have fixture-based unit tests covering known `upgrade_status` p
 
 The system SHALL invoke `drush upgrade_status:analyze` with the `--all` flag. The system SHALL use `--root=<path>` instead of `-r <path>` for DDEV compatibility. The system SHALL use `RunWithEnv` with environment detection to prefix commands (e.g. `ddev`) when a container environment is detected. The `--format=json` flag SHALL NOT be used; the parser handles plain-text output.
 
+**Smart no-op bypass:** Before invoking drush, the system SHALL check if both `web/modules/custom/` and `web/themes/custom/` are empty (no subdirectories). If both are empty, the system SHALL skip the rector stage and the custom analysis loop, logging "scan: no custom code found, skipping rector and custom analysis" and returning a zero-error model immediately.
+
 | Req | Strength | Behavior |
 |-----|----------|----------|
 | Root flag | MUST | Use `--root=<path>` instead of `-r <path>` |
@@ -113,6 +115,9 @@ The system SHALL invoke `drush upgrade_status:analyze` with the `--all` flag. Th
 | Exit code 1,2,>3 | MUST | Treat as real errors and abort |
 | Stdout on exit 3 | MUST | Parse stdout regardless of exit code 3 |
 | Empty stdout + exit 3 | MUST | Treat as error (drush crashed, not findings) |
+| Empty custom dirs | MUST | Skip rector + custom analysis with informative log |
+
+(Previously: always ran full scan regardless of whether custom code existed)
 
 #### Scenario: Scan with findings under DDEV
 
@@ -143,3 +148,15 @@ The system SHALL invoke `drush upgrade_status:analyze` with the `--all` flag. Th
 - GIVEN a Drupal project where `upgrade_status:analyze` without `--all` returns empty results
 - WHEN `drup scan` runs
 - THEN the system SHALL still return full analysis by including the `--all` flag
+
+#### Scenario: No custom code — smart bypass
+
+- GIVEN `web/modules/custom/` and `web/themes/custom/` are both empty (no subdirectories)
+- WHEN `drup scan` runs
+- THEN the system SHALL skip rector stage and custom analysis, log "scan: no custom code found, skipping rector and custom analysis", and return zero-error model
+
+#### Scenario: Custom modules exist but themes empty
+
+- GIVEN `web/modules/custom/mymodule/` exists but `web/themes/custom/` is empty
+- WHEN `drup scan` runs
+- THEN the system SHALL proceed with full scan (custom code is present)

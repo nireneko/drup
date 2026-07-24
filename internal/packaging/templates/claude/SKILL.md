@@ -20,7 +20,7 @@ If you find yourself about to run `scan`, `validate`, `autofix`, `apply_patch`, 
 
 | Agent | Model | Owns | Role |
 |-------|-------|------|------|
-| drup-preflight | haiku | `detect_env`, `drush_exec`, `composer_require` | Environment detection, dependency install, unsupported-environment terminal report |
+| drup-preflight | haiku | `detect_env`, `drush_exec`, `composer_require`, `test_backup_create` | Environment detection, dependency install, unsupported-environment terminal report |
 | drup-rector | haiku → sonnet (2 retries) | `autofix` | Deterministic auto-fix on custom modules/themes |
 | drup-contrib | haiku → sonnet (2 retries) | `contrib_check`, `contrib_upgrade_path`, `issue_patches`, `apply_patch`, `create_patch`, `patch_status`, `patch_rollback`, `patch_reconcile`, `core_upgrade_check`, `core_upgrade_apply` | Per-module contrib resolution + core version bump |
 | drup-custom | haiku → sonnet (2 retries) | file edits only | Per-file custom PHP refactor |
@@ -56,7 +56,7 @@ Every retry escalation follows the same rule: **haiku is the default model for e
 
 Give each sub-agent ONLY the target module/file plus its own error context — never the whole project. This is context isolation, not withholding information: a sub-agent processing module X never sees module Y's data.
 
-## Pipeline (7 Stages, Sequential)
+## Pipeline (8 Stages, Sequential)
 
 ### Stage 1: PREFLIGHT — Environment Detection
 
@@ -106,21 +106,30 @@ For EACH file:
 
 **One file = one commit**, issued by the fixer agent only after its dedicated validator gate passes.
 
-### Stage 6: FINAL VALIDATION
+### Stage 6: CORE UPGRADE — Drupal Core Version Bump
+
+Before dispatching this stage, the backup gate must have passed.
+
+Dispatch `drup-contrib` with `{scope: "core", target: <target-version>}` to perform the non-dry-run `core_upgrade_apply`.
+
+- **Exit 0**: proceed to Stage 7.
+- **Exit non-zero**: read the report, do not continue, and report the failure or restore the recorded backup after user confirmation.
+
+### Stage 7: FINAL VALIDATION
 
 Dispatch `drup-validator` with `{scope: "global"}`.
 
-- **`evidence.total_errors == 0`**: ALL CLEAN → go to Stage 7.
-- **`evidence.total_errors > 0`**: classify each remaining error by type (contrib/custom/theme) and re-enter the matching loop (Stage 4 or Stage 5) for just those items. Items that survive 3 total attempts across all models (2 default + 1 escalated) → PENDING HUMAN LIST.
+- **`evidence.total_errors == 0`**: ALL CLEAN → go to Stage 8.
+- **`evidence.total_errors > 0`**: classify remaining errors and re-enter Stage 4 or Stage 5. Items surviving 3 total attempts go to PENDING HUMAN LIST.
 
-### Stage 7: REPORT
+### Stage 8: REPORT
 
-Dispatch `drup-validator` with `{scope: "global"}` and every accumulated report from Stages 1–6 as `prior_evidence`, instructing it to call `generate_report`. The report must include:
+Dispatch `drup-validator` with `{scope: "global"}` and accumulated reports as `prior_evidence`, instructing it to call `generate_report`. The report must include:
 1. Summary: total modules checked, patches applied, custom/theme files fixed, errors remaining.
 2. Per module: action taken (update/patch/create), version/URL, validation result.
 3. Per custom/theme file: deprecation fixed, validation result.
-4. **PENDING HUMAN LIST**: items that could not be resolved, with full context — sourced entirely from sub-agent and `drup-validator` reports, never from your own tool output (you have none).
-5. Token usage: estimated tokens consumed (if available).
+4. **PENDING HUMAN LIST**: unresolved items with full context from sub-agent reports.
+5. Token usage, if available.
 
 Read `drup-validator`'s `artifacts` for the generated `UPGRADE-REPORT.md` path and present a summary to the user.
 
@@ -153,12 +162,10 @@ You (the orchestrator) MUST NEVER call: `scan`, `validate`, `upgrade_scan`, `aut
 
 Ask the user before proceeding when:
 - `drup-preflight` reports the unsupported-environment terminal state (Stage 1) — this ends the run, it is not a retry case.
-- Stage 3/4 involves a `core_upgrade_apply` (non-dry-run) core version bump — this mutates `composer.json` and creates a git checkpoint; confirm with the user before dispatching it for real.
+- Any mutating stage is requested without a successful backup ID.
+- Stage 6 involves a non-dry-run core version bump — confirm before dispatching it for real.
 - Any action is destructive or ambiguous and no sub-agent report resolves the ambiguity.
 
-## Error Handling
+## Backup Gate
 
-- Network failures on drupal.org: the affected sub-agent retries once after 5 seconds, then reports `status: fail` for that module so you can skip to the next one.
-- `drush` command not found: `drup-preflight` reports it as CRITICAL in `evidence`; suggest `composer require drush/drush` to the user.
-- Rector crashes: `drup-rector` captures stderr, reports the file that caused it in `risks`, and you skip that file and continue.
-- `git apply` conflict: `drup-contrib` reports the conflicted file in `risks`; add it to the PENDING HUMAN LIST.
+Before any mutating operation, `drup-preflight` MUST call `test_backup_create` and return the resulting `backup_id` in its report. If backup creation fails, stop the pipeline. Never dispatch `autofix`, `apply_patch`, `composer_require`, mutating `drush_exec`, or `core_upgrade_apply` without that backup ID. Preserve the ID for rollback; restore only with explicit user confirmation.

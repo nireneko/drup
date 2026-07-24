@@ -67,7 +67,7 @@ func TestSKILLMD_NoPlatformPrimitives(t *testing.T) {
 			}
 
 			// Must NOT contain platform-specific primitives.
-			forbidden := []string{"task(", "Sub-Agent Roster", "drup-preflight", "drup-validator", "drup-rector", "drup-contrib", "drup-custom", "drup-theme"}
+			forbidden := []string{"task("}
 			for _, f := range forbidden {
 				if strings.Contains(content, f) {
 					t.Errorf("SKILL.md for %s contains forbidden platform primitive %q", platform, f)
@@ -86,8 +86,8 @@ func TestSKILLMD_ContainsDrupCLIPipeline(t *testing.T) {
 			}
 			content := files["SKILL.md"]
 
-			// Must contain drup CLI pipeline stages.
-			required := []string{"drup preflight", "drup scan", "drup fix", "drup contrib", "drup upgrade-core"}
+			// Must contain the orchestrated pipeline and backup safety gate.
+			required := []string{"Stage 1: PREFLIGHT", "Stage 6: CORE UPGRADE", "Stage 8: REPORT", "test_backup_create"}
 			for _, r := range required {
 				if !strings.Contains(content, r) {
 					t.Errorf("SKILL.md for %s missing required CLI stage %q", platform, r)
@@ -102,9 +102,15 @@ func TestSKILLMD_CrossPlatformIdentical(t *testing.T) {
 	claudeFiles, _ := Render("claude", "/usr/local/bin/drup")
 	codexFiles, _ := Render("codex", "/usr/local/bin/drup")
 
-	opencodeSKILL := opencodeFiles["SKILL.md"]
-	claudeSKILL := claudeFiles["SKILL.md"]
-	codexSKILL := codexFiles["SKILL.md"]
+	normalize := func(s string) string {
+		if i := strings.Index(s, "# drup — Drupal Upgrade Automation"); i >= 0 {
+			return s[i:]
+		}
+		return s
+	}
+	opencodeSKILL := normalize(opencodeFiles["SKILL.md"])
+	claudeSKILL := normalize(claudeFiles["SKILL.md"])
+	codexSKILL := normalize(codexFiles["SKILL.md"])
 
 	if opencodeSKILL != claudeSKILL {
 		t.Error("opencode and claude SKILL.md should be identical")
@@ -114,17 +120,21 @@ func TestSKILLMD_CrossPlatformIdentical(t *testing.T) {
 	}
 }
 
-func TestRender_NoAgentFiles(t *testing.T) {
+func TestRender_AgentFiles(t *testing.T) {
 	for _, platform := range Platforms() {
 		t.Run(platform, func(t *testing.T) {
 			files, err := Render(platform, "/usr/local/bin/drup")
 			if err != nil {
 				t.Fatalf("Render error: %v", err)
 			}
+			agents := 0
 			for key := range files {
 				if strings.HasPrefix(key, "agents/") {
-					t.Errorf("platform %s should have no agent files, found %q", platform, key)
+					agents++
 				}
+			}
+			if agents == 0 {
+				t.Errorf("platform %s should include orchestrator agent files", platform)
 			}
 		})
 	}
@@ -166,5 +176,54 @@ func TestRender_BootstrapSkillPathSubstitution(t *testing.T) {
 	content := files["CLAUDE.md"]
 	if strings.Contains(content, "{{SKILL_PATH}}") {
 		t.Error("CLAUDE.md should have {{SKILL_PATH}} substituted")
+	}
+}
+
+// Task 5.4: Verify new skill files exist and contain trigger phrases.
+
+func TestRender_D11FixesSkillExists(t *testing.T) {
+	for _, platform := range Platforms() {
+		t.Run(platform, func(t *testing.T) {
+			files, err := Render(platform, "/usr/local/bin/drup")
+			if err != nil {
+				t.Fatalf("Render error: %v", err)
+			}
+			key := "skills/drupal-custom-d11-fixes/SKILL.md"
+			content, ok := files[key]
+			if !ok {
+				t.Fatalf("missing %s for %s", key, platform)
+			}
+			if !strings.Contains(content, "drupal-custom-d11-fixes") {
+				t.Error("D11 fixes skill should contain its name")
+			}
+			if !strings.Contains(content, "deprecation") {
+				t.Error("D11 fixes skill should contain deprecation patterns")
+			}
+		})
+	}
+}
+
+func TestRender_ContribPatchSkillExists(t *testing.T) {
+	for _, platform := range Platforms() {
+		t.Run(platform, func(t *testing.T) {
+			files, err := Render(platform, "/usr/local/bin/drup")
+			if err != nil {
+				t.Fatalf("Render error: %v", err)
+			}
+			key := "skills/drupal-contrib-patch-writer/SKILL.md"
+			content, ok := files[key]
+			if !ok {
+				t.Fatalf("missing %s for %s", key, platform)
+			}
+			if !strings.Contains(content, "drupal-contrib-patch-writer") {
+				t.Error("Contrib patch skill should contain its name")
+			}
+			// Verify all 4 categories are present.
+			for _, cat := range []string{"Category A", "Category B", "Category C", "Category D"} {
+				if !strings.Contains(content, cat) {
+					t.Errorf("Contrib patch skill missing %s", cat)
+				}
+			}
+		})
 	}
 }

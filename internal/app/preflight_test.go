@@ -133,3 +133,105 @@ func TestRunPreflight_DeletesUpdateSettingsBeforeEnable(t *testing.T) {
 		}
 	}
 }
+
+// Task 3.6: Core readiness check tests.
+
+func TestCheckCoreReadiness_AllConstraintsAllowD11(t *testing.T) {
+	dir := t.TempDir()
+	// composer.json allows D11.
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/core":"^10.3 || ^11"}}`), 0o644)
+	// Custom module allows D11.
+	modDir := filepath.Join(dir, "web", "modules", "custom", "mymod")
+	os.MkdirAll(modDir, 0o755)
+	os.WriteFile(filepath.Join(modDir, "mymod.info.yml"), []byte("name: mymod\ncore_version_requirement: '>=10.0 || ^11'\n"), 0o644)
+
+	results, err := checkCoreReadiness(dir)
+	if err != nil {
+		t.Fatalf("checkCoreReadiness error: %v", err)
+	}
+	for _, r := range results {
+		if !r.Pass {
+			t.Errorf("check %q should pass: %s", r.Check, r.Message)
+		}
+	}
+}
+
+func TestCheckCoreReadiness_ComposerBlocksD11(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/core":"^10.3"}}`), 0o644)
+
+	results, err := checkCoreReadiness(dir)
+	if err != nil {
+		t.Fatalf("checkCoreReadiness error: %v", err)
+	}
+	foundFail := false
+	for _, r := range results {
+		if !r.Pass && r.Check == "core_composer_constraint" {
+			foundFail = true
+			break
+		}
+	}
+	if !foundFail {
+		t.Error("expected core_composer_constraint to fail when ^10.3 doesn't allow D11")
+	}
+}
+
+func TestCheckCoreReadiness_ModuleBlocksD11(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/core":"^10.3 || ^11"}}`), 0o644)
+
+	// Module with <11 constraint.
+	modDir := filepath.Join(dir, "web", "modules", "custom", "oldmod")
+	os.MkdirAll(modDir, 0o755)
+	os.WriteFile(filepath.Join(modDir, "oldmod.info.yml"), []byte("name: oldmod\ncore_version_requirement: '<11'\n"), 0o644)
+
+	results, err := checkCoreReadiness(dir)
+	if err != nil {
+		t.Fatalf("checkCoreReadiness error: %v", err)
+	}
+	foundBlocker := false
+	for _, r := range results {
+		if !r.Pass && r.Check == "core_module_compat" {
+			foundBlocker = true
+			if !contains(r.Message, "oldmod") {
+				t.Errorf("message should mention 'oldmod': %s", r.Message)
+			}
+		}
+	}
+	if !foundBlocker {
+		t.Error("expected core_module_compat to fail for oldmod with <11 constraint")
+	}
+}
+
+func TestCheckCoreReadiness_NoCustomCode(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/core":"^10.3 || ^11"}}`), 0o644)
+
+	results, err := checkCoreReadiness(dir)
+	if err != nil {
+		t.Fatalf("checkCoreReadiness error: %v", err)
+	}
+	// Should pass with "no custom code to check".
+	foundSkip := false
+	for _, r := range results {
+		if r.Check == "core_module_compat" && contains(r.Message, "no custom") {
+			foundSkip = true
+		}
+	}
+	if !foundSkip {
+		t.Error("expected 'no custom code to check' message when dirs are empty")
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
+}
+
+func containsStr(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
