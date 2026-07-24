@@ -232,6 +232,33 @@ var toolRegistry = map[string]toolSchema{
 		},
 		Required: []string{"module_machine_name", "current_patch_url"},
 	},
+	"test_backup_create": {
+		Description: "Create a local testing backup of a Drupal project",
+		Properties:  map[string]jsonSchemaProperty{"project_path": {Type: "string", Description: "Absolute Drupal project path"}},
+		Required:    []string{"project_path"},
+	},
+	"test_backup_list": {
+		Description: "List local testing backups",
+		Properties:  map[string]jsonSchemaProperty{"project_path": {Type: "string", Description: "Absolute Drupal project path"}},
+		Required:    []string{"project_path"},
+	},
+	"test_backup_restore": {
+		Description: "Restore a confirmed local testing backup",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute Drupal project path"},
+			"backup_id":    {Type: "string", Description: "Backup ID"},
+			"confirm":      {Type: "boolean", Description: "Explicitly confirm destructive restore"},
+		},
+		Required: []string{"project_path", "backup_id", "confirm"},
+	},
+	"test_backup_delete": {
+		Description: "Delete a local testing backup",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute Drupal project path"},
+			"backup_id":    {Type: "string", Description: "Backup ID"},
+		},
+		Required: []string{"project_path", "backup_id"},
+	},
 }
 
 // NewServer creates a new MCP server writing to out.

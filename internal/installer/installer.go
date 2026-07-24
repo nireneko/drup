@@ -795,18 +795,36 @@ func extractTarGz(archivePath, destDir string) error {
 		if err != nil {
 			return err
 		}
+		name := filepath.Clean(filepath.FromSlash(header.Name))
+		if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("archive path escape: %s", header.Name)
+		}
+		target := filepath.Join(destDir, name)
+		root := filepath.Clean(destDir)
+		if target != root && !strings.HasPrefix(target, root+string(filepath.Separator)) {
+			return fmt.Errorf("archive path escape: %s", header.Name)
+		}
+		if header.Typeflag != tar.TypeDir && header.Typeflag != tar.TypeReg {
+			return fmt.Errorf("unsupported archive entry: %s", header.Name)
+		}
 
-		target := filepath.Join(destDir, header.Name)
 		switch header.Typeflag {
 		case tar.TypeDir:
-			os.MkdirAll(target, 0o755)
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
 		case tar.TypeReg:
-			os.MkdirAll(filepath.Dir(target), 0o755)
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
 			outFile, err := os.Create(target)
 			if err != nil {
 				return err
 			}
-			io.Copy(outFile, tarReader)
+			if _, err := io.Copy(outFile, tarReader); err != nil {
+				outFile.Close()
+				return err
+			}
 			outFile.Close()
 		}
 	}

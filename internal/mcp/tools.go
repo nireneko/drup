@@ -32,6 +32,19 @@ func defaultTools() map[string]ToolHandler {
 	}
 }
 
+func handleTestBackupCreate(args json.RawMessage) (json.RawMessage, error) {
+	return json.Marshal(map[string]interface{}{"error": "not wired"})
+}
+func handleTestBackupList(args json.RawMessage) (json.RawMessage, error) {
+	return json.Marshal([]interface{}{})
+}
+func handleTestBackupRestore(args json.RawMessage) (json.RawMessage, error) {
+	return json.Marshal(map[string]interface{}{"restored": false})
+}
+func handleTestBackupDelete(args json.RawMessage) (json.RawMessage, error) {
+	return json.Marshal(map[string]interface{}{"deleted": false})
+}
+
 func handleScan(args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectPath string `json:"project_path"`

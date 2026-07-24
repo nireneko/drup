@@ -2,6 +2,7 @@ package exec
 
 import (
 	"bytes"
+	"io"
 	"os/exec"
 )
 
@@ -61,4 +62,13 @@ var RunWithEnv = func(prefix []string, cmd string, args ...string) (stdout, stde
 	fullArgs = append(fullArgs, cmd)
 	fullArgs = append(fullArgs, args...)
 	return execCommand(fullArgs[0], fullArgs[1:]...).Output()
+}
+
+// RunWithEnvInput executes a command with stdin without invoking a shell.
+var RunWithEnvInput = func(prefix []string, input io.Reader, cmd string, args ...string) (stdout, stderr string, exitCode int, err error) {
+	fullArgs := append(append([]string{}, prefix...), cmd)
+	fullArgs = append(fullArgs, args...)
+	r := &realCmd{cmd: exec.Command(fullArgs[0], fullArgs[1:]...)}
+	r.cmd.Stdin = input
+	return r.Output()
 }
