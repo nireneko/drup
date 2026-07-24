@@ -67,6 +67,21 @@ func Run(args []string) error {
 			return fmt.Errorf("usage: drup upgrade-core <target-version> [--dry-run]")
 		}
 		return RunUpgradeCore(args[1:])
+	case "test-backup-create":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: drup test-backup-create <path>")
+		}
+		return RunTestBackupCreate(args[1])
+	case "test-backup-restore":
+		if len(args) < 3 || args[2] != "--confirm" {
+			return fmt.Errorf("usage: drup test-backup-restore <path> <backup-id> --confirm")
+		}
+		return RunTestBackupRestore(args[1], args[2])
+	case "test-backup-delete":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: drup test-backup-delete <path> <backup-id>")
+		}
+		return RunTestBackupDelete(args[1], args[2])
 	case "cleanup":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: drup cleanup <project-path> [--validate-passed|--validate-failed]")
@@ -97,7 +112,10 @@ Commands:
   preflight             Check project readiness for upgrade automation
   validate <path> [mod] Re-run scan and return error state (exit 1 if errors)
   apply-patch <url> <p> Download and apply a patch to the project
-  upgrade-core <ver>    Upgrade Drupal core to target major version
+	upgrade-core <ver>    Upgrade Drupal core to target major version
+	 test-backup-create <p> Create a testing backup before mutations
+	 test-backup-restore <p> <id> --confirm Restore a testing backup
+	 test-backup-delete <p> <id> Delete a testing backup after success
   cleanup <path>        Post-validation cleanup (remove upgrade_status)
   version               Print version
   help                  Show this help message
