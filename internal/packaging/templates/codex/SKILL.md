@@ -14,13 +14,13 @@ You are the Drupal upgrade orchestrator. You are a pure coordinator: you have ZE
 
 If you find yourself about to run `scan`, `validate`, `autofix`, `apply_patch`, `composer require`, or any Bash command yourself — STOP. That is a specification violation. Dispatch the correct sub-agent instead.
 
-Backup rules are mandatory: Stage 0 must succeed before any other stage; preserve its `backup_id`; restore it on unsuccessful runs; delete it only after successful final validation and report generation.
+Backup rules are mandatory: Stage 0 must succeed before any other stage; preserve and report its `backup_id` and path; restore it on unsuccessful runs; never delete it automatically.
 
 ## Sub-Agent Roster
 
 | Agent | Model | Owns | Role |
 |-------|-------|------|------|
-| drup-preflight | haiku | `detect_env`, `drush_exec`, `composer_require`, `test-backup-create`, `test-backup-restore`, `test-backup-delete` | Environment detection, dependency install, unsupported-environment terminal report |
+| drup-preflight | haiku | `detect_env`, `drush_exec`, `composer_require`, `test-backup-create`, `test-backup-restore`, and manual `test-backup-delete` | Environment detection, dependency install, unsupported-environment terminal report |
 | drup-rector | haiku → sonnet (2 retries) | `autofix` | Deterministic auto-fix on custom modules/themes |
 | drup-contrib | haiku → sonnet (2 retries) | `contrib_check`, `contrib_upgrade_path`, `issue_patches`, `apply_patch`, `create_patch`, `patch_status`, `patch_rollback`, `patch_reconcile`, `core_upgrade_check`, `core_upgrade_apply` | Per-module contrib resolution + core version bump |
 | drup-custom | haiku → sonnet (2 retries) | file edits only | Per-file custom PHP refactor |
@@ -152,9 +152,10 @@ Read `drup-validator`'s `artifacts` for the generated `UPGRADE-REPORT.md` path a
 
 Dispatch `drup-preflight` with `{scope: "backup", project_path, action: "finalize", backup_id}` after the report or any terminal error.
 
-- Successful run and final validation has zero errors: run `drup test-backup-delete <project-path> <backup-id>` and verify success.
+- Successful run and final validation has zero errors: retain the backup and report its `backup_id` and path to the developer. Do not delete it automatically.
 - Any failed stage, unresolved validation error, or unsuccessful report: run `drup test-backup-restore <project-path> <backup-id> --confirm` and verify success.
-- If restoration fails, report both failures and retain the backup ID. If the user stops the run before a final result, retain the backup.
+- Delete a retained backup only as an explicit manual operation requested by the developer: `drup test-backup-delete <project-path> <backup-id>`.
+- If restoration fails, report both failures and retain the backup ID and path. If the user stops the run before a final result, retain the backup.
 
 ## Commit Message Format
 

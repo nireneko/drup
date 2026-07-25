@@ -101,9 +101,17 @@ func TestSKILLMD_CrossPlatformIdentical(t *testing.T) {
 	for _, platform := range Platforms() {
 		files, _ := Render(platform, "/usr/local/bin/drup")
 		content := files["SKILL.md"]
-		for _, required := range []string{"Stage 0: SAFETY BACKUP", "test-backup-create", "test-backup-restore", "test-backup-delete"} {
+		for _, required := range []string{"Stage 0: SAFETY BACKUP", "test-backup-create", "test-backup-restore", "manual `test-backup-delete`", "report its `backup_id` and path"} {
 			if !strings.Contains(content, required) {
 				t.Errorf("%s SKILL.md missing shared lifecycle rule %q", platform, required)
+			}
+		}
+		for _, forbidden := range []string{
+			"Successful run and final validation has zero errors: run `drup test-backup-delete",
+			"delete it only after successful final validation",
+		} {
+			if strings.Contains(content, forbidden) {
+				t.Errorf("%s SKILL.md still automates backup deletion: %q", platform, forbidden)
 			}
 		}
 	}
