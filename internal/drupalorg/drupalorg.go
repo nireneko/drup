@@ -59,7 +59,7 @@ type PatchInfo struct {
 // PatchSearchResult is the structured response from SearchPatches.
 // It always includes status, module, message, and suggestion — never a bare empty array.
 type PatchSearchResult struct {
-	Status     string      `json:"status"`     // "patches_found" | "no_patches_found" | "error"
+	Status     string      `json:"status"` // "patches_found" | "no_patches_found" | "error"
 	Module     string      `json:"module"`
 	Searched   string      `json:"searched"`
 	Message    string      `json:"message"`
