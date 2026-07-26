@@ -1736,3 +1736,63 @@ func TestRunUpgradeCore_DDEVComposerPrefix(t *testing.T) {
 		t.Error("composer calls should have 'ddev' prefix when DDEV is detected")
 	}
 }
+
+// --- RunInit tests (RED) ---
+
+func TestRunInit(t *testing.T) {
+	tests := []struct {
+		name       string
+		composer   string
+		wantErr    bool
+		errContain string
+	}{
+		{
+			name:     "drupal/core present",
+			composer: `{"require":{"drupal/core":"^10.3"}}`,
+			wantErr:  false,
+		},
+		{
+			name:     "drupal/core-recommended present",
+			composer: `{"require":{"drupal/core-recommended":"^11.0"}}`,
+			wantErr:  false,
+		},
+		{
+			name:       "neither present",
+			composer:   `{"require":{"some/other":"^1.0"}}`,
+			wantErr:    true,
+			errContain: "drupal/core",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			os.WriteFile(filepath.Join(dir, "composer.json"), []byte(tt.composer), 0o644)
+
+			// Override getwdFn to point to our temp dir.
+			orig := getwdFn
+			getwdFn = func() (string, error) { return dir, nil }
+			defer func() { getwdFn = orig }()
+
+			// Capture stdout.
+			oldStdout := os.Stdout
+			_, w, _ := os.Pipe()
+			os.Stdout = w
+
+			err := RunInit(nil)
+
+			w.Close()
+			os.Stdout = oldStdout
+
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantErr && tt.errContain != "" && !strings.Contains(err.Error(), tt.errContain) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tt.errContain)
+			}
+		})
+	}
+}

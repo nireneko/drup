@@ -915,6 +915,19 @@ func resolveFilePath(agent AgentAdapter, path string) string {
 	case strings.HasPrefix(path, "commands/"):
 		name := strings.TrimPrefix(path, "commands/")
 		return filepath.Join(agent.CommandsDir(), name)
+	case strings.HasPrefix(path, "skills/"):
+		// Strip all leading "skills/" prefixes to avoid nested skills/skills/ paths.
+		rest := path
+		for strings.HasPrefix(rest, "skills/") {
+			rest = strings.TrimPrefix(rest, "skills/")
+		}
+		// Deduplicate SKILL.md appearing as a directory segment (SKILL.md/SKILL.md → SKILL.md).
+		rest = strings.ReplaceAll(rest, "SKILL.md/", "")
+		// If the path ends with SKILL.md, use it directly; otherwise append SKILL.md.
+		if strings.HasSuffix(rest, "SKILL.md") {
+			return filepath.Join(agent.SkillsDir(), rest)
+		}
+		return filepath.Join(agent.SkillsDir(), rest, "SKILL.md")
 	default:
 		return filepath.Join(agent.SkillsDir(), path, "SKILL.md")
 	}

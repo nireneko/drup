@@ -29,7 +29,7 @@ import (
 
 // RunInit verifies the project is a valid Drupal project.
 func RunInit(args []string) error {
-	cwd, err := os.Getwd()
+	cwd, err := getwdFn()
 	if err != nil {
 		return fmt.Errorf("get working directory: %w", err)
 	}
@@ -52,8 +52,15 @@ func RunInit(args []string) error {
 	}
 
 	require, _ := composer["require"].(map[string]interface{})
-	if _, ok := require["drupal/core"]; !ok {
-		return fmt.Errorf("not a Drupal project: drupal/core not found in composer.json require")
+	hasCore := false
+	for _, pkg := range []string{"drupal/core", "drupal/core-recommended"} {
+		if _, ok := require[pkg]; ok {
+			hasCore = true
+			break
+		}
+	}
+	if !hasCore {
+		return fmt.Errorf("not a Drupal project: drupal/core or drupal/core-recommended not found in composer.json require")
 	}
 
 	fmt.Println("Drupal project initialized successfully.")

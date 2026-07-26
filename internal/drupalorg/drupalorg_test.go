@@ -1,6 +1,7 @@
 package drupalorg
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -688,5 +689,95 @@ func TestSearchPatches_StructuredResult_Error(t *testing.T) {
 	}
 	if result.Suggestion == "" {
 		t.Error("Suggestion should not be empty for error status")
+	}
+}
+
+// --- doWithRetry tests (RED) ---
+
+func TestDoWithRetry_SuccessOnFirstAttempt(t *testing.T) {
+	attempts := 0
+	resp, err := doWithRetry(func() (*http.Response, error) {
+		attempts++
+		return &http.Response{StatusCode: 200, Body: http.NoBody}, nil
+	})
+	if err != nil {
+		t.Fatalf("doWithRetry error: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Errorf("StatusCode = %d, want 200", resp.StatusCode)
+	}
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1 (no retries on success)", attempts)
+	}
+}
+
+func TestDoWithRetry_RetryableThenSuccess(t *testing.T) {
+	attempts := 0
+	resp, err := doWithRetry(func() (*http.Response, error) {
+		attempts++
+		if attempts < 2 {
+			return &http.Response{StatusCode: 412, Body: http.NoBody}, nil
+		}
+		return &http.Response{StatusCode: 200, Body: http.NoBody}, nil
+	})
+	if err != nil {
+		t.Fatalf("doWithRetry error: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Errorf("StatusCode = %d, want 200", resp.StatusCode)
+	}
+	if attempts != 2 {
+		t.Errorf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestDoWithRetry_AllAttemptsFail(t *testing.T) {
+	attempts := 0
+	resp, err := doWithRetry(func() (*http.Response, error) {
+		attempts++
+		return &http.Response{StatusCode: 503, Body: http.NoBody}, nil
+	})
+	if err == nil {
+		t.Fatal("expected error after all retries exhausted, got nil")
+	}
+	if resp != nil && resp.StatusCode != 503 {
+		t.Errorf("StatusCode = %d, want 503", resp.StatusCode)
+	}
+	if attempts != 3 {
+		t.Errorf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestDoWithRetry_NonRetryableReturnsImmediately(t *testing.T) {
+	attempts := 0
+	resp, err := doWithRetry(func() (*http.Response, error) {
+		attempts++
+		return &http.Response{StatusCode: 404, Body: http.NoBody}, nil
+	})
+	if err != nil {
+		t.Fatalf("doWithRetry error: %v", err)
+	}
+	if resp.StatusCode != 404 {
+		t.Errorf("StatusCode = %d, want 404", resp.StatusCode)
+	}
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1 (no retries for 404)", attempts)
+	}
+}
+
+func TestDoWithRetry_TransportErrorRetries(t *testing.T) {
+	attempts := 0
+	_, err := doWithRetry(func() (*http.Response, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, fmt.Errorf("timeout")
+		}
+		return &http.Response{StatusCode: 200, Body: http.NoBody}, nil
+	})
+	if err != nil {
+		t.Fatalf("doWithRetry error: %v", err)
+	}
+	if attempts != 3 {
+		t.Errorf("attempts = %d, want 3", attempts)
 	}
 }

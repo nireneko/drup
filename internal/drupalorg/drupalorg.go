@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -24,6 +25,57 @@ func SetHTTPClientForTest(c *http.Client) func() {
 	orig := HTTPClient
 	HTTPClient = c
 	return func() { HTTPClient = orig }
+}
+
+// doWithRetry wraps an HTTP request function with retry logic.
+// 3 attempts max, 500ms base exponential backoff.
+// Retryable: 412, 429, 500, 502, 503, 504, and transport errors.
+func doWithRetry(fn func() (*http.Response, error)) (*http.Response, error) {
+	const maxAttempts = 3
+	const baseDelay = 500 * time.Millisecond
+
+	var lastErr error
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		resp, err := fn()
+		if err != nil {
+			lastErr = err
+			if attempt < maxAttempts {
+				delay := baseDelay * time.Duration(1<<(attempt-1))
+				log.Printf("drupalorg: attempt %d failed: %v, retrying in %v", attempt, err, delay)
+				time.Sleep(delay)
+				continue
+			}
+			return nil, lastErr
+		}
+
+		if !isRetryableStatus(resp.StatusCode) {
+			return resp, nil
+		}
+
+		// Retryable status: close the body before the next attempt to avoid leaking
+		// response bodies and their underlying connections.
+		_ = resp.Body.Close()
+		if attempt < maxAttempts {
+			delay := baseDelay * time.Duration(1<<(attempt-1))
+			log.Printf("drupalorg: attempt %d got HTTP %d, retrying in %v", attempt, resp.StatusCode, delay)
+			time.Sleep(delay)
+		}
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("all %d attempts exhausted", maxAttempts)
+}
+
+// isRetryableStatus returns true for HTTP status codes that should trigger a retry.
+func isRetryableStatus(code int) bool {
+	switch code {
+	case 412, 429, 500, 502, 503, 504:
+		return true
+	}
+	return false
 }
 
 // releaseBaseURL is the template for release-history lookups.
@@ -106,7 +158,9 @@ type apiD7NodeDetail struct {
 // D11 compatibility.
 func CheckRelease(module string) (*ReleaseInfo, error) {
 	url := fmt.Sprintf(releaseBaseURL, module)
-	resp, err := HTTPClient.Get(url)
+	resp, err := doWithRetry(func() (*http.Response, error) {
+		return HTTPClient.Get(url)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("fetch release history for %s: %w", module, err)
 	}
@@ -189,7 +243,9 @@ func deriveBranch(version string) string {
 // Returns patch info entries extracted from the API response.
 func SearchIssuesAPI(module string) ([]PatchInfo, error) {
 	url := fmt.Sprintf(APID7BaseURL, module)
-	resp, err := HTTPClient.Get(url)
+	resp, err := doWithRetry(func() (*http.Response, error) {
+		return HTTPClient.Get(url)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("fetch api-d7 issues for %s: %w", module, err)
 	}
@@ -251,7 +307,9 @@ func SearchPatches(query string) (*PatchSearchResult, error) {
 	}
 
 	// Fall back to HTML scraping.
-	resp, err := HTTPClient.Get(searchURL)
+	resp, err := doWithRetry(func() (*http.Response, error) {
+		return HTTPClient.Get(searchURL)
+	})
 	if err != nil {
 		return &PatchSearchResult{
 			Status:     "error",
@@ -462,7 +520,9 @@ var releaseHistoryVersionURL = "https://updates.drupal.org/release-history/%s/%s
 // FetchReleaseHistory fetches the full release-history XML for a module at a specific Drupal version.
 func FetchReleaseHistory(module, drupalVersion string) (*releaseHistoryFull, error) {
 	url := fmt.Sprintf(releaseHistoryVersionURL, module, drupalVersion)
-	resp, err := HTTPClient.Get(url)
+	resp, err := doWithRetry(func() (*http.Response, error) {
+		return HTTPClient.Get(url)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("fetch release history for %s/%s: %w", module, drupalVersion, err)
 	}
@@ -606,7 +666,9 @@ func ModuleInfo(module string) (*ModuleMetadata, error) {
 
 	// Fetch node data.
 	url := fmt.Sprintf(moduleNodeURL, module)
-	resp, err := HTTPClient.Get(url)
+	resp, err := doWithRetry(func() (*http.Response, error) {
+		return HTTPClient.Get(url)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("fetch module info for %s: %w", module, err)
 	}
@@ -700,7 +762,9 @@ func parseMajor(version string) (int, error) {
 // fetchInfoYML fetches the .info.yml file for a module from git.drupalcode.org.
 func fetchInfoYML(module, branch string) (string, error) {
 	url := fmt.Sprintf("https://git.drupalcode.org/project/%s/-/raw/%s/%s.info.yml", module, branch, module)
-	resp, err := HTTPClient.Get(url)
+	resp, err := doWithRetry(func() (*http.Response, error) {
+		return HTTPClient.Get(url)
+	})
 	if err != nil {
 		return "", fmt.Errorf("fetch info.yml for %s: %w", module, err)
 	}

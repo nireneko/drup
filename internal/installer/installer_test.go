@@ -1451,3 +1451,168 @@ func TestInstall_BackupSkippedWhenUnchanged(t *testing.T) {
 		t.Errorf("backup created on unchanged install: had %d, now %d", backupCount1, backupCount2)
 	}
 }
+
+// --- resolveFilePath tests (RED) ---
+
+func TestResolveFilePath(t *testing.T) {
+	home := t.TempDir()
+
+	tests := []struct {
+		name      string
+		agent     AgentAdapter
+		path      string
+		wantEnd   string // path must end with this suffix
+		wantExact string // if set, must match exactly
+	}{
+		// Sub-skill paths: strip redundant skills/ prefix, no SKILL.md-as-dir.
+		{
+			name:    "opencode nested skills/skills/foo/SKILL.md",
+			agent:   &OpenCodeAdapter{HomeDir: home},
+			path:    "skills/skills/drupal-contrib-patch-writer/SKILL.md/SKILL.md",
+			wantEnd: filepath.Join("skills", "drupal-contrib-patch-writer", "SKILL.md"),
+		},
+		{
+			name:    "opencode single skills/ prefix",
+			agent:   &OpenCodeAdapter{HomeDir: home},
+			path:    "skills/drupal-custom-d11-fixes/SKILL.md",
+			wantEnd: filepath.Join("skills", "drupal-custom-d11-fixes", "SKILL.md"),
+		},
+		{
+			name:    "claude nested skills/skills/foo/SKILL.md",
+			agent:   &ClaudeAdapter{HomeDir: home},
+			path:    "skills/skills/drupal-contrib-patch-writer/SKILL.md/SKILL.md",
+			wantEnd: filepath.Join("skills", "drupal-contrib-patch-writer", "SKILL.md"),
+		},
+		{
+			name:    "codex nested skills/skills/foo/SKILL.md",
+			agent:   &CodexAdapter{HomeDir: home},
+			path:    "skills/skills/drupal-contrib-patch-writer/SKILL.md/SKILL.md",
+			wantEnd: filepath.Join("skills", "drupal-contrib-patch-writer", "SKILL.md"),
+		},
+		// Commands path.
+		{
+			name:    "opencode commands/drup.md",
+			agent:   &OpenCodeAdapter{HomeDir: home},
+			path:    "commands/drup.md",
+			wantEnd: filepath.Join("commands", "drup.md"),
+		},
+		// Top-level SKILL.md.
+		{
+			name:    "top-level SKILL.md",
+			agent:   &OpenCodeAdapter{HomeDir: home},
+			path:    "SKILL.md",
+			wantEnd: filepath.Join("skills", "drup", "SKILL.md"),
+		},
+		// Agents path.
+		{
+			name:    "agents path",
+			agent:   &OpenCodeAdapter{HomeDir: home},
+			path:    "agents/drup-preflight.md",
+			wantEnd: filepath.Join("agents", "drup-preflight.md"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveFilePath(tt.agent, tt.path)
+			if tt.wantExact != "" {
+				if got != tt.wantExact {
+					t.Errorf("resolveFilePath(%q) = %q, want %q", tt.path, got, tt.wantExact)
+				}
+			} else if !strings.HasSuffix(got, tt.wantEnd) {
+				t.Errorf("resolveFilePath(%q) = %q, want suffix %q", tt.path, got, tt.wantEnd)
+			}
+			// Must NOT contain nested skills/skills/ in the result.
+			if strings.Contains(got, filepath.Join("skills", "skills")) {
+				t.Errorf("resolveFilePath(%q) = %q, contains nested skills/skills/", tt.path, got)
+			}
+			// Must NOT have SKILL.md as a directory component (SKILL.md/SKILL.md).
+			if strings.Contains(got, filepath.Join("SKILL.md", "SKILL.md")) {
+				t.Errorf("resolveFilePath(%q) = %q, contains SKILL.md/SKILL.md", tt.path, got)
+			}
+		})
+	}
+}
+
+// --- Task 3.4: Slash command integration test ---
+
+func TestInstall_OpenCodeWritesCommands(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o755)
+
+	orig := homeDir
+	homeDir = func() (string, error) { return home, nil }
+	defer func() { homeDir = orig }()
+
+	origCWD := getCWD
+	getCWD = func() (string, error) { return home, nil }
+	defer func() { getCWD = origCWD }()
+
+	agents := DetectAgents()
+	if len(agents) == 0 {
+		t.Fatal("no agents detected")
+	}
+
+	files := map[string]string{
+		"SKILL.md":          "# Test\n",
+		"commands/drup.md":  "---\ndescription: test\n---\ntest command\n",
+	}
+
+	_, err := Install(agents, "/usr/local/bin/drup", files)
+	if err != nil {
+		t.Fatalf("Install error: %v", err)
+	}
+
+	// Verify command file was written.
+	cmdPath := filepath.Join(home, ".config", "opencode", "commands", "drup.md")
+	if _, err := os.Stat(cmdPath); os.IsNotExist(err) {
+		t.Errorf("command file not written to %s", cmdPath)
+	}
+
+	content, _ := os.ReadFile(cmdPath)
+	if !strings.Contains(string(content), "test command") {
+		t.Errorf("command file content = %q, want it to contain 'test command'", string(content))
+	}
+}
+
+func TestInstall_ClaudeDoesNotWriteCommands(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
+
+	orig := homeDir
+	homeDir = func() (string, error) { return home, nil }
+	defer func() { homeDir = orig }()
+
+	origCWD := getCWD
+	getCWD = func() (string, error) { return home, nil }
+	defer func() { getCWD = origCWD }()
+
+	agents := DetectAgents()
+	// Filter to only Claude.
+	var claudeAgents []AgentAdapter
+	for _, a := range agents {
+		if a.ID() == "claude" {
+			claudeAgents = append(claudeAgents, a)
+		}
+	}
+	if len(claudeAgents) == 0 {
+		t.Fatal("Claude not detected")
+	}
+
+	files := map[string]string{
+		"SKILL.md":          "# Test\n",
+		"commands/drup.md":  "---\ndescription: test\n---\ntest command\n",
+	}
+
+	_, err := Install(claudeAgents, "/usr/local/bin/drup", files)
+	if err != nil {
+		t.Fatalf("Install error: %v", err)
+	}
+
+	// Claude has no CommandsDir — WriteCommand is a no-op.
+	// Verify no commands directory was created under .claude.
+	cmdDir := filepath.Join(home, ".claude", "commands")
+	if _, err := os.Stat(cmdDir); !os.IsNotExist(err) {
+		t.Errorf("Claude should not have a commands directory, but %s exists", cmdDir)
+	}
+}
