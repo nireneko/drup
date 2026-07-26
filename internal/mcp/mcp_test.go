@@ -120,8 +120,8 @@ func TestServer_ListTools(t *testing.T) {
 	if !ok {
 		t.Fatal("missing tools array in result")
 	}
-	if len(tools) != 20 {
-		t.Errorf("len(tools) = %d, want 20", len(tools))
+	if len(tools) != 21 {
+		t.Errorf("len(tools) = %d, want 21", len(tools))
 	}
 }
 
@@ -244,5 +244,152 @@ func TestServer_ListTools_ScanToolSchema(t *testing.T) {
 	}
 	if !found {
 		t.Error("scan tool required array does not include project_path")
+	}
+}
+
+// --- Wiring-symmetry invariant tests ---
+//
+// These tests enforce the invariants documented in docs/mcp-tools.md:
+//   - §1 directive 6 (every registered tool must appear in defaultTools() AND toolRegistry)
+//   - §6, §7 (backup tools are intentionally NOT in defaultTools() — reverse asymmetry
+//     that keeps them out of tools/list when WireMCPTools has not run)
+//
+// A failure here means somebody added a real handler without updating the stubs or
+// schemas (or broke the documented intentional asymmetry). Fix it and update docs.
+
+// TestServer_WiringSymmetryEveryDefaultToolHasSchema asserts that every tool
+// exposed through defaultTools() has a matching JSON Schema entry in
+// toolRegistry so clients receive a non-empty inputSchema on tools/list.
+// Two independent assertions: (a) the schema exists, (b) its Properties map is
+// non-empty. Adding a 5th tool without a property will fail (b); adding a 6th
+// tool without a schema will fail (a).
+func TestServer_WiringSymmetryEveryDefaultToolHasSchema(t *testing.T) {
+	defaults := defaultTools()
+	for name := range defaults {
+		schema, ok := toolRegistry[name]
+		if !ok {
+			t.Errorf("tool %q is in defaultTools() but missing from toolRegistry — clients will receive empty inputSchema. Update internal/mcp/server.go::toolRegistry.", name)
+			continue
+		}
+		if len(schema.Properties) == 0 {
+			t.Errorf("tool %q has empty Properties in toolRegistry — every tool must declare at least one argument", name)
+		}
+	}
+}
+
+// backupToolPrefix identifies tools that are intentionally reverse-asymmetric:
+// they have a real handler (WireMCPTools) and a schema (toolRegistry) but no
+// stub (defaultTools). The test below treats any name with this prefix as
+// exempt from the forward symmetry rule. See docs/mcp-tools.md §6 + §7.
+const backupToolPrefix = "test_backup_"
+
+// TestServer_WiringSymmetryOnlyBackupToolsAreReverseAsymmetric is the
+// pattern-based version of the previous hardcoded list: for every name in
+// toolRegistry that is NOT in defaultTools(), the name MUST begin with
+// backupToolPrefix. If a future tool is added to toolRegistry without a stub
+// and without the backup_ prefix, this test catches it.
+func TestServer_WiringSymmetryOnlyBackupToolsAreReverseAsymmetric(t *testing.T) {
+	defaults := defaultTools()
+	for name, schema := range toolRegistry {
+		if _, inDefaults := defaults[name]; inDefaults {
+			continue
+		}
+		if !strings.HasPrefix(name, backupToolPrefix) {
+			t.Errorf("tool %q is in toolRegistry but NOT in defaultTools() and does not have the %q prefix. Either add it to defaultTools() (forward symmetry) or rename it so it has the backup prefix (documented reverse asymmetry). Update docs/mcp-tools.md §6 if a new exception is intentional.", name, backupToolPrefix)
+			continue
+		}
+		// Reverse-asymmetric backup tools must still require project_path so
+		// even their non-wired path is safe (empty handler would still get
+		// validated by the schema).
+		if len(schema.Required) == 0 {
+			t.Errorf("backup tool %q has empty Required list in toolRegistry — must at least require project_path", name)
+		}
+	}
+}
+
+// TestServer_WiringSymmetryCleanupToolIsSymmetric guards the fix that
+// re-introduced `cleanup` to defaultTools() and toolRegistry. Both must stay
+// in sync; if either is dropped, this test fails.
+func TestServer_WiringSymmetryCleanupToolIsSymmetric(t *testing.T) {
+	defaults := defaultTools()
+	if _, ok := defaults["cleanup"]; !ok {
+		t.Error("cleanup is missing from defaultTools() — agents will see the stub return empty results in non-wired contexts")
+	}
+	schema, ok := toolRegistry["cleanup"]
+	if !ok {
+		t.Fatal("cleanup is missing from toolRegistry — clients will receive empty inputSchema")
+	}
+	if _, ok := schema.Properties["project_path"]; !ok {
+		t.Error("cleanup schema missing project_path property")
+	}
+	if _, ok := schema.Properties["validate_passed"]; !ok {
+		t.Error("cleanup schema missing validate_passed property")
+	}
+	requiredHas := func(name string) bool {
+		for _, r := range schema.Required {
+			if r == name {
+				return true
+			}
+		}
+		return false
+	}
+	if !requiredHas("project_path") {
+		t.Error("cleanup schema missing project_path in Required array")
+	}
+	if !requiredHas("validate_passed") {
+		t.Error("cleanup schema missing validate_passed in Required array")
+	}
+}
+
+// runtimeBackupNames mirrors the 4 backup tool names registered by
+// internal/app.WireMCPTools in production. The next test uses this list to
+// simulate the production wiring without depending on the internal/app
+// package (mcp_test.go must stay package-pure for the transport-layer tests).
+var runtimeBackupNames = []string{
+	"test_backup_create",
+	"test_backup_list",
+	"test_backup_restore",
+	"test_backup_delete",
+}
+
+// TestServer_PostWireUpCountIs25 asserts that after the production-style
+// registration of the 4 backup tools, tools/list reports 25 tools (the 21
+// default stubs + 4 reverse-asymmetric backup tools). This locks the runtime
+// count that docs/mcp-tools.md §1 advertises.
+func TestServer_PostWireUpCountIs25(t *testing.T) {
+	req := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/list",
+	}
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+
+	// Dump handler: returns valid empty JSON so the registered tool is dispatchable.
+	dummy := func(args json.RawMessage) (json.RawMessage, error) {
+		return json.Marshal(map[string]interface{}{})
+	}
+	for _, name := range runtimeBackupNames {
+		server.RegisterTool(name, dummy)
+	}
+
+	if err := server.handleRequest(req); err != nil {
+		t.Fatalf("handleRequest error: %v", err)
+	}
+
+	var resp JSONRPCResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response JSON: %v", err)
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("invalid result: %v", err)
+	}
+	tools, ok := result["tools"].([]interface{})
+	if !ok {
+		t.Fatal("missing tools array in result")
+	}
+	if len(tools) != 25 {
+		t.Errorf("post-wire-up tool count = %d, want 25 (21 default + 4 backup)", len(tools))
 	}
 }

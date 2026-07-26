@@ -1554,8 +1554,8 @@ func TestInstall_OpenCodeWritesCommands(t *testing.T) {
 	}
 
 	files := map[string]string{
-		"SKILL.md":          "# Test\n",
-		"commands/drup.md":  "---\ndescription: test\n---\ntest command\n",
+		"SKILL.md":         "# Test\n",
+		"commands/drup.md": "---\ndescription: test\n---\ntest command\n",
 	}
 
 	_, err := Install(agents, "/usr/local/bin/drup", files)
@@ -1600,8 +1600,8 @@ func TestInstall_ClaudeDoesNotWriteCommands(t *testing.T) {
 	}
 
 	files := map[string]string{
-		"SKILL.md":          "# Test\n",
-		"commands/drup.md":  "---\ndescription: test\n---\ntest command\n",
+		"SKILL.md":         "# Test\n",
+		"commands/drup.md": "---\ndescription: test\n---\ntest command\n",
 	}
 
 	_, err := Install(claudeAgents, "/usr/local/bin/drup", files)

@@ -1,13 +1,28 @@
+// Package mcp implements the MCP (Model Context Protocol) transport layer
+// over stdio JSON-RPC 2.0. The handlers in this file are non-functional
+// placeholders. They are intentionally overridable via Server.RegisterTool:
+//
+//   - In production, internal/app.WireMCPTools installs the real handlers
+//     (realHandleScan, realHandleComposerRequire, ...) which perform the
+//     actual work — drush, composer, rector, Drupal.org HTTP, etc.
+//   - In tests or when WireMCPTools is NOT called, these stubs keep the
+//     server crash-free so tools/list still produces a valid catalog.
+//
+// If you need real behavior, never edit this file. Implement it in
+// internal/app/mcp_tools.go and register it with s.RegisterTool(name, ...).
 package mcp
 
 import (
 	"encoding/json"
 )
 
-// defaultTools returns the 20 MCP tool handlers (7 existing + 10 prior + 3 core-upgrade/patch-reconcile).
+// defaultTools returns the placeholder handlers exposed before
+// internal/app.WireMCPTools overrides them. Every entry must also be
+// registered as a real handler by WireMCPTools; mirror the list in
+// docs/mcp-tools.md "Tool Dictionary".
 func defaultTools() map[string]ToolHandler {
 	return map[string]ToolHandler{
-		// Existing tools.
+		// Core pipeline tools.
 		"scan":          handleScan,
 		"autofix":       handleAutofix,
 		"contrib_check": handleContribCheck,
@@ -15,34 +30,27 @@ func defaultTools() map[string]ToolHandler {
 		"apply_patch":   handleApplyPatch,
 		"validate":      handleValidate,
 		"create_patch":  handleCreatePatch,
-		// New tools.
-		"detect_env":            handleDetectEnv,
-		"composer_require":      handleComposerRequire,
-		"drush_exec":            handleDrushExec,
-		"contrib_upgrade_path":  handleContribUpgradePath,
-		"upgrade_scan":          handleUpgradeScan,
-		"patch_status":          handlePatchStatus,
-		"patch_rollback":        handlePatchRollback,
+		// Foundation tools.
+		"detect_env":       handleDetectEnv,
+		"composer_require": handleComposerRequire,
+		"drush_exec":       handleDrushExec,
+		// Upgrade intelligence.
+		"contrib_upgrade_path": handleContribUpgradePath,
+		"upgrade_scan":         handleUpgradeScan,
+		// Patch lifecycle.
+		"patch_status":   handlePatchStatus,
+		"patch_rollback": handlePatchRollback,
+		// Reporting and info.
 		"generate_report":       handleGenerateReport,
 		"module_info":           handleModuleInfo,
 		"drupal_version_matrix": handleDrupalVersionMatrix,
-		"core_upgrade_check":    handleCoreUpgradeCheck,
-		"core_upgrade_apply":    handleCoreUpgradeApply,
-		"patch_reconcile":       handlePatchReconcile,
+		// Core upgrade / patch reconcile.
+		"core_upgrade_check": handleCoreUpgradeCheck,
+		"core_upgrade_apply": handleCoreUpgradeApply,
+		"patch_reconcile":    handlePatchReconcile,
+		// Post-pipeline utility.
+		"cleanup": handleCleanup,
 	}
-}
-
-func handleTestBackupCreate(args json.RawMessage) (json.RawMessage, error) {
-	return json.Marshal(map[string]interface{}{"error": "not wired"})
-}
-func handleTestBackupList(args json.RawMessage) (json.RawMessage, error) {
-	return json.Marshal([]interface{}{})
-}
-func handleTestBackupRestore(args json.RawMessage) (json.RawMessage, error) {
-	return json.Marshal(map[string]interface{}{"restored": false})
-}
-func handleTestBackupDelete(args json.RawMessage) (json.RawMessage, error) {
-	return json.Marshal(map[string]interface{}{"deleted": false})
 }
 
 func handleScan(args json.RawMessage) (json.RawMessage, error) {
@@ -391,6 +399,23 @@ func handlePatchReconcile(args json.RawMessage) (json.RawMessage, error) {
 		"newer_patches":   []interface{}{},
 		"is_still_needed": false,
 		"recommendation":  "",
+	}
+	return json.Marshal(result)
+}
+
+func handleCleanup(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath    string `json:"project_path"`
+		ValidatePassed bool   `json:"validate_passed"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	result := map[string]interface{}{
+		"success":          false,
+		"uninstalled":      []string{},
+		"reverted_patches": []string{},
+		"stderr":           "not implemented",
 	}
 	return json.Marshal(result)
 }

@@ -129,7 +129,7 @@ All 3 agents share the same MCP configuration. The `.mcp.json` (or `mcp.json`) f
 }
 ```
 
-The MCP server communicates over **stdio** (JSON-RPC 2.0). No port needed, no network needed — the agent launches the `drup mcp` process and communicates via stdin/stdout. The 20 exposed tools are documented in [MCP Tools](#mcp-tools) and in [`docs/mcp-tools.md`](docs/mcp-tools.md).
+The MCP server communicates over **stdio** (JSON-RPC 2.0). No port needed, no network needed — the agent launches the `drup mcp` process and communicates via stdin/stdout. The 25 exposed tools are documented in [MCP Tools](#mcp-tools) and in [`docs/mcp-tools.md`](docs/mcp-tools.md).
 
 ### Verifying the installation
 
@@ -272,7 +272,7 @@ The binary only does deterministic work. The full flow is executed by an **AI ag
 
 ### The bridge (MCP)
 
-`drup`'s MCP server exposes 20 tools with JSON types and schemas. It's the standard protocol that connects the binary with any compatible agent:
+`drup`'s MCP server exposes 25 tools with JSON types and schemas. It's the standard protocol that connects the binary with any compatible agent:
 
 ```
 Claude Code ───┐
@@ -318,6 +318,16 @@ Codex ─────────┘
 | `core_upgrade_check` | `project_path` | `{ current_version, next_version, composer_patch_preview, supported }` | Read-only: next major version + composer.json patch preview |
 | `core_upgrade_apply` | `project_path, target_version, dry_run` | `{ success, report, rollback_checkpoint, stderr }` | Requires a clean git tree; `dry_run` previews only; on apply, commits a git checkpoint before mutating `composer.json` |
 | `patch_reconcile` | `module_machine_name, current_patch_url` | `{ newer_patches[], is_still_needed, recommendation }` | Analysis-only: is an already-applied patch obsolete, still needed, or superseded? |
+
+### Post-pipeline / Backup Lifecycle (5 added)
+
+| Tool | Input | Output | Purpose |
+|---|---|---|---|
+| `cleanup` | `project_path, validate_passed` | `{ success, uninstalled[], reverted_patches[], stderr }` | Post-pipeline cleanup. Uninstalls `upgrade_status`/`drupal-rector` and reverts temp patches. Refuses when `validate_passed=false` to preserve debugging state. |
+| `test_backup_create` | `project_path` | `backup_id, snapshot` | Creates a local Phase-0 backup. **Required before any mutation tool runs** (`apply_patch`, `core_upgrade_apply`, `patch_rollback`, `composer_require` without dry-run, `create_patch`, `cleanup`). |
+| `test_backup_list` | `project_path` | `[{ backup_id, created_at, ... }]` | Lists existing local backups for a project. |
+| `test_backup_restore` | `project_path, backup_id, confirm` | `{ backup_id, restored }` | Restores a backup. Requires `confirm:true` — refuses silently without it. |
+| `test_backup_delete` | `project_path, backup_id` | `{ backup_id, deleted }` | Deletes a backup. **Never called automatically** — the orchestrator keeps Phase-0 backups intact and only deletes on explicit human request. |
 
 ---
 
@@ -375,17 +385,6 @@ If you don't configure anything, `drup` uses sensible defaults (cheap for mechan
 | `drup version` | Current version |
 
 Global flags: `--json`, `--force` (dirty git), `--dry-run`.
-
----
-
-## Roadmap
-
-| Version | Scope |
-|---|---|
-| **v0.1** ✅ | Go binary: preflight + scan + fix + contrib + report. 72 tests. |
-| v0.2 | Full pipeline with agent skills. Sub-agents with isolation. Working self-upgrade. |
-| v0.3 | Standalone mode with LLM (no external agent). RAG over Drupal change records. |
-| v0.4 | Chained 8→9→10→11. PR creation. CI mode. |
 
 ---
 

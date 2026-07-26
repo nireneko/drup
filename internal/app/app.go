@@ -3,7 +3,12 @@ package app
 import "fmt"
 
 // Version is set at build time via ldflags.
-var Version = "dev"
+// Default value is "dev-version" so any binary not produced by the release
+// pipeline (go build, local installs, dev workflows) self-identifies as a
+// development build. The release pipeline (see .goreleaser.yaml) overrides
+// this with the git tag stripped of the "v" prefix, e.g. tag "v0.2.0"
+// injects "0.2.0".
+var Version = "dev-version"
 
 // Run dispatches CLI commands based on args[0].
 func Run(args []string) error {

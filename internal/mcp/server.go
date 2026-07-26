@@ -232,6 +232,14 @@ var toolRegistry = map[string]toolSchema{
 		},
 		Required: []string{"module_machine_name", "current_patch_url"},
 	},
+	"cleanup": {
+		Description: "Post-pipeline cleanup — uninstall dev modules and revert any temporary patches. Only runs when validate_passed=true.",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path":    {Type: "string", Description: "Absolute path to the Drupal project"},
+			"validate_passed": {Type: "boolean", Description: "If false, cleanup is skipped to preserve debugging state"},
+		},
+		Required: []string{"project_path", "validate_passed"},
+	},
 	"test_backup_create": {
 		Description: "Create a local testing backup of a Drupal project",
 		Properties:  map[string]jsonSchemaProperty{"project_path": {Type: "string", Description: "Absolute Drupal project path"}},

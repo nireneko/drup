@@ -1,5 +1,5 @@
 ---
-name: drupal-upgrade
+name: drup
 description: Automates Drupal 8/9/10 to 11 migration. Full pipeline with preflight checks, rector auto-fix, contrib module patching, custom code refactoring, and atomic validation gates.
 triggers:
   - drup
