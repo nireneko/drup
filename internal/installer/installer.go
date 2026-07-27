@@ -960,10 +960,19 @@ func createTarGz(outputPath, sourceDir string) error {
 		if relPath == "." {
 			return nil
 		}
-		if !info.IsDir() && !info.Mode().IsRegular() {
+		// Symlinks are stored as links; sockets, devices and pipes have no
+		// meaningful content to archive.
+		var linkTarget string
+		if info.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err = os.Readlink(path)
+			if err != nil {
+				return err
+			}
+		} else if !info.IsDir() && !info.Mode().IsRegular() {
 			return nil
 		}
-		header, err := tar.FileInfoHeader(info, "")
+
+		header, err := tar.FileInfoHeader(info, linkTarget)
 		if err != nil {
 			return err
 		}
@@ -973,7 +982,7 @@ func createTarGz(outputPath, sourceDir string) error {
 			return err
 		}
 
-		if info.IsDir() {
+		if info.IsDir() || linkTarget != "" {
 			return nil
 		}
 
@@ -1081,11 +1090,28 @@ func extractTarGz(archivePath, destDir string) error {
 		if target != root && !strings.HasPrefix(target, root+string(filepath.Separator)) {
 			return fmt.Errorf("archive path escape: %s", header.Name)
 		}
-		if header.Typeflag != tar.TypeDir && header.Typeflag != tar.TypeReg {
+		if header.Typeflag != tar.TypeDir && header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeSymlink {
 			return fmt.Errorf("unsupported archive entry: %s", header.Name)
 		}
 
 		switch header.Typeflag {
+		case tar.TypeSymlink:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			// Recreate links only when they stay inside the extraction root, so
+			// a later entry cannot be written through a link into the system.
+			link := filepath.FromSlash(header.Linkname)
+			if filepath.IsAbs(link) {
+				return fmt.Errorf("archive symlink escape: %s -> %s", header.Name, header.Linkname)
+			}
+			resolved := filepath.Clean(filepath.Join(filepath.Dir(target), link))
+			if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
+				return fmt.Errorf("archive symlink escape: %s -> %s", header.Name, header.Linkname)
+			}
+			if err := os.Symlink(link, target); err != nil {
+				return err
+			}
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return err

@@ -1829,3 +1829,56 @@ func TestUninstall_RemovesEverySkillDrupInstalls(t *testing.T) {
 		t.Errorf("unrelated skill was removed: %v", err)
 	}
 }
+
+func TestBackupConfig_PreservesSymlinks(t *testing.T) {
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "SKILL.md"), []byte("# skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("SKILL.md", filepath.Join(srcDir, "alias.md")); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	bDir := t.TempDir()
+	orig := backupDir
+	backupDir = func() string { return bDir }
+	defer func() { backupDir = orig }()
+
+	if err := BackupConfig(srcDir); err != nil {
+		t.Fatalf("BackupConfig error: %v", err)
+	}
+
+	backups := listBackups(bDir, dirBackupPrefix, dirBackupSuffix)
+	if len(backups) != 1 {
+		t.Fatalf("expected 1 backup, got %d", len(backups))
+	}
+
+	dest := t.TempDir()
+	if err := extractTarGz(backups[0], dest); err != nil {
+		t.Fatalf("extractTarGz error: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(dest, "alias.md"))
+	if err != nil {
+		t.Fatalf("symlink missing from backup: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Error("alias.md restored as a regular file, want symlink")
+	}
+}
+
+func TestExtractTarGz_RejectsEscapingSymlink(t *testing.T) {
+	srcDir := t.TempDir()
+	if err := os.Symlink("/etc", filepath.Join(srcDir, "escape")); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
+	if err := createTarGz(archive, srcDir); err != nil {
+		t.Fatalf("createTarGz error: %v", err)
+	}
+
+	err := extractTarGz(archive, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "symlink escape") {
+		t.Errorf("error = %v, want a symlink escape rejection", err)
+	}
+}
