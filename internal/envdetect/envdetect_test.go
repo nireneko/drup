@@ -20,7 +20,7 @@ func TestDetect(t *testing.T) {
 				os.MkdirAll(filepath.Join(dir, ".ddev"), 0o755)
 			},
 			wantEnv:    EnvDdev,
-			wantPrefix: []string{"ddev"},
+			wantPrefix: []string{"ddev", "exec"},
 		},
 		{
 			name: "lando environment",
@@ -63,7 +63,7 @@ func TestDetect(t *testing.T) {
 				os.WriteFile(filepath.Join(dir, ".lando.yml"), []byte("name: test\n"), 0o644)
 			},
 			wantEnv:    EnvDdev,
-			wantPrefix: []string{"ddev"},
+			wantPrefix: []string{"ddev", "exec"},
 		},
 		{
 			name: "docker-compose without drupal → direct if composer.json",

@@ -103,8 +103,11 @@ func detect(projectPath string) *Detection {
 	// 1. .ddev/ directory
 	if info, err := os.Stat(filepath.Join(projectPath, ".ddev")); err == nil && info.IsDir() {
 		return &Detection{
-			Environment:   EnvDdev,
-			CommandPrefix: []string{"ddev"},
+			Environment: EnvDdev,
+			// "ddev exec" instead of "ddev <cmd>": the convenience wrappers
+			// collapse the command's exit code into 1, which hides
+			// upgrade_status exit 3 (findings found) behind a generic failure.
+			CommandPrefix: []string{"ddev", "exec"},
 			DetectedAt:    now,
 		}
 	}
