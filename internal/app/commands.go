@@ -73,6 +73,11 @@ func isScanExitOK(exitCode int) bool {
 	return exitCode == 0 || exitCode == 3
 }
 
+// webRootFor returns the configured docroot directory name.
+func webRootFor(projectPath string) string {
+	return composerutil.ReadWebRoot(projectPath)
+}
+
 // resolveDrupalRoot returns the directory holding modules/ and themes/.
 // Callers pass either the project root (composer.json level) or the docroot,
 // and assuming the wrong one makes a project full of custom code look empty.
@@ -917,10 +922,13 @@ func RunPreflight() error {
 				})
 				allPass = false
 			} else {
+				// Name the file and the backup: this is a mutation of a
+				// tracked file, not just a check that passed.
+				settingsPath := filepath.Join(cwd, webRootFor(cwd), "sites", "default", "settings.php")
 				results = append(results, PreflightResult{
 					Check:   "php84_compat",
 					Pass:    true,
-					Message: "settings.php patched to suppress E_DEPRECATED",
+					Message: fmt.Sprintf("MODIFIED %s: appended error_reporting() to silence PHP 8.4 deprecation notices (original saved as settings.php.bak)", settingsPath),
 				})
 			}
 		}
