@@ -4,7 +4,55 @@ import (
 	"bytes"
 	"io"
 	"os/exec"
+	"sync"
+	"syscall"
 )
+
+// running tracks live child processes so they can be terminated with the
+// process that spawned them. Without this, killing drup (a timeout, Ctrl-C, an
+// agent giving up) leaves drush and composer running inside the container.
+var (
+	runningMu sync.Mutex
+	running   = map[int]*exec.Cmd{}
+)
+
+func trackProcess(cmd *exec.Cmd) {
+	if cmd.Process == nil {
+		return
+	}
+	runningMu.Lock()
+	running[cmd.Process.Pid] = cmd
+	runningMu.Unlock()
+}
+
+func untrackProcess(cmd *exec.Cmd) {
+	if cmd.Process == nil {
+		return
+	}
+	runningMu.Lock()
+	delete(running, cmd.Process.Pid)
+	runningMu.Unlock()
+}
+
+// KillChildren terminates every running child process group. Call it before
+// exiting on a signal so long analyses do not outlive the command.
+func KillChildren() {
+	runningMu.Lock()
+	cmds := make([]*exec.Cmd, 0, len(running))
+	for _, cmd := range running {
+		cmds = append(cmds, cmd)
+	}
+	running = map[int]*exec.Cmd{}
+	runningMu.Unlock()
+
+	for _, cmd := range cmds {
+		if cmd.Process == nil {
+			continue
+		}
+		// Negative pid signals the whole process group.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	}
+}
 
 // commandRunner abstracts command execution for testability.
 type commandRunner interface {
@@ -13,7 +61,10 @@ type commandRunner interface {
 
 // execCommand creates a commandRunner. Package-level var for test overrides.
 var execCommand = func(cmd string, args ...string) commandRunner {
-	return &realCmd{cmd: exec.Command(cmd, args...)}
+	c := exec.Command(cmd, args...)
+	// Own process group: lets the whole tree be signalled at once.
+	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return &realCmd{cmd: c}
 }
 
 // realCmd wraps exec.Cmd to implement commandRunner.
@@ -26,7 +77,12 @@ func (r *realCmd) Output() (stdout, stderr string, exitCode int, err error) {
 	r.cmd.Stdout = &stdoutBuf
 	r.cmd.Stderr = &stderrBuf
 
-	err = r.cmd.Run()
+	if err = r.cmd.Start(); err != nil {
+		return "", "", -1, err
+	}
+	trackProcess(r.cmd)
+	err = r.cmd.Wait()
+	untrackProcess(r.cmd)
 	stdout = stdoutBuf.String()
 	stderr = stderrBuf.String()
 

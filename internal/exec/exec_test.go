@@ -2,6 +2,7 @@ package exec
 
 import (
 	"testing"
+	"time"
 )
 
 func TestRun_CapturesStdout(t *testing.T) {
@@ -191,5 +192,34 @@ func TestRun_OverriddenExecCommand(t *testing.T) {
 	}
 	if exitCode != 0 {
 		t.Errorf("exit code = %d, want 0", exitCode)
+	}
+}
+
+// A killed drup must not leave drush or composer running inside the container.
+func TestKillChildren_StopsRunningCommand(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		Run("sleep", "30")
+	}()
+
+	// Wait for the child to be registered.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		runningMu.Lock()
+		n := len(running)
+		runningMu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	KillChildren()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("command survived KillChildren")
 	}
 }
