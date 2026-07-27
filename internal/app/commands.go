@@ -495,25 +495,16 @@ func RunInstall() error {
 		return fmt.Errorf("get binary path: %w", err)
 	}
 
-	// Render templates for each detected agent.
-	for _, agent := range agents {
-		files, err := packaging.Render(agent.ID(), binaryPath)
-		if err != nil {
-			return fmt.Errorf("render templates for %s: %w", agent.ID(), err)
-		}
-		results, err := installer.Install([]installer.AgentAdapter{agent}, binaryPath, files)
-		if err != nil {
-			return fmt.Errorf("install to %s: %w", agent.ID(), err)
-		}
-		printSyncResults(agent.ID(), results)
+	// Render templates for each detected agent. A failure on one agent (for
+	// example a corrupt config file) must not block the remaining agents.
+	agentIDs, failures := installAgents(agents, binaryPath, "install")
+	if len(agentIDs) == 0 {
+		return fmt.Errorf("install failed for every detected agent:\n  %s", strings.Join(failures, "\n  "))
 	}
+	reportInstallFailures(failures)
 
 	// Update state.
 	s, _ := statepkg.Load()
-	agentIDs := make([]string, len(agents))
-	for i, a := range agents {
-		agentIDs[i] = a.ID()
-	}
 	s.InstalledAgents = agentIDs
 	s.Version = Version
 	if err := statepkg.Save(s); err != nil {
@@ -541,25 +532,47 @@ func RunSync() error {
 
 	// Re-install to all previously installed agents.
 	agents := installer.DetectAgents()
-	for _, agent := range agents {
-		files, err := packaging.Render(agent.ID(), binaryPath)
-		if err != nil {
-			return fmt.Errorf("render templates for %s: %w", agent.ID(), err)
-		}
-		results, err := installer.Install([]installer.AgentAdapter{agent}, binaryPath, files)
-		if err != nil {
-			return fmt.Errorf("sync to %s: %w", agent.ID(), err)
-		}
-		printSyncResults(agent.ID(), results)
+	synced, failures := installAgents(agents, binaryPath, "sync")
+	if len(synced) == 0 {
+		return fmt.Errorf("sync failed for every detected agent:\n  %s", strings.Join(failures, "\n  "))
 	}
+	reportInstallFailures(failures)
 
-	// Clear PendingSync flag.
-	s.PendingSync = false
+	// Keep the flag set when an agent still needs a successful sync.
+	s.PendingSync = len(failures) > 0
 	if err := statepkg.Save(s); err != nil {
 		return fmt.Errorf("save state: %w", err)
 	}
 
 	return nil
+}
+
+// installAgents renders and installs assets for each agent independently.
+// It returns the agents that succeeded and a message per agent that failed,
+// so one broken agent config cannot block the others.
+func installAgents(agents []installer.AgentAdapter, binaryPath, action string) (succeeded []string, failures []string) {
+	for _, agent := range agents {
+		files, err := packaging.Render(agent.ID(), binaryPath)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: render templates: %v", agent.ID(), err))
+			continue
+		}
+		results, err := installer.Install([]installer.AgentAdapter{agent}, binaryPath, files)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %s: %v", agent.ID(), action, err))
+			continue
+		}
+		printSyncResults(agent.ID(), results)
+		succeeded = append(succeeded, agent.ID())
+	}
+	return succeeded, failures
+}
+
+// reportInstallFailures warns about skipped agents without failing the run.
+func reportInstallFailures(failures []string) {
+	for _, f := range failures {
+		fmt.Fprintf(os.Stderr, "Warning: skipped %s\n", f)
+	}
 }
 
 // printSyncResults displays per-file sync status grouped by agent.

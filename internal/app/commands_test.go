@@ -15,6 +15,7 @@ import (
 
 	"github.com/nireneko/drup/internal/envdetect"
 	drupexec "github.com/nireneko/drup/internal/exec"
+	"github.com/nireneko/drup/internal/installer"
 	"github.com/nireneko/drup/internal/scan"
 	statepkg "github.com/nireneko/drup/internal/state"
 	"github.com/nireneko/drup/internal/update"
@@ -1794,5 +1795,30 @@ func TestRunInit(t *testing.T) {
 				t.Errorf("error = %q, want it to contain %q", err.Error(), tt.errContain)
 			}
 		})
+	}
+}
+
+func TestInstallAgents_IsolatesFailingAgent(t *testing.T) {
+	home := t.TempDir()
+	// A corrupt Claude config must not stop the remaining agents.
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{ "mcpServers": { broken`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	agents := []installer.AgentAdapter{
+		&installer.ClaudeAdapter{HomeDir: home},
+		&installer.CodexAdapter{HomeDir: home},
+	}
+
+	succeeded, failures := installAgents(agents, filepath.Join(home, "bin", "drup"), "install")
+
+	if len(succeeded) != 1 || succeeded[0] != "codex" {
+		t.Errorf("succeeded = %v, want [codex]", succeeded)
+	}
+	if len(failures) != 1 || !strings.Contains(failures[0], "claude") {
+		t.Errorf("failures = %v, want one claude failure", failures)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".codex", "skills", "drup", "SKILL.md")); err != nil {
+		t.Errorf("codex assets not written: %v", err)
 	}
 }
