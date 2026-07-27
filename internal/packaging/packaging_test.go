@@ -36,6 +36,18 @@ func TestRender_Codex(t *testing.T) {
 	if _, ok := files["SKILL.md"]; !ok {
 		t.Error("missing SKILL.md for codex")
 	}
+	if _, ok := files["mcp.json"]; !ok {
+		t.Error("missing MCP template for codex")
+	}
+}
+
+func TestValidateCodexSkill(t *testing.T) {
+	if err := validateCodexSkill("SKILL.md", "---\nname: test\ndescription: test\n---\n# Test\n"); err != nil {
+		t.Fatalf("valid Codex skill rejected: %v", err)
+	}
+	if err := validateCodexSkill("SKILL.md", "# Test\n"); err == nil {
+		t.Fatal("invalid Codex skill accepted")
+	}
 }
 
 func TestRender_UnsupportedPlatform(t *testing.T) {
@@ -133,6 +145,18 @@ func TestRender_AgentFiles(t *testing.T) {
 			if agents == 0 {
 				t.Errorf("platform %s should include orchestrator agent files", platform)
 			}
+			if platform == "codex" {
+				for key, content := range files {
+					if strings.HasPrefix(key, "agents/") {
+						if !strings.HasSuffix(key, ".toml") {
+							t.Errorf("Codex agent %s must be installed as TOML", key)
+						}
+						if !strings.Contains(content, "developer_instructions = '''") {
+							t.Errorf("Codex agent %s lacks developer_instructions", key)
+						}
+					}
+				}
+			}
 		})
 	}
 }
@@ -142,12 +166,8 @@ func TestRender_ClaudeBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
-	content, ok := files["CLAUDE.md"]
-	if !ok {
-		t.Fatal("missing CLAUDE.md bootstrap for claude")
-	}
-	if !strings.Contains(content, "SKILL.md") {
-		t.Error("CLAUDE.md must reference SKILL.md")
+	if _, ok := files["CLAUDE.md"]; ok {
+		t.Error("global Claude install must not overwrite project CLAUDE.md")
 	}
 }
 
@@ -156,12 +176,8 @@ func TestRender_CodexBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
-	content, ok := files["copilot-instructions.md"]
-	if !ok {
-		t.Fatal("missing copilot-instructions.md bootstrap for codex")
-	}
-	if !strings.Contains(content, "SKILL.md") {
-		t.Error("copilot-instructions.md must reference SKILL.md")
+	if _, ok := files["copilot-instructions.md"]; ok {
+		t.Error("global Codex install must not overwrite project instructions")
 	}
 }
 
@@ -170,9 +186,10 @@ func TestRender_BootstrapSkillPathSubstitution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
-	content := files["CLAUDE.md"]
-	if strings.Contains(content, "{{SKILL_PATH}}") {
-		t.Error("CLAUDE.md should have {{SKILL_PATH}} substituted")
+	for path, content := range files {
+		if strings.Contains(content, "{{SKILL_PATH}}") {
+			t.Errorf("%s should have {{SKILL_PATH}} substituted", path)
+		}
 	}
 }
 
