@@ -71,6 +71,7 @@ func WireMCPTools(s *mcp.Server) {
 	s.RegisterTool("core_upgrade_apply", realHandleCoreUpgradeApply)
 	s.RegisterTool("patch_reconcile", realHandlePatchReconcile)
 	s.RegisterTool("cleanup", realHandleCleanup)
+	s.RegisterTool("custom_compat_fix", realHandleCustomCompatFix)
 	s.RegisterTool("test_backup_create", realHandleTestBackupCreate)
 	s.RegisterTool("test_backup_list", realHandleTestBackupList)
 	s.RegisterTool("test_backup_restore", realHandleTestBackupRestore)
@@ -1388,6 +1389,30 @@ func realHandleGenerateReport(args json.RawMessage) (json.RawMessage, error) {
 		result["markdown_report_path"] = mdPath
 	}
 
+	return json.Marshal(result)
+}
+
+func realHandleCustomCompatFix(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath   string `json:"project_path"`
+		TargetVersion string `json:"target_version,omitempty"`
+		DryRun        bool   `json:"dry_run,omitempty"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if params.ProjectPath == "" {
+		return nil, fmt.Errorf("project_path is required")
+	}
+	target := params.TargetVersion
+	if target == "" {
+		target = "11"
+	}
+
+	result, err := BumpCustomCoreCompat(params.ProjectPath, target, params.DryRun)
+	if err != nil {
+		return nil, err
+	}
 	return json.Marshal(result)
 }
 

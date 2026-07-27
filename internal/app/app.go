@@ -67,6 +67,8 @@ func Run(args []string) error {
 		return RunValidate(args[1:])
 	case "apply-patch":
 		return RunApplyPatch(args[1:])
+	case "compat-fix":
+		return RunCompatFix(args[1:])
 	case "upgrade-core":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: drup upgrade-core <target-version> [--dry-run]")
@@ -116,6 +118,7 @@ Commands:
   upgrade               Self-update binary
   preflight             Check project readiness for upgrade automation
   validate <path> [mod] Re-run scan and return error state (exit 1 if errors)
+  compat-fix <path>     Declare Drupal 11 support in custom modules and themes
   apply-patch <url> <p> Download and apply a patch to the project
 	upgrade-core <ver>    Upgrade Drupal core to target major version
 	 test-backup-create <p> Create a testing backup before mutations

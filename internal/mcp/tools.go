@@ -49,8 +49,26 @@ func defaultTools() map[string]ToolHandler {
 		"core_upgrade_apply": handleCoreUpgradeApply,
 		"patch_reconcile":    handlePatchReconcile,
 		// Post-pipeline utility.
-		"cleanup": handleCleanup,
+		"cleanup":           handleCleanup,
+		"custom_compat_fix": handleCustomCompatFix,
 	}
+}
+
+func handleCustomCompatFix(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath string `json:"project_path"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+
+	// Placeholder — the real handler rewrites core_version_requirement.
+	result := map[string]interface{}{
+		"project_path": params.ProjectPath,
+		"updated":      0,
+		"changes":      []interface{}{},
+	}
+	return json.Marshal(result)
 }
 
 func handleScan(args json.RawMessage) (json.RawMessage, error) {

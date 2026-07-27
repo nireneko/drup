@@ -235,6 +235,15 @@ var toolRegistry = map[string]toolSchema{
 		},
 		Required: []string{"module_machine_name", "current_patch_url"},
 	},
+	"custom_compat_fix": {
+		Description: "Declare support for a target Drupal major in the project's own modules, themes and profiles by widening core_version_requirement. Contrib is never edited in place",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path":   {Type: "string", Description: "Absolute path to the Drupal project"},
+			"target_version": {Type: "string", Description: "Target Drupal major, e.g. 11 (default 11)"},
+			"dry_run":        {Type: "boolean", Description: "Report the rewrites without writing them"},
+		},
+		Required: []string{"project_path"},
+	},
 	"cleanup": {
 		Description: "Post-pipeline cleanup — uninstall dev modules and revert any temporary patches. Only runs when validate_passed=true.",
 		Properties: map[string]jsonSchemaProperty{
