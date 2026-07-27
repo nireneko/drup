@@ -45,6 +45,7 @@ func Render(platform, binaryPath string) (map[string]string, error) {
 		// Global installation must not modify whichever repository happens to
 		// be the current working directory. Skills are discovered from their
 		// native user directories, so project bootstrap files are unnecessary.
+		// The templates are gone; this guard keeps them from creeping back in.
 		if relPath == "CLAUDE.md" || relPath == "copilot-instructions.md" {
 			return nil
 		}
