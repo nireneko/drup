@@ -235,6 +235,31 @@ func checksum(path string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// regenerableDirs are rebuilt from a lockfile rather than restored.
+var regenerableDirs = map[string]bool{
+	"node_modules": true,
+	"vendor":       true,
+}
+
+// isRegenerableDir reports whether a directory can be rebuilt by a package
+// manager. "core" only counts directly under the docroot, never a module's own
+// core/ directory.
+func isRegenerableDir(root, path, name string) bool {
+	if regenerableDirs[name] {
+		return true
+	}
+	if name != "core" {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	// <docroot>/core — one level deep at most.
+	return len(parts) <= 2
+}
+
 func archive(root, dest, excluded string) error {
 	f, err := os.Create(dest)
 	if err != nil {
@@ -255,9 +280,11 @@ func archive(root, dest, excluded string) error {
 			}
 			return nil
 		}
-		// node_modules is a build artifact: huge, regenerable, and full of
-		// symlinks. Backing it up made every real theme fail.
-		if info.IsDir() && info.Name() == "node_modules" {
+		// Skip trees a package manager can rebuild. Archiving vendor/ and
+		// web/core/ pushed a single backup past 4 GB, which makes taking one
+		// before every risky step impractical. composer.lock and
+		// package-lock.json travel with the backup, so they are restorable.
+		if info.IsDir() && isRegenerableDir(root, path, info.Name()) {
 			return filepath.SkipDir
 		}
 		rel, _ := filepath.Rel(root, path)

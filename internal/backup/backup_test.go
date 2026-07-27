@@ -126,3 +126,55 @@ func TestRestoreRequiresConfirmation(t *testing.T) {
 		t.Fatal("restore without confirmation succeeded")
 	}
 }
+
+// A backup that includes vendor/ and web/core/ runs to gigabytes, which stops
+// anyone from taking one before each risky step. Both rebuild from lockfiles.
+func TestArchive_SkipsRegenerableTrees(t *testing.T) {
+	project := t.TempDir()
+	for _, dir := range []string{
+		filepath.Join("web", "core", "lib"),
+		filepath.Join("web", "modules", "custom", "mine"),
+		filepath.Join("web", "themes", "custom", "mine", "node_modules", "pkg"),
+		"vendor/drupal",
+	} {
+		if err := os.MkdirAll(filepath.Join(project, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(project, dir, "f.txt"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(project, "composer.lock"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "files.tar.gz")
+	if err := archive(project, dest, filepath.Join(project, ".drup")); err != nil {
+		t.Fatalf("archive error: %v", err)
+	}
+
+	out := t.TempDir()
+	if err := extract(dest, out); err != nil {
+		t.Fatalf("extract error: %v", err)
+	}
+
+	mustExist := []string{
+		filepath.Join("web", "modules", "custom", "mine", "f.txt"),
+		"composer.lock",
+	}
+	for _, p := range mustExist {
+		if _, err := os.Stat(filepath.Join(out, p)); err != nil {
+			t.Errorf("%s missing from backup: %v", p, err)
+		}
+	}
+	mustSkip := []string{
+		filepath.Join("web", "core", "lib", "f.txt"),
+		filepath.Join("vendor", "drupal", "f.txt"),
+		filepath.Join("web", "themes", "custom", "mine", "node_modules", "pkg", "f.txt"),
+	}
+	for _, p := range mustSkip {
+		if _, err := os.Stat(filepath.Join(out, p)); !os.IsNotExist(err) {
+			t.Errorf("%s should not be archived", p)
+		}
+	}
+}
