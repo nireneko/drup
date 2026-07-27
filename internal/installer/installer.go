@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -73,8 +74,10 @@ func (a *ClaudeAdapter) SkillsDir() string {
 }
 
 func (a *ClaudeAdapter) MCPConfigPath() string {
-	cwd, _ := getCWD()
-	return filepath.Join(cwd, ".mcp.json")
+	// Claude Code stores user-scoped MCP servers in ~/.claude.json. Installing
+	// there makes drup available from every project instead of only the
+	// directory where `drup install` happened to run.
+	return filepath.Join(a.HomeDir, ".claude.json")
 }
 
 func (a *ClaudeAdapter) AgentsDir() string {
@@ -522,6 +525,15 @@ type CodexAdapter struct {
 	HomeDir string
 }
 
+var codexAgentNames = []string{
+	"drup-contrib",
+	"drup-custom",
+	"drup-preflight",
+	"drup-rector",
+	"drup-theme",
+	"drup-validator",
+}
+
 func (a *CodexAdapter) ID() string { return "codex" }
 
 func (a *CodexAdapter) Detect() bool {
@@ -535,7 +547,7 @@ func (a *CodexAdapter) SkillsDir() string {
 }
 
 func (a *CodexAdapter) MCPConfigPath() string {
-	return filepath.Join(a.HomeDir, ".codex", "mcp.json")
+	return filepath.Join(a.HomeDir, ".codex", "config.toml")
 }
 
 func (a *CodexAdapter) AgentsDir() string {
@@ -543,7 +555,8 @@ func (a *CodexAdapter) AgentsDir() string {
 }
 
 func (a *CodexAdapter) CommandsDir() string {
-	return "" // Codex does not support a commands directory
+	// Codex custom prompts are exposed as /prompts:<name>.
+	return filepath.Join(a.HomeDir, ".codex", "prompts")
 }
 
 func (a *CodexAdapter) WriteSkill(name, content string) error {
@@ -563,13 +576,50 @@ func (a *CodexAdapter) WriteAgent(name, content string) error {
 }
 
 func (a *CodexAdapter) WriteCommand(name, content string) error {
-	// Codex does not support custom commands
-	return nil
+	dir := a.CommandsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644)
 }
 
 func (a *CodexAdapter) RenderMCPConfig(snippet string) (string, error) {
-	// Codex writes flat — no merge needed.
-	return snippet, nil
+	var parsed struct {
+		Command    string   `json:"command"`
+		Args       []string `json:"args"`
+		MCPServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(snippet), &parsed); err != nil {
+		return "", fmt.Errorf("invalid Codex MCP snippet: %w", err)
+	}
+	drup, ok := parsed.MCPServers["drup"]
+	if !ok {
+		drup.Command = parsed.Command
+		drup.Args = parsed.Args
+	}
+	if drup.Command == "" {
+		return "", fmt.Errorf("invalid Codex MCP snippet: missing drup command")
+	}
+
+	configPath := a.MCPConfigPath()
+	data, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("read %s: %w", configPath, err)
+	}
+
+	section := "[mcp_servers.drup]\ncommand = " + strconv.Quote(drup.Command) + "\nargs = ["
+	for i, arg := range drup.Args {
+		if i > 0 {
+			section += ", "
+		}
+		section += strconv.Quote(arg)
+	}
+	section += "]\n"
+	config := replaceCodexMCPSection(string(data), section)
+	return replaceCodexAgentSections(config, a.AgentsDir()), nil
 }
 
 func (a *CodexAdapter) WriteMCPConfig(content string) error {
@@ -577,11 +627,7 @@ func (a *CodexAdapter) WriteMCPConfig(content string) error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(a.MCPConfigPath())
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
-	}
-	return os.WriteFile(a.MCPConfigPath(), []byte(merged), 0o644)
+	return writeAtomic(a.MCPConfigPath(), []byte(merged))
 }
 
 func (a *CodexAdapter) RemoveSkill(name string, dryRun bool) (string, error) {
@@ -598,11 +644,19 @@ func (a *CodexAdapter) RemoveSkill(name string, dryRun bool) (string, error) {
 }
 
 func (a *CodexAdapter) RemoveAgent(name string, dryRun bool) (string, error) {
-	// Support glob patterns like "drup-*.md"
-	pattern := filepath.Join(a.AgentsDir(), name)
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return "", err
+	// Current Codex installs use TOML role configs. Also remove legacy Markdown
+	// files left by older drup releases.
+	names := []string{name}
+	if strings.HasSuffix(name, ".md") {
+		names = append(names, strings.TrimSuffix(name, ".md")+".toml")
+	}
+	var matches []string
+	for _, candidate := range names {
+		found, err := filepath.Glob(filepath.Join(a.AgentsDir(), candidate))
+		if err != nil {
+			return "", err
+		}
+		matches = append(matches, found...)
 	}
 	if len(matches) == 0 {
 		return "", nil
@@ -618,12 +672,7 @@ func (a *CodexAdapter) RemoveAgent(name string, dryRun bool) (string, error) {
 }
 
 func (a *CodexAdapter) RemoveCommand(name string, dryRun bool) (string, error) {
-	// Codex does not support custom commands
-	return "", nil
-}
-
-func (a *CodexAdapter) RemoveMCPConfig(dryRun bool) (string, error) {
-	path := a.MCPConfigPath()
+	path := filepath.Join(a.CommandsDir(), name)
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return "", nil
 	}
@@ -633,6 +682,118 @@ func (a *CodexAdapter) RemoveMCPConfig(dryRun bool) (string, error) {
 		}
 	}
 	return path, nil
+}
+
+func (a *CodexAdapter) RemoveMCPConfig(dryRun bool) (string, error) {
+	path := a.MCPConfigPath()
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return "", nil
+	}
+	if dryRun {
+		return path, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	updated := removeCodexMCPSection(string(data))
+	updated = removeCodexAgentSections(updated)
+	if updated == string(data) {
+		return "", nil
+	}
+	if err := writeAtomic(path, []byte(updated)); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// replaceCodexMCPSection updates only drup's TOML table, preserving every
+// other Codex setting and MCP server.
+func replaceCodexMCPSection(config, section string) string {
+	config = removeCodexMCPSection(config)
+	if config != "" && !strings.HasSuffix(config, "\n") {
+		config += "\n"
+	}
+	if config != "" {
+		config += "\n"
+	}
+	return config + section
+}
+
+func replaceCodexAgentSections(config, agentsDir string) string {
+	config = removeCodexAgentSections(config)
+	config = strings.TrimRight(config, "\n")
+	for _, name := range codexAgentNames {
+		if config != "" {
+			config += "\n\n"
+		}
+		config += "[agents." + name + "]\n"
+		config += "description = " + strconv.Quote("Drup "+strings.TrimPrefix(name, "drup-")+" migration agent") + "\n"
+		config += "config_file = " + strconv.Quote(filepath.Join(agentsDir, name+".toml")) + "\n"
+	}
+	return config + "\n"
+}
+
+func removeCodexAgentSections(config string) string {
+	lines := strings.SplitAfter(config, "\n")
+	var kept []string
+	removing := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			name := strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]")
+			removing = false
+			for _, agentName := range codexAgentNames {
+				if name == "agents."+agentName || strings.HasPrefix(name, "agents."+agentName+".") {
+					removing = true
+					break
+				}
+			}
+		}
+		if !removing {
+			kept = append(kept, line)
+		}
+	}
+	return strings.TrimRight(strings.Join(kept, ""), "\n") + "\n"
+}
+
+func removeCodexMCPSection(config string) string {
+	lines := strings.SplitAfter(config, "\n")
+	var kept []string
+	removing := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			name := strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]")
+			removing = name == "mcp_servers.drup" || name == `mcp_servers."drup"` || strings.HasPrefix(name, "mcp_servers.drup.") || strings.HasPrefix(name, `mcp_servers."drup".`)
+		}
+		if !removing {
+			kept = append(kept, line)
+		}
+	}
+	return strings.TrimRight(strings.Join(kept, ""), "\n") + "\n"
+}
+
+func writeAtomic(path string, content []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".drup.*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	return os.Rename(tmpName, path)
 }
 
 // DetectAgents returns all detected agent adapters.
@@ -732,7 +893,6 @@ func createTarGz(outputPath, sourceDir string) error {
 		if relPath == "." {
 			return nil
 		}
-
 		header, err := tar.FileInfoHeader(info, "")
 		if err != nil {
 			return err
@@ -901,7 +1061,7 @@ func resolveFilePath(agent AgentAdapter, path string) string {
 	switch {
 	case path == "SKILL.md":
 		return filepath.Join(agent.SkillsDir(), "drup", "SKILL.md")
-	case path == ".mcp.json":
+	case path == ".mcp.json" || path == "mcp.json":
 		return agent.MCPConfigPath()
 	case path == "CLAUDE.md":
 		projectDir, _ := getCWD()
@@ -936,7 +1096,7 @@ func resolveFilePath(agent AgentAdapter, path string) string {
 // computeIntendedContent returns the content to compare/write for a given file.
 // For .mcp.json, it uses the adapter's RenderMCPConfig to get the post-merge content.
 func computeIntendedContent(agent AgentAdapter, path, content string) (string, error) {
-	if path == ".mcp.json" {
+	if path == ".mcp.json" || path == "mcp.json" {
 		return agent.RenderMCPConfig(content)
 	}
 	return content, nil

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -86,14 +87,40 @@ func TestClaudeAdapter_Paths(t *testing.T) {
 		t.Error("SkillsDir is empty")
 	}
 
-	// Mock CWD to home dir so .mcp.json resolves predictably.
-	origCWD := getCWD
-	getCWD = func() (string, error) { return home, nil }
-	defer func() { getCWD = origCWD }()
-
-	want := filepath.Join(home, ".mcp.json")
+	want := filepath.Join(home, ".claude.json")
 	if got := adapter.MCPConfigPath(); got != want {
 		t.Errorf("MCPConfigPath() = %q, want %q", got, want)
+	}
+}
+
+func TestClaudeAdapter_WriteMCPConfig_UserScopePreservesExisting(t *testing.T) {
+	home := t.TempDir()
+	adapter := &ClaudeAdapter{HomeDir: home}
+	existing := `{"theme":"dark","mcpServers":{"other":{"command":"other"}}}`
+	if err := os.WriteFile(adapter.MCPConfigPath(), []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := adapter.WriteMCPConfig(`{"command":"/usr/local/bin/drup","args":["mcp"]}`); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".claude.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	if config["theme"] != "dark" {
+		t.Error("Claude user config was not preserved")
+	}
+	servers := config["mcpServers"].(map[string]any)
+	if _, ok := servers["other"]; !ok {
+		t.Error("existing Claude MCP server was not preserved")
+	}
+	if _, ok := servers["drup"]; !ok {
+		t.Error("drup was not registered as a user-scoped Claude MCP server")
 	}
 }
 
@@ -509,13 +536,8 @@ func TestClaudeAdapter_RemoveMCPConfig(t *testing.T) {
 	home := t.TempDir()
 	adapter := &ClaudeAdapter{HomeDir: home}
 
-	// Mock CWD to home dir.
-	origCWD := getCWD
-	getCWD = func() (string, error) { return home, nil }
-	defer func() { getCWD = origCWD }()
-
 	// Create MCP config.
-	mcpPath := filepath.Join(home, ".mcp.json")
+	mcpPath := filepath.Join(home, ".claude.json")
 	os.WriteFile(mcpPath, []byte(`{"mcpServers":{"drup":{"command":"drup"}}}`), 0o644)
 
 	// Remove it.
@@ -815,10 +837,10 @@ func TestCodexAdapter_RemoveMCPConfig(t *testing.T) {
 	home := t.TempDir()
 	adapter := &CodexAdapter{HomeDir: home}
 
-	// Create MCP config.
-	mcpPath := filepath.Join(home, ".codex", "mcp.json")
+	// Create a Codex config with another MCP server that must survive.
+	mcpPath := filepath.Join(home, ".codex", "config.toml")
 	os.MkdirAll(filepath.Dir(mcpPath), 0o755)
-	os.WriteFile(mcpPath, []byte(`{"command":"drup"}`), 0o644)
+	os.WriteFile(mcpPath, []byte("model = \"gpt-5\"\n\n[mcp_servers.other]\ncommand = \"other\"\n\n[mcp_servers.drup]\ncommand = \"drup\"\nargs = [\"mcp\"]\n\n[agents.drup-preflight]\nconfig_file = \"agents/drup-preflight.toml\"\n"), 0o644)
 
 	// Remove it.
 	path, err := adapter.RemoveMCPConfig(false)
@@ -829,9 +851,16 @@ func TestCodexAdapter_RemoveMCPConfig(t *testing.T) {
 		t.Error("expected path returned, got empty")
 	}
 
-	// Verify deleted.
-	if _, err := os.Stat(mcpPath); !os.IsNotExist(err) {
-		t.Error("MCP config still exists after RemoveMCPConfig")
+	// Verify only drup was removed.
+	data, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "mcp_servers.drup") || !strings.Contains(string(data), "mcp_servers.other") {
+		t.Error("drup MCP removal did not preserve the rest of config.toml")
+	}
+	if strings.Contains(string(data), "[agents.drup-") {
+		t.Error("drup agent registrations remain after RemoveMCPConfig")
 	}
 
 	// Idempotent.
@@ -841,6 +870,40 @@ func TestCodexAdapter_RemoveMCPConfig(t *testing.T) {
 	}
 	if path2 != "" {
 		t.Errorf("second RemoveMCPConfig should return empty path, got %q", path2)
+	}
+}
+
+func TestCodexAdapter_RenderMCPConfig_PreservesConfig(t *testing.T) {
+	home := t.TempDir()
+	adapter := &CodexAdapter{HomeDir: home}
+	path := adapter.MCPConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("model = \"gpt-5\"\n\n[mcp_servers.other]\ncommand = \"other\"\n\n[mcp_servers.\"drup\"]\ncommand = \"old\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rendered, err := adapter.RenderMCPConfig(`{"mcpServers":{"drup":{"command":"/usr/local/bin/drup","args":["mcp"]}}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`model = "gpt-5"`, `[mcp_servers.other]`, `[mcp_servers.drup]`, `command = "/usr/local/bin/drup"`, `args = ["mcp"]`} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered config missing %q:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, `command = "old"`) {
+		t.Errorf("old drup MCP table was not replaced:\n%s", rendered)
+	}
+	for _, name := range codexAgentNames {
+		if !strings.Contains(rendered, "[agents."+name+"]") {
+			t.Errorf("rendered config does not register %s:\n%s", name, rendered)
+		}
+		wantConfig := filepath.Join(home, ".codex", "agents", name+".toml")
+		if !strings.Contains(rendered, strconv.Quote(wantConfig)) {
+			t.Errorf("rendered config does not point %s at %s", name, wantConfig)
+		}
 	}
 }
 
@@ -903,7 +966,7 @@ func TestUninstall_CallsAllRemoveMethods(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(agentsDir, "drup-contrib.md")); !os.IsNotExist(err) {
 		t.Error("drup-contrib.md still exists after Uninstall")
 	}
-	mcpPath := filepath.Join(home, ".mcp.json")
+	mcpPath := filepath.Join(home, ".claude.json")
 	if _, err := os.Stat(mcpPath); !os.IsNotExist(err) {
 		t.Error("MCP config still exists after Uninstall")
 	}
@@ -1083,19 +1146,15 @@ func TestWriteCommand_ClaudeIsNoop(t *testing.T) {
 	}
 }
 
-func TestWriteCommand_CodexIsNoop(t *testing.T) {
+func TestWriteCommand_CodexWritesPrompt(t *testing.T) {
 	home := t.TempDir()
 	adapter := &CodexAdapter{HomeDir: home}
 
-	// Codex does not support commands directory — WriteCommand should be a no-op.
 	if err := adapter.WriteCommand("drup.md", "# test"); err != nil {
-		t.Fatalf("WriteCommand should not error for Codex: %v", err)
+		t.Fatalf("WriteCommand error: %v", err)
 	}
-
-	// Verify no commands directory was created.
-	cmdDir := filepath.Join(home, ".codex", "commands")
-	if _, err := os.Stat(cmdDir); !os.IsNotExist(err) {
-		t.Errorf("Codex should not create a commands directory, but %s exists", cmdDir)
+	if _, err := os.Stat(filepath.Join(home, ".codex", "prompts", "drup.md")); err != nil {
+		t.Fatalf("Codex prompt was not written: %v", err)
 	}
 }
 
