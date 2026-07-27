@@ -104,8 +104,12 @@ var APID7BaseURL = "https://www.drupal.org/api-d7/node.json?field_project_machin
 
 // ReleaseInfo contains D11 compatibility data for a module.
 type ReleaseInfo struct {
-	Module   string   `json:"module"`
-	HasD11   bool     `json:"has_d11_release"`
+	Module string `json:"module"`
+	HasD11 bool   `json:"has_d11_release"`
+	// Found distinguishes "drupal.org has no D11 release for this project"
+	// from "drupal.org has never heard of it". The second usually means local
+	// code sitting in modules/contrib, and the remedy is the opposite one.
+	Found    bool     `json:"found_on_drupalorg"`
 	Latest   string   `json:"latest_version"`
 	Branches []string `json:"compatible_branches"`
 }
@@ -183,7 +187,7 @@ func CheckRelease(module string) (*ReleaseInfo, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return &ReleaseInfo{Module: module, HasD11: false}, nil
+		return &ReleaseInfo{Module: module, HasD11: false, Found: false, Branches: []string{}}, nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("release history for %s: HTTP %d", module, resp.StatusCode)
@@ -196,7 +200,7 @@ func CheckRelease(module string) (*ReleaseInfo, error) {
 
 	// Unknown projects come back as HTTP 200 with an <error> document.
 	if bytes.Contains(data, []byte("<error>")) {
-		return &ReleaseInfo{Module: module, HasD11: false, Branches: []string{}}, nil
+		return &ReleaseInfo{Module: module, HasD11: false, Found: false, Branches: []string{}}, nil
 	}
 
 	return parseReleaseXML(module, data)
@@ -210,6 +214,7 @@ func parseReleaseXML(module string, data []byte) (*ReleaseInfo, error) {
 
 	info := &ReleaseInfo{
 		Module:   module,
+		Found:    true,
 		Branches: []string{},
 	}
 
