@@ -99,3 +99,21 @@ func TestParseCheckstyle_SkipsLeadingNotices(t *testing.T) {
 		t.Errorf("TotalErrs = %d, want 3", result.TotalErrs)
 	}
 }
+
+func TestParseCheckstyle_InformationalRowsAreNotErrors(t *testing.T) {
+	in := `<?xml version="1.0"?><checkstyle><file name="modules/custom/x/x.module">` +
+		`<error line="1" message="real finding" severity="error"/>` +
+		`<error line="2" message="just so you know" severity="info"/>` +
+		`</file></checkstyle>`
+
+	result, err := ParseCheckstyle(strings.NewReader(in))
+	if err != nil {
+		t.Fatalf("ParseCheckstyle error: %v", err)
+	}
+	if result.TotalErrs != 1 {
+		t.Errorf("TotalErrs = %d, want 1 (info rows are not errors)", result.TotalErrs)
+	}
+	if len(result.Modules[0].Errors) != 2 {
+		t.Errorf("both rows should still be reported, got %d", len(result.Modules[0].Errors))
+	}
+}
