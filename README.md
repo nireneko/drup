@@ -5,7 +5,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.25.10+-00ADD8?logo=go&logoColor=white" alt="Go">
   <img src="https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey" alt="Platform">
-  <img src="https://img.shields.io/badge/tests-163%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-498%20passing-brightgreen" alt="Tests">
 </p>
 
 ---
@@ -22,7 +22,9 @@ Migrating a Drupal site to the next major version is a **mechanical but manual**
 6. Validate that everything compiles
 7. Generate a report
 
-`drup` automates all of this. **80% of the work is deterministic** (rector, releases, patches) and is resolved without spending a single AI token. The remaining 20% (complex custom code) is handled by an AI agent with validation and retry tooling.
+`drup` automates all of this. The deterministic parts — environment detection, release lookups, patch generation, compatibility declarations — cost no AI tokens. The rest is handed to an AI agent with validation and retry tooling.
+
+How much rector alone resolves depends entirely on the project. On a production Drupal 10.5.10 site with ten custom modules, it changed 35 files and cleared one finding out of 1,913: most of what `upgrade_status` reports is advisory ("Check manually") rather than mechanically fixable. Measure your own project with `drup scan` before assuming a ratio.
 
 ```bash
 # Full pipeline with a single command:
@@ -98,7 +100,7 @@ When running `drup install`, the binary detects which agents you have installed 
 | | `~/.claude/agents/drup-custom.md` | Custom code: refactor with retry and escalation |
 | | `~/.claude/agents/drup-theme.md` | Themes: twig/.theme deprecations |
 | | `~/.claude/agents/drup-validator.md` | Validator: owns every `scan`/`validate`/`upgrade_scan` call — the only agent allowed to confirm a gate; generates the final report |
-| **MCP server** | `~/.claude/.mcp.json` | Registers `drup mcp` as an MCP server with 20 tools |
+| **MCP server** | `~/.claude.json` | Registers `drup mcp` as a user-scoped MCP server with 26 tools |
 
 **Usage**: open Claude Code in the Drupal project and run:
 
@@ -145,7 +147,7 @@ All 3 agents share the same MCP configuration. The `.mcp.json` (or `mcp.json`) f
 }
 ```
 
-The MCP server communicates over **stdio** (JSON-RPC 2.0). No port needed, no network needed — the agent launches the `drup mcp` process and communicates via stdin/stdout. The 25 exposed tools are documented in [MCP Tools](#mcp-tools) and in [`docs/mcp-tools.md`](docs/mcp-tools.md).
+The MCP server communicates over **stdio** (JSON-RPC 2.0). No port needed, no network needed — the agent launches the `drup mcp` process and communicates via stdin/stdout. The 26 exposed tools are documented in [MCP Tools](#mcp-tools) and in [`docs/mcp-tools.md`](docs/mcp-tools.md).
 
 ### Verifying the installation
 
@@ -174,7 +176,7 @@ drup scan /path/to/project
 
 # 3. Fix: full pipeline
 drup fix /path/to/project
-#    ├── runs drupal-rector (autofix ~80%)
+#    ├── runs drupal-rector (deterministic, effect varies by project)
 #    ├── for each contrib module: looks for D11 release or RTBC patch → applies → commit
 #    ├── for each custom file: shows errors for the agent to resolve
 #    └── final validation → report
@@ -196,6 +198,8 @@ The `/drup` skill runs the full pipeline in 7 phases with **validation gates**: 
 ```bash
 drup contrib check webform       # does it have a D11-compatible release?
 drup issue patches 3412345       # patches from a Drupal.org issue (clean JSON)
+drup compat-fix /path --dry-run  # which custom extensions still exclude D11?
+drup compat-fix /path            # declare D11 support in your own modules/themes
 drup mcp                         # MCP server (for AI agents)
 ```
 
@@ -220,7 +224,7 @@ env + core ver  confirms deps  autofix (0 tok)  per module:         drup-theme  
 `drup-validator` confirms Stage 1's dependency install actually took effect. `drup-preflight` never confirms its own work.
 
 ### Stage 3 — Rector (0 tokens)
-`drup-rector` runs `drupal-rector` with D11 rule sets over custom modules and themes, resolving ~80% of standard deprecations deterministically. `drup-validator` confirms `total_errors == 0` before `drup-rector` commits.
+`drup-rector` runs `drupal-rector` with D11 rule sets over custom modules and themes. It resolves the deprecations rector has rules for — return types, removed APIs, renamed services — and leaves `.info.yml` alone. Its measured effect varies widely by project, so treat the before/after scan as the source of truth rather than a headline percentage. `drup-validator` confirms the result before `drup-rector` commits.
 
 ### Stage 4 — Contrib Loop
 For each contrib module with errors, `drup-contrib`:
@@ -339,6 +343,7 @@ Codex ─────────┘
 
 | Tool | Input | Output | Purpose |
 |---|---|---|---|
+| `custom_compat_fix` | `project_path, target_version, dry_run` | `{ updated, already_compatible, needs_attention, changes[] }` | Widens `core_version_requirement` in the project's own modules, themes and profiles so they declare the target major. Never edits contrib. |
 | `cleanup` | `project_path, validate_passed` | `{ success, uninstalled[], reverted_patches[], stderr }` | Post-pipeline cleanup. Uninstalls `upgrade_status`/`drupal-rector` and reverts temp patches. Refuses when `validate_passed=false` to preserve debugging state. |
 | `test_backup_create` | `project_path` | `backup_id, snapshot` | Creates a local Phase-0 backup. **Required before any mutation tool runs** (`apply_patch`, `core_upgrade_apply`, `patch_rollback`, `composer_require` without dry-run, `create_patch`, `cleanup`). |
 | `test_backup_list` | `project_path` | `[{ backup_id, created_at, ... }]` | Lists existing local backups for a project. |

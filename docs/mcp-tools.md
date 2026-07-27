@@ -2,7 +2,7 @@
 
 This document is an **agent-facing reference** for the 25 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
 
-**Tooling totals at runtime:** 20 categorized tools in `defaultTools()` (see §5) + the `cleanup` post-pipeline utility (§5.21) + 4 backup tools (§6) = **25 total**.
+**Tooling totals at runtime:** 20 categorized tools in `defaultTools()` (see §5) + the `cleanup` post-pipeline utility (§5.21) + `custom_compat_fix` (§5.22) + 4 backup tools (§6) = **26 total**.
 
 For tool **schemas** (JSON Schema, required fields, types) call `tools/list` — do not hardcode them here. For tool **internals** (Go package, test coverage) read `internal/app/mcp_tools.go`.
 
@@ -40,6 +40,7 @@ For tool **schemas** (JSON Schema, required fields, types) call `tools/list` —
 | What's the next core major and a composer.json preview? | `core_upgrade_check` (read-only) | `core_upgrade_apply` (mutates) |
 | Generate JSON + Markdown upgrade report | `generate_report` | manual report writing |
 | After final validation, uninstall dev modules and revert temp patches | `cleanup` (with `validate_passed:true`) | shell `drush pm:uninstall` + `git revert` (no env awareness) |
+| Declare the target Drupal major in your own modules and themes | `custom_compat_fix` | hand-editing every `.info.yml`, or missing them entirely |
 
 ---
 
@@ -63,7 +64,8 @@ For tool **schemas** (JSON Schema, required fields, types) call `tools/list` —
 12. drush updb
 13. validate                     (final scope-global)
 14. generate_report
-15. cleanup validate_passed=true (uninstall upgrade_status, revert temp patches)
+15. custom_compat_fix project_path=... (declare D11 in custom modules/themes)
+16. cleanup validate_passed=true (uninstall upgrade_status, revert temp patches)
 16. test_backup cleanup (manual only — never automated)
 ```
 
@@ -307,6 +309,15 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 - **Red flag**: calling it on a failing pipeline to "clean anyway" — it is designed to skip on failure. If you want to clean after a failed run, restore from `test_backup` instead.
 
 > The wiring invariant above (cleanup is in both maps with the right properties) is enforced by `TestServer_WiringSymmetryCleanupToolIsSymmetric` in `internal/mcp/mcp_test.go`. If you add a schema property or shorten/remove `cleanup` from either `defaultTools()` or `toolRegistry`, that test will fail.
+
+### 5.22 `custom_compat_fix`
+
+- **Purpose**: Declares support for the target Drupal major in the project's own modules, themes and profiles by widening `core_version_requirement`. These declarations are what `preflight` reports as `core_module_compat` blockers, and no other stage rewrites them.
+- **Returns**: `{ project_path, target_version, dry_run, updated, already_compatible, needs_attention, changes: [{ name, file, before, after, changed, note }] }`
+- **Prerequisites**: absolute `project_path`. `target_version` defaults to `11`; `dry_run` reports the rewrites without writing them.
+- **Side-effects**: rewrites `.info.yml` files under `modules/custom`, `themes/custom` and `profiles/custom`. The existing constraint is kept and the target major appended, so an extension does not silently lose the versions it already declared. The file's quoting style is preserved.
+- **Never touches contrib**: composer owns `modules/contrib`, so an in-place edit there is discarded on the next `composer install`. Use `create_patch` and `apply_patch` for contrib.
+- **Red flag**: an extension reported under `needs_attention` has no `core_version_requirement` at all — it still uses the removed `core:` key, and where to insert the replacement is a judgement call left to a human.
 
 ---
 

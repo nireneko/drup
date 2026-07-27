@@ -1,10 +1,8 @@
 package app
 
 import (
-	"archive/zip"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -706,7 +704,6 @@ var stateRemoveFn = statepkg.Remove
 // RunUpgradeCore override points for testability.
 var getwdFn = os.Getwd
 var isCleanFn = gitops.IsClean
-var execRunFn = drupexec.Run
 
 // doValidateFn wraps DoValidate for testability.
 var doValidateFn = DoValidate
@@ -1365,41 +1362,6 @@ func RunUpgradeCore(args []string) error {
 
 	data, _ := json.MarshalIndent(result, "", "  ")
 	fmt.Println(string(data))
-	return nil
-}
-
-func extractZip(archivePath, destDir string) error {
-	r, err := zip.OpenReader(archivePath)
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-
-	for _, f := range r.File {
-		target := filepath.Join(destDir, f.Name)
-		if f.FileInfo().IsDir() {
-			os.MkdirAll(target, 0o755)
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		outFile, err := os.Create(target)
-		if err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			outFile.Close()
-			return err
-		}
-		_, err = io.Copy(outFile, rc)
-		rc.Close()
-		outFile.Close()
-		if err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
