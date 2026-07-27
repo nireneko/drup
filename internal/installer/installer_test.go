@@ -1800,3 +1800,32 @@ func TestInstall_ClaudeDoesNotWriteCommands(t *testing.T) {
 		t.Errorf("Claude should not have a commands directory, but %s exists", cmdDir)
 	}
 }
+
+func TestUninstall_RemovesEverySkillDrupInstalls(t *testing.T) {
+	home := t.TempDir()
+	agent := &ClaudeAdapter{HomeDir: home}
+
+	// Skills drup writes on install, main plus auxiliary ones.
+	for _, skill := range []string{"drup", "drupal-contrib-patch-writer", "drupal-custom-d11-fixes"} {
+		if err := agent.WriteSkill(skill, "# skill"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A skill drup does not own must survive.
+	if err := agent.WriteSkill("unrelated", "# other"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Uninstall([]AgentAdapter{agent}, false); err != nil {
+		t.Fatalf("Uninstall error: %v", err)
+	}
+
+	for _, skill := range []string{"drup", "drupal-contrib-patch-writer", "drupal-custom-d11-fixes"} {
+		if _, err := os.Stat(filepath.Join(agent.SkillsDir(), skill)); !os.IsNotExist(err) {
+			t.Errorf("skill %q still present after uninstall", skill)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(agent.SkillsDir(), "unrelated")); err != nil {
+		t.Errorf("unrelated skill was removed: %v", err)
+	}
+}

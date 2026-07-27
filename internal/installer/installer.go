@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nireneko/drup/internal/packaging"
 )
 
 // homeDir returns the user's home directory. Package-level var for testability.
@@ -1248,11 +1250,17 @@ func Uninstall(agents []AgentAdapter, dryRun bool) ([]string, error) {
 	var paths []string
 
 	for _, agent := range agents {
-		// Remove skill directory.
-		if path, err := agent.RemoveSkill("drup", dryRun); err != nil {
-			return paths, fmt.Errorf("remove skill from %s: %w", agent.ID(), err)
-		} else if path != "" {
-			paths = append(paths, path)
+		// Remove every skill directory drup installed, not just the main one.
+		skills, err := packaging.SkillNames(agent.ID())
+		if err != nil {
+			return paths, fmt.Errorf("resolve skills for %s: %w", agent.ID(), err)
+		}
+		for _, skill := range skills {
+			if path, err := agent.RemoveSkill(skill, dryRun); err != nil {
+				return paths, fmt.Errorf("remove skill from %s: %w", agent.ID(), err)
+			} else if path != "" {
+				paths = append(paths, path)
+			}
 		}
 
 		// Remove agent files using glob pattern.

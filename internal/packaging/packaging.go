@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -129,6 +130,29 @@ func validateCodexSkill(path, content string) error {
 		return fmt.Errorf("invalid Codex skill %s: frontmatter requires name and description", path)
 	}
 	return nil
+}
+
+// SkillNames returns the skill directories drup installs for a platform.
+// It is derived from the embedded templates so uninstall removes exactly what
+// install wrote, including skills added later.
+func SkillNames(platform string) ([]string, error) {
+	if !slices.Contains(Platforms(), platform) {
+		return nil, fmt.Errorf("unsupported platform: %s", platform)
+	}
+
+	// The platform-level SKILL.md is installed as the "drup" skill.
+	names := []string{"drup"}
+
+	entries, err := fs.ReadDir(templateFS, filepath.Join("templates", platform, "skills"))
+	if err != nil {
+		return names, nil // platform ships no extra skills
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	return names, nil
 }
 
 // Platforms returns the list of supported agent platforms.
