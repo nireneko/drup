@@ -327,6 +327,21 @@ func TestBackupConfig_CreatesTarGz(t *testing.T) {
 	}
 }
 
+func TestBackupConfig_CreatesTarGzWithNestedSkillDirectories(t *testing.T) {
+	srcDir := t.TempDir()
+	os.MkdirAll(filepath.Join(srcDir, "agent-browser"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "agent-browser", "SKILL.md"), []byte("# skill"), 0o644)
+
+	bDir := t.TempDir()
+	orig := backupDir
+	backupDir = func() string { return bDir }
+	defer func() { backupDir = orig }()
+
+	if err := BackupConfig(srcDir); err != nil {
+		t.Fatalf("BackupConfig error: %v", err)
+	}
+}
+
 func TestBackupConfig_Retention5(t *testing.T) {
 	srcDir := t.TempDir()
 	os.WriteFile(filepath.Join(srcDir, "config.json"), []byte(`{"v": 1}`), 0o644)

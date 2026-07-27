@@ -893,6 +893,9 @@ func createTarGz(outputPath, sourceDir string) error {
 		if relPath == "." {
 			return nil
 		}
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return nil
+		}
 		header, err := tar.FileInfoHeader(info, "")
 		if err != nil {
 			return err
