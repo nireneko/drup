@@ -60,6 +60,8 @@ This detects which agents you have installed (Claude Code, OpenCode, Codex) and 
 
 Before overwriting anything, drup backs up each agent's skills directory and MCP config file into `~/.config/drup/backups/` (last 5 versions per item). If one agent fails — a corrupt config, for example — the remaining agents are still installed and the failure is reported as a warning.
 
+Run the install with your agents closed. Registration edits their own config files (`~/.claude.json`, `~/.codex/config.toml`, `~/.config/opencode/opencode.json`), and a running session that rewrites its config afterwards can drop the drup entry. Restart the agent when the install finishes so it loads the MCP server.
+
 ### Update
 
 ```bash

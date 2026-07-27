@@ -511,6 +511,8 @@ func RunInstall() error {
 		return fmt.Errorf("save state: %w", err)
 	}
 
+	fmt.Println("\nRestart your agents to load the drup MCP server. Agents write their own config files, so a session running during the install may overwrite this registration.")
+
 	return nil
 }
 
