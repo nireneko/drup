@@ -821,6 +821,15 @@ func DetectAgents() []AgentAdapter {
 // maxBackups is the maximum number of config backups to retain.
 var maxBackups = 5
 
+// Backup naming. Directory backups are archives of drup-owned skill trees;
+// file backups are copies of agent config files drup does not own.
+const (
+	dirBackupPrefix  = "drup-config-"
+	dirBackupSuffix  = ".tar.gz"
+	fileBackupPrefix = "drup-file-"
+	fileBackupSuffix = ".bak"
+)
+
 // backupDir returns the backup directory path. Package-level var for testability.
 var backupDir = func() string {
 	home, err := homeDir()
@@ -853,7 +862,7 @@ func BackupConfig(configDirPath string) error {
 
 	// Create tar.gz backup.
 	timestamp := time.Now().Format("20060102-150405.000000000")
-	backupName := fmt.Sprintf("drup-config-%s.tar.gz", timestamp)
+	backupName := dirBackupPrefix + timestamp + dirBackupSuffix
 	backupPath := filepath.Join(bDir, backupName)
 
 	if err := createTarGz(backupPath, configDirPath); err != nil {
@@ -862,9 +871,65 @@ func BackupConfig(configDirPath string) error {
 	}
 
 	// Prune old backups beyond retention limit.
-	pruneBackups(bDir, maxBackups)
+	pruneBackups(bDir, dirBackupPrefix, dirBackupSuffix, maxBackups)
 
 	return nil
+}
+
+// BackupFile snapshots a single agent config file before drup rewrites it.
+// These files (~/.claude.json, ~/.codex/config.toml) hold user settings drup
+// does not own and cannot regenerate, unlike the skill trees BackupConfig
+// archives. Retention and deduplication mirror BackupConfig, per file.
+func BackupFile(path string) error {
+	if path == "" {
+		return nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // nothing to backup
+		}
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+
+	bDir := backupDir()
+	if bDir == "" {
+		return fmt.Errorf("cannot determine backup directory")
+	}
+	if err := os.MkdirAll(bDir, 0o755); err != nil {
+		return fmt.Errorf("create backup dir: %w", err)
+	}
+
+	prefix := fileBackupPrefix + backupFileSlug(path) + "-"
+	backups := listBackups(bDir, prefix, fileBackupSuffix)
+	if len(backups) > 0 {
+		latest, err := os.ReadFile(backups[len(backups)-1])
+		if err == nil && bytes.Equal(latest, data) {
+			return nil // skip — identical content
+		}
+	}
+
+	timestamp := time.Now().Format("20060102-150405.000000000")
+	backupPath := filepath.Join(bDir, prefix+timestamp+fileBackupSuffix)
+	if err := writeAtomic(backupPath, data); err != nil {
+		return fmt.Errorf("create backup: %w", err)
+	}
+
+	pruneBackups(bDir, prefix, fileBackupSuffix, maxBackups)
+
+	return nil
+}
+
+// backupFileSlug turns a config path into a filename-safe identifier so
+// backups of different agent configs never collide.
+func backupFileSlug(path string) string {
+	base := strings.TrimPrefix(filepath.Base(path), ".")
+	base = strings.ReplaceAll(base, string(os.PathSeparator), "-")
+	if base == "" {
+		return "config"
+	}
+	return base
 }
 
 func createTarGz(outputPath, sourceDir string) error {
@@ -921,24 +986,30 @@ func createTarGz(outputPath, sourceDir string) error {
 	})
 }
 
-func findLatestBackup(bDir string) string {
+// listBackups returns every backup in bDir matching prefix/suffix, oldest first.
+// Timestamped names sort chronologically.
+func listBackups(bDir, prefix, suffix string) []string {
 	entries, err := os.ReadDir(bDir)
 	if err != nil {
-		return ""
+		return nil
 	}
 
 	var backups []string
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "drup-config-") && strings.HasSuffix(e.Name(), ".tar.gz") {
+		if strings.HasPrefix(e.Name(), prefix) && strings.HasSuffix(e.Name(), suffix) {
 			backups = append(backups, filepath.Join(bDir, e.Name()))
 		}
 	}
 
+	sort.Strings(backups)
+	return backups
+}
+
+func findLatestBackup(bDir string) string {
+	backups := listBackups(bDir, dirBackupPrefix, dirBackupSuffix)
 	if len(backups) == 0 {
 		return ""
 	}
-
-	sort.Strings(backups)
 	return backups[len(backups)-1]
 }
 
@@ -1035,24 +1106,12 @@ func extractTarGz(archivePath, destDir string) error {
 	return nil
 }
 
-func pruneBackups(bDir string, keep int) {
-	entries, err := os.ReadDir(bDir)
-	if err != nil {
-		return
-	}
-
-	var backups []string
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "drup-config-") && strings.HasSuffix(e.Name(), ".tar.gz") {
-			backups = append(backups, filepath.Join(bDir, e.Name()))
-		}
-	}
-
+func pruneBackups(bDir, prefix, suffix string, keep int) {
+	backups := listBackups(bDir, prefix, suffix)
 	if len(backups) <= keep {
 		return
 	}
 
-	sort.Strings(backups)
 	// Delete oldest backups beyond retention limit.
 	for _, b := range backups[:len(backups)-keep] {
 		os.Remove(b)
@@ -1154,12 +1213,17 @@ func Install(agents []AgentAdapter, binaryPath string, files map[string]string) 
 		}
 	}
 
-	// Phase 2: Backup agents that have any new or modified files.
+	// Phase 2: Backup agents that have any new or modified files. The MCP
+	// config is backed up separately because it lives outside the skills
+	// directory and belongs to the user, not to drup.
 	backedUp := make(map[string]bool)
 	for _, p := range allPlans {
 		if p.status != FileUnchanged && !backedUp[p.agent.ID()] {
 			if err := BackupConfig(p.agent.SkillsDir()); err != nil {
 				return nil, fmt.Errorf("backup config for %s: %w", p.agent.ID(), err)
+			}
+			if err := BackupFile(p.agent.MCPConfigPath()); err != nil {
+				return nil, fmt.Errorf("backup MCP config for %s: %w", p.agent.ID(), err)
 			}
 			backedUp[p.agent.ID()] = true
 		}

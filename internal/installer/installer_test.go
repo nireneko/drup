@@ -342,6 +342,116 @@ func TestBackupConfig_CreatesTarGzWithNestedSkillDirectories(t *testing.T) {
 	}
 }
 
+func TestBackupFile_CopiesOriginalContent(t *testing.T) {
+	home := t.TempDir()
+	configPath := filepath.Join(home, ".claude.json")
+	original := `{"mcpServers":{"context7":{"command":"npx"}},"oauthAccount":{"id":"u-1"}}`
+	os.WriteFile(configPath, []byte(original), 0o644)
+
+	bDir := t.TempDir()
+	orig := backupDir
+	backupDir = func() string { return bDir }
+	defer func() { backupDir = orig }()
+
+	if err := BackupFile(configPath); err != nil {
+		t.Fatalf("BackupFile error: %v", err)
+	}
+
+	entries, err := os.ReadDir(bDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 backup, got %d", len(entries))
+	}
+	if !strings.HasPrefix(entries[0].Name(), "drup-file-claude.json-") {
+		t.Errorf("backup file = %q, want drup-file-claude.json- prefix", entries[0].Name())
+	}
+	got, err := os.ReadFile(filepath.Join(bDir, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != original {
+		t.Errorf("backup content = %q, want %q", got, original)
+	}
+}
+
+func TestBackupFile_DeduplicatesIdentical(t *testing.T) {
+	home := t.TempDir()
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	os.MkdirAll(filepath.Dir(configPath), 0o755)
+	os.WriteFile(configPath, []byte("model = \"gpt-5-codex\"\n"), 0o644)
+
+	bDir := t.TempDir()
+	orig := backupDir
+	backupDir = func() string { return bDir }
+	defer func() { backupDir = orig }()
+
+	for i := 0; i < 3; i++ {
+		if err := BackupFile(configPath); err != nil {
+			t.Fatalf("BackupFile error: %v", err)
+		}
+	}
+
+	entries, _ := os.ReadDir(bDir)
+	if len(entries) != 1 {
+		t.Errorf("expected 1 backup for unchanged content, got %d", len(entries))
+	}
+}
+
+func TestBackupFile_SeparateRetentionPerConfig(t *testing.T) {
+	home := t.TempDir()
+	claudePath := filepath.Join(home, ".claude.json")
+	codexPath := filepath.Join(home, "config.toml")
+
+	bDir := t.TempDir()
+	orig := backupDir
+	backupDir = func() string { return bDir }
+	defer func() { backupDir = orig }()
+
+	// More versions than the retention limit, interleaved between two configs.
+	for i := 0; i < maxBackups+2; i++ {
+		os.WriteFile(claudePath, []byte(fmt.Sprintf(`{"v":%d}`, i)), 0o644)
+		os.WriteFile(codexPath, []byte(fmt.Sprintf("v = %d\n", i)), 0o644)
+		if err := BackupFile(claudePath); err != nil {
+			t.Fatalf("BackupFile error: %v", err)
+		}
+		if err := BackupFile(codexPath); err != nil {
+			t.Fatalf("BackupFile error: %v", err)
+		}
+	}
+
+	entries, _ := os.ReadDir(bDir)
+	var claudeCount, codexCount int
+	for _, e := range entries {
+		switch {
+		case strings.HasPrefix(e.Name(), "drup-file-claude.json-"):
+			claudeCount++
+		case strings.HasPrefix(e.Name(), "drup-file-config.toml-"):
+			codexCount++
+		}
+	}
+	if claudeCount != maxBackups || codexCount != maxBackups {
+		t.Errorf("retention per config = claude:%d codex:%d, want %d each", claudeCount, codexCount, maxBackups)
+	}
+}
+
+func TestBackupFile_MissingFile(t *testing.T) {
+	bDir := t.TempDir()
+	orig := backupDir
+	backupDir = func() string { return bDir }
+	defer func() { backupDir = orig }()
+
+	if err := BackupFile(filepath.Join(t.TempDir(), "absent.json")); err != nil {
+		t.Fatalf("BackupFile error: %v", err)
+	}
+
+	entries, _ := os.ReadDir(bDir)
+	if len(entries) != 0 {
+		t.Errorf("expected no backups, got %d", len(entries))
+	}
+}
+
 func TestBackupConfig_Retention5(t *testing.T) {
 	srcDir := t.TempDir()
 	os.WriteFile(filepath.Join(srcDir, "config.json"), []byte(`{"v": 1}`), 0o644)
