@@ -1429,7 +1429,7 @@ func RunUninstall(args []string) error {
 		for _, agent := range adapters {
 			fmt.Printf("  - %s\n", agent.ID())
 		}
-		fmt.Println("\nState directory (~/.config/drup/) will be removed.")
+		fmt.Println("\nState directory (~/.config/drup/) will be removed, including the config backups drup took before editing your agent configs.")
 		fmt.Print("\nContinue? [y/N] ")
 
 		var response string
