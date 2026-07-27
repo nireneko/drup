@@ -393,3 +393,18 @@ func TestServer_PostWireUpCountIs25(t *testing.T) {
 		t.Errorf("post-wire-up tool count = %d, want 25 (21 default + 4 backup)", len(tools))
 	}
 }
+
+// Handlers that accept project_path must advertise it, otherwise the agent
+// never sends it and the tool silently falls back to the process working
+// directory, which is rarely the Drupal project.
+func TestServer_ListTools_ProjectPathAwareToolsAdvertiseIt(t *testing.T) {
+	for _, name := range []string{"create_patch", "composer_require", "scan"} {
+		schema, ok := toolRegistry[name]
+		if !ok {
+			t.Fatalf("tool %q missing from registry", name)
+		}
+		if _, ok := schema.Properties["project_path"]; !ok {
+			t.Errorf("tool %q does not declare project_path", name)
+		}
+	}
+}

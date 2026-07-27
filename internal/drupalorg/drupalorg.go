@@ -1,6 +1,7 @@
 package drupalorg
 
 import (
+	"bytes"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -35,6 +36,8 @@ func doWithRetry(fn func() (*http.Response, error)) (*http.Response, error) {
 	const baseDelay = 500 * time.Millisecond
 
 	var lastErr error
+	lastStatus := 0
+	lastBody := ""
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		resp, err := fn()
@@ -53,8 +56,13 @@ func doWithRetry(fn func() (*http.Response, error)) (*http.Response, error) {
 			return resp, nil
 		}
 
-		// Retryable status: close the body before the next attempt to avoid leaking
-		// response bodies and their underlying connections.
+		// Retryable status: keep the server's explanation before closing the
+		// body, so an exhausted retry loop reports why instead of just "3
+		// attempts exhausted".
+		lastStatus = resp.StatusCode
+		if body, readErr := io.ReadAll(io.LimitReader(resp.Body, 200)); readErr == nil {
+			lastBody = strings.TrimSpace(string(body))
+		}
 		_ = resp.Body.Close()
 		if attempt < maxAttempts {
 			delay := baseDelay * time.Duration(1<<(attempt-1))
@@ -65,6 +73,9 @@ func doWithRetry(fn func() (*http.Response, error)) (*http.Response, error) {
 
 	if lastErr != nil {
 		return nil, lastErr
+	}
+	if lastStatus != 0 {
+		return nil, fmt.Errorf("all %d attempts exhausted, last response HTTP %d: %s", maxAttempts, lastStatus, lastBody)
 	}
 	return nil, fmt.Errorf("all %d attempts exhausted", maxAttempts)
 }
@@ -130,7 +141,12 @@ type release struct {
 	Name    string `xml:"name"`
 	Version string `xml:"version"`
 	Tag     string `xml:"tag"`
-	Terms   []term `xml:"terms>term"`
+	// CoreCompat holds the composer constraint drupal.org publishes today,
+	// e.g. "^10.3 || ^11". The older "Core compatibility" term is gone from
+	// the feed, so relying on terms alone reports every module as
+	// incompatible.
+	CoreCompat string `xml:"core_compatibility"`
+	Terms      []term `xml:"terms>term"`
 }
 
 type term struct {
@@ -178,6 +194,11 @@ func CheckRelease(module string) (*ReleaseInfo, error) {
 		return nil, fmt.Errorf("read release history: %w", err)
 	}
 
+	// Unknown projects come back as HTTP 200 with an <error> document.
+	if bytes.Contains(data, []byte("<error>")) {
+		return &ReleaseInfo{Module: module, HasD11: false, Branches: []string{}}, nil
+	}
+
 	return parseReleaseXML(module, data)
 }
 
@@ -196,6 +217,12 @@ func parseReleaseXML(module string, data []byte) (*ReleaseInfo, error) {
 	for _, rel := range rh.Releases {
 		if info.Latest == "" {
 			info.Latest = rel.Version
+		}
+		if rel.CoreCompat != "" {
+			branchSet[rel.CoreCompat] = true
+			if constraintMatchesDrupal(rel.CoreCompat, 11) {
+				info.HasD11 = true
+			}
 		}
 		for _, t := range rel.Terms {
 			if t.Name == "Core compatibility" && strings.Contains(t.Value, "Drupal 11") {
@@ -510,16 +537,39 @@ type releaseFull struct {
 	Version     string `xml:"version"`
 	Tag         string `xml:"tag"`
 	Status      string `xml:"status"`
-	ReleaseDate string `xml:"release_date"`
+	ReleaseDate string `xml:"date"`
+	CoreCompat  string `xml:"core_compatibility"`
 	Terms       []term `xml:"terms>term"`
 }
 
 // releaseHistoryVersionURL is the template for version-specific release-history lookups.
 var releaseHistoryVersionURL = "https://updates.drupal.org/release-history/%s/%s"
 
+// releaseHistoryBranch maps a Drupal core version to the branch segment the
+// release-history endpoint expects. Contrib for Drupal 8 and later is all
+// published under "8.x"; asking for "11" or "11.x" returns an <error>
+// document, not a project.
+func releaseHistoryBranch(drupalVersion string) string {
+	v := strings.TrimSpace(drupalVersion)
+	if v == "" || v == "current" {
+		return "current"
+	}
+	major := v
+	if idx := strings.IndexAny(major, ".-"); idx > 0 {
+		major = major[:idx]
+	}
+	switch major {
+	case "6", "7":
+		return major + ".x"
+	default:
+		// Drupal 8 through 11 and anything newer share the 8.x branch key.
+		return "8.x"
+	}
+}
+
 // FetchReleaseHistory fetches the full release-history XML for a module at a specific Drupal version.
 func FetchReleaseHistory(module, drupalVersion string) (*releaseHistoryFull, error) {
-	url := fmt.Sprintf(releaseHistoryVersionURL, module, drupalVersion)
+	url := fmt.Sprintf(releaseHistoryVersionURL, module, releaseHistoryBranch(drupalVersion))
 	resp, err := doWithRetry(func() (*http.Response, error) {
 		return HTTPClient.Get(url)
 	})
@@ -540,11 +590,31 @@ func FetchReleaseHistory(module, drupalVersion string) (*releaseHistoryFull, err
 		return nil, fmt.Errorf("read release history: %w", err)
 	}
 
+	// Drupal.org answers unknown project/branch combinations with HTTP 200 and
+	// an <error> document rather than a 404.
+	if bytes.Contains(data, []byte("<error>")) {
+		return nil, nil
+	}
+
 	var rh releaseHistoryFull
 	if err := xml.Unmarshal(data, &rh); err != nil {
 		return nil, fmt.Errorf("parse release XML: %w", err)
 	}
 	return &rh, nil
+}
+
+// majorFromVersion extracts the leading major number from "11", "11.1" or
+// "11.x". Returns 0 when there is none.
+func majorFromVersion(version string) int {
+	v := strings.TrimSpace(version)
+	if idx := strings.IndexAny(v, ".-"); idx > 0 {
+		v = v[:idx]
+	}
+	major, err := strconv.Atoi(v)
+	if err != nil {
+		return 0
+	}
+	return major
 }
 
 // UpgradePath finds the recommended version for target Drupal major.
@@ -577,16 +647,22 @@ func UpgradePath(module, currentDrupal, targetDrupal string) (*UpgradeRecommenda
 			ReleaseDate: rel.ReleaseDate,
 			IsStable:    rel.Status == "published",
 		}
+		if rel.CoreCompat != "" {
+			r.DrupalCompat = append(r.DrupalCompat, rel.CoreCompat)
+		}
 		for _, t := range rel.Terms {
 			if t.Name == "Core compatibility" {
 				r.DrupalCompat = append(r.DrupalCompat, t.Value)
 			}
 		}
-		// Filter: must be compatible with target Drupal version.
+		// Filter: must be compatible with target Drupal version. The feed
+		// publishes composer constraints ("^10.3 || ^11"); the "Drupal 11"
+		// literal only appears in the retired terms format.
 		compatible := false
 		targetKey := "Drupal " + targetDrupal
+		targetMajor := majorFromVersion(targetDrupal)
 		for _, c := range r.DrupalCompat {
-			if c == targetKey {
+			if c == targetKey || (targetMajor > 0 && constraintMatchesDrupal(c, targetMajor)) {
 				compatible = true
 				break
 			}
@@ -642,12 +718,19 @@ type ModuleMetadata struct {
 	OpenIssues  int      `json:"open_issues"`
 }
 
-// apiD7NodeFull is the full node detail from api-d7.
+// apiD7NodeFull is the full node detail from api-d7. The endpoint answers with
+// a list of matching nodes, never a bare node.
 type apiD7NodeFull struct {
-	NID            string       `json:"nid"`
-	Title          string       `json:"title"`
-	FieldDownloads int          `json:"field_download_count"`
-	Maintainers    []maintainer `json:"maintainers"`
+	NID            string         `json:"nid"`
+	Title          string         `json:"title"`
+	FieldDownloads int            `json:"field_download_count"`
+	Author         maintainer     `json:"author"`
+	ProjectUsage   map[string]int `json:"project_usage"`
+	Maintainers    []maintainer   `json:"maintainers"`
+}
+
+type apiD7NodeList struct {
+	List []apiD7NodeFull `json:"list"`
 }
 
 type maintainer struct {
@@ -655,7 +738,9 @@ type maintainer struct {
 }
 
 // moduleNodeURL is the template for api-d7 node lookup by name.
-var moduleNodeURL = "https://www.drupal.org/api-d7/node.json?name=%s"
+// The api-d7 endpoint rejects a "name" filter with HTTP 412; projects are
+// addressed by their machine name.
+var moduleNodeURL = "https://www.drupal.org/api-d7/node.json?field_project_machine_name=%s"
 
 // ModuleInfo fetches module metadata from Drupal.org.
 func ModuleInfo(module string) (*ModuleMetadata, error) {
@@ -686,15 +771,27 @@ func ModuleInfo(module string) (*ModuleMetadata, error) {
 		return nil, fmt.Errorf("read module info: %w", err)
 	}
 
-	var node apiD7NodeFull
-	if err := json.Unmarshal(data, &node); err != nil {
+	var list apiD7NodeList
+	if err := json.Unmarshal(data, &list); err != nil {
 		return nil, fmt.Errorf("parse module info JSON: %w", err)
 	}
+	if len(list.List) == 0 {
+		return nil, fmt.Errorf("module %q not found on drupal.org", module)
+	}
+	node := list.List[0]
 
 	meta.Title = node.Title
 	meta.Downloads = node.FieldDownloads
+	// project_usage counts installs per core branch; the total is a better
+	// popularity signal than the absent download counter.
+	for _, count := range node.ProjectUsage {
+		meta.Downloads += count
+	}
 	for _, m := range node.Maintainers {
 		meta.Maintainers = append(meta.Maintainers, m.Name)
+	}
+	if len(meta.Maintainers) == 0 && node.Author.Name != "" {
+		meta.Maintainers = append(meta.Maintainers, node.Author.Name)
 	}
 
 	// Fetch latest release from release-history.

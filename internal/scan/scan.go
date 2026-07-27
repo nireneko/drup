@@ -109,6 +109,12 @@ func Parse(r io.Reader) (*ScanResult, error) {
 }
 
 // classifyPath determines the ErrorClass from a file path.
+// Classify reports which part of the site a file belongs to. Exported so
+// callers can apply the same scope filter the parser uses.
+func Classify(path string) ErrorClass {
+	return classifyPath(path)
+}
+
 func classifyPath(path string) ErrorClass {
 	switch {
 	case strings.Contains(path, "modules/contrib/"):

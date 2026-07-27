@@ -122,7 +122,9 @@ func (m *Manager) List(project string) ([]Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	var result []Manifest
+	// Start from an empty slice so an empty backup directory marshals as []
+	// instead of null.
+	result := []Manifest{}
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -253,12 +255,26 @@ func archive(root, dest, excluded string) error {
 			}
 			return nil
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("symlink rejected: %s", path)
+		// node_modules is a build artifact: huge, regenerable, and full of
+		// symlinks. Backing it up made every real theme fail.
+		if info.IsDir() && info.Name() == "node_modules" {
+			return filepath.SkipDir
 		}
 		rel, _ := filepath.Rel(root, path)
 		if rel == "." {
 			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, linkErr := os.Readlink(path)
+			if linkErr != nil {
+				return linkErr
+			}
+			h, hdrErr := tar.FileInfoHeader(info, target)
+			if hdrErr != nil {
+				return hdrErr
+			}
+			h.Name = filepath.ToSlash(rel)
+			return tw.WriteHeader(h)
 		}
 		h, _ := tar.FileInfoHeader(info, "")
 		h.Name = filepath.ToSlash(rel)
@@ -298,7 +314,7 @@ func extract(src, dest string) error {
 		if e != nil {
 			return e
 		}
-		if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeDir {
+		if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeDir && h.Typeflag != tar.TypeSymlink {
 			return fmt.Errorf("unsupported archive entry: %s", h.Name)
 		}
 		name := filepath.Clean(filepath.FromSlash(h.Name))
@@ -311,6 +327,27 @@ func extract(src, dest string) error {
 		}
 		if h.Typeflag == tar.TypeDir {
 			if err := os.MkdirAll(out, os.FileMode(h.Mode)); err != nil {
+				return err
+			}
+			continue
+		}
+		if h.Typeflag == tar.TypeSymlink {
+			if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+				return err
+			}
+			// Only recreate links that stay inside the restore target, so a
+			// later entry cannot be written through one into the system.
+			link := filepath.FromSlash(h.Linkname)
+			if filepath.IsAbs(link) {
+				return fmt.Errorf("archive symlink escape: %s -> %s", h.Name, h.Linkname)
+			}
+			resolved := filepath.Clean(filepath.Join(filepath.Dir(out), link))
+			root := filepath.Clean(dest)
+			if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
+				return fmt.Errorf("archive symlink escape: %s -> %s", h.Name, h.Linkname)
+			}
+			os.Remove(out)
+			if err := os.Symlink(link, out); err != nil {
 				return err
 			}
 			continue
@@ -379,7 +416,12 @@ func copyPath(src, dst string) error {
 		return err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("symlink rejected: %s", src)
+		target, linkErr := os.Readlink(src)
+		if linkErr != nil {
+			return linkErr
+		}
+		os.Remove(dst)
+		return os.Symlink(target, dst)
 	}
 	if info.IsDir() {
 		if err := os.MkdirAll(dst, info.Mode()); err != nil {

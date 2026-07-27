@@ -58,12 +58,28 @@ drup install
 
 This detects which agents you have installed (Claude Code, OpenCode, Codex) and writes the skills, sub-agents, and MCP configuration into their native directories.
 
+Before overwriting anything, drup backs up each agent's skills directory and MCP config file into `~/.config/drup/backups/` (last 5 versions per item). If one agent fails — a corrupt config, for example — the remaining agents are still installed and the failure is reported as a warning.
+
+Run the install with your agents closed. Registration edits their own config files (`~/.claude.json`, `~/.codex/config.toml`, `~/.config/opencode/opencode.json`), and a running session that rewrites its config afterwards can drop the drup entry. Restart the agent when the install finishes so it loads the MCP server.
+
 ### Update
 
 ```bash
 drup upgrade      # updates the binary
 drup sync         # re-applies skills to agents (after upgrade or template changes)
 ```
+
+### Uninstall
+
+```bash
+drup uninstall --dry-run   # lists everything that would be removed
+drup uninstall             # asks for confirmation, then removes
+drup uninstall --force     # skips confirmation and ignores missing state
+```
+
+This removes the drup skills, sub-agents, and commands from every installed agent, deletes drup's entry from their MCP configs (leaving other servers untouched), removes `~/.config/drup/`, and finally deletes the binary itself.
+
+The state directory holds the config backups, so an uninstall deletes them too. Copy anything you still want out of `~/.config/drup/backups/` first.
 
 ---
 

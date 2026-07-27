@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/nireneko/drup/internal/envdetect"
 	drupexec "github.com/nireneko/drup/internal/exec"
 	"github.com/nireneko/drup/internal/mcp"
+	"github.com/nireneko/drup/internal/patch"
 	"github.com/nireneko/drup/internal/patchreconcile"
 	"github.com/nireneko/drup/internal/report"
 	"github.com/nireneko/drup/internal/scan"
@@ -151,22 +153,22 @@ func realHandleScan(args json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 
-	stdout, stderr, exitCode, err := cliRun(params.ProjectPath, "drush", "upgrade_status:analyze", "--all", "--root="+params.ProjectPath)
+	stdout, stderr, exitCode, err := cliRun(params.ProjectPath, "drush", "upgrade_status:analyze", "--all", "--format=checkstyle", "--root="+params.ProjectPath)
 	if err != nil {
-		return nil, drushExecError("drush", []string{"upgrade_status:analyze", "--all", "--root=" + params.ProjectPath}, -1, err.Error(), "")
+		return nil, drushExecError("drush", []string{"upgrade_status:analyze", "--all", "--format=checkstyle", "--root=" + params.ProjectPath}, -1, err.Error(), "")
 	}
 	if !isScanExitOK(exitCode) {
-		return nil, drushExecError("drush", []string{"upgrade_status:analyze", "--all", "--root=" + params.ProjectPath}, exitCode, stderr, stdout)
+		return nil, drushExecError("drush", []string{"upgrade_status:analyze", "--all", "--format=checkstyle", "--root=" + params.ProjectPath}, exitCode, stderr, stdout)
 	}
 
 	// Exit code 3 with empty stdout means drush crashed, not findings.
 	if exitCode == 3 && strings.TrimSpace(stdout) == "" {
-		return nil, fmt.Errorf("drush exited with code 3 but produced no output (command: drush upgrade_status:analyze --all --root=%s)\nstderr: %s", params.ProjectPath, stderr)
+		return nil, fmt.Errorf("drush exited with code 3 but produced no output (command: drush upgrade_status:checkstyle --all --root=%s)\nstderr: %s", params.ProjectPath, stderr)
 	}
 
-	result, err := scan.Parse(strings.NewReader(stdout))
+	result, err := scan.ParseCheckstyle(strings.NewReader(stdout))
 	if err != nil {
-		return nil, fmt.Errorf("parse scan (command: drush upgrade_status:analyze --all --root=%s): %w\nstdout (truncated): %.500s", params.ProjectPath, err, stdout)
+		return nil, fmt.Errorf("parse scan (command: drush upgrade_status:checkstyle --all --root=%s): %w\nstdout (truncated): %.500s", params.ProjectPath, err, stdout)
 	}
 	result.ProjectPath = params.ProjectPath
 	return json.Marshal(result)
@@ -180,8 +182,9 @@ func realHandleAutofix(args json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 
-	customModules := filepath.Join(params.ProjectPath, "modules", "custom")
-	themes := filepath.Join(params.ProjectPath, "themes")
+	root := resolveDrupalRoot(params.ProjectPath)
+	customModules := filepath.Join(root, "modules", "custom")
+	themes := filepath.Join(root, "themes")
 
 	targets := []string{}
 	for _, dir := range []string{customModules, themes} {
@@ -193,17 +196,25 @@ func realHandleAutofix(args json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("no custom modules or themes found in %s", params.ProjectPath)
 	}
 
+	configPath, err := ensureRectorConfig(params.ProjectPath)
+	if err != nil {
+		return nil, err
+	}
+
 	args2 := append([]string{"process"}, targets...)
-	stdout, _, _, err := drupexec.Run(filepath.Join(params.ProjectPath, "vendor", "bin", "rector"), args2...)
+	args2 = append(args2, "--config="+configPath)
+	// Rector must run against the site's PHP, so it goes through the same
+	// environment prefix as drush and composer.
+	stdout, _, _, err := cliRun(params.ProjectPath, projectRelPath(params.ProjectPath, "vendor", "bin", "rector"), args2...)
 	if err != nil {
 		return nil, fmt.Errorf("exec rector: %w", err)
 	}
 
 	// Re-scan to get remaining errors.
-	scanStdout, _, scanExit, _ := cliRun(params.ProjectPath, "drush", "upgrade_status:analyze", "--all", "--root="+params.ProjectPath)
+	scanStdout, _, scanExit, _ := cliRun(params.ProjectPath, "drush", "upgrade_status:analyze", "--all", "--format=checkstyle", "--root="+params.ProjectPath)
 	remaining := 0
 	if isScanExitOK(scanExit) && strings.TrimSpace(scanStdout) != "" {
-		result, err := scan.Parse(strings.NewReader(scanStdout))
+		result, err := scan.ParseCheckstyle(strings.NewReader(scanStdout))
 		if err == nil {
 			remaining = result.TotalErrs
 		}
@@ -257,18 +268,33 @@ func realHandleIssuePatches(args json.RawMessage) (json.RawMessage, error) {
 
 func realHandleApplyPatch(args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		PatchURL    string `json:"patch_url"`
-		ProjectPath string `json:"project_path"`
+		PatchURL        string `json:"patch_url"`
+		ProjectPath     string `json:"project_path"`
+		ComposerPackage string `json:"composer_package,omitempty"`
+		Description     string `json:"description,omitempty"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, err
 	}
 
-	result, err := DoApplyPatch(params.PatchURL, params.ProjectPath)
+	result, err := DoApplyPatch(params.PatchURL, params.ProjectPath, params.ComposerPackage, params.Description)
 	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(result)
+}
+
+// normalizeScope validates a scope filter. "all" and "" mean no filtering;
+// an unknown value is an error rather than a silent empty result.
+func normalizeScope(scope string) (string, error) {
+	switch scope {
+	case "", "all":
+		return "", nil
+	case string(scan.ClassCustom), string(scan.ClassContrib), string(scan.ClassTheme), string(scan.ClassCore):
+		return scope, nil
+	default:
+		return "", fmt.Errorf("invalid scope %q: use custom, contrib, theme, core or all", scope)
+	}
 }
 
 func realHandleValidate(args json.RawMessage) (json.RawMessage, error) {
@@ -285,6 +311,20 @@ func realHandleValidate(args json.RawMessage) (json.RawMessage, error) {
 	result, filtered, err := DoValidate(params.ProjectPath, params.Module)
 	if err != nil {
 		return nil, err
+	}
+
+	// Filter by scope. Without this the tool answered a request for custom
+	// code with contrib findings.
+	if scope, scopeErr := normalizeScope(params.Scope); scopeErr != nil {
+		return nil, scopeErr
+	} else if scope != "" {
+		var byScope []scan.DepError
+		for _, e := range filtered {
+			if string(scan.Classify(e.File)) == scope {
+				byScope = append(byScope, e)
+			}
+		}
+		filtered = byScope
 	}
 
 	// Further filter by file if specified.
@@ -305,6 +345,49 @@ func realHandleValidate(args json.RawMessage) (json.RawMessage, error) {
 		"errors":       filtered,
 	}
 	return json.Marshal(response)
+}
+
+// normalizePatchPaths rewrites the absolute paths git --no-index emits into
+// module-relative ones, so the patch applies from the package root with -p1
+// like every other composer patch.
+func normalizePatchPaths(diff, pristineDir, moduleDir string) string {
+	sep := string(os.PathSeparator)
+	for _, dir := range []string{pristineDir, moduleDir} {
+		// git writes "a/" + path-without-leading-slash, so collapsing the
+		// directory to a bare separator keeps the a/ and b/ prefixes intact.
+		diff = strings.ReplaceAll(diff, dir+sep, sep)
+		diff = strings.ReplaceAll(diff, strings.TrimPrefix(dir, sep)+sep, "")
+	}
+	return diff
+}
+
+// copyTree copies a directory recursively, following the same rules as the
+// backup helper: regular files and directories only.
+func copyTree(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, relErr := filepath.Rel(src, path)
+		if relErr != nil {
+			return relErr
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode().Perm())
+	})
 }
 
 func realHandleCreatePatch(args json.RawMessage) (json.RawMessage, error) {
@@ -335,16 +418,46 @@ func realHandleCreatePatch(args json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("module %s not found at %s", params.ModuleName, modulePath)
 	}
 
-	// Run rector on the specific module.
-	_, _, _, err := drupexec.Run(filepath.Join(projectPath, "vendor", "bin", "rector"), "process", modulePath)
+	// Snapshot the module before rector touches it. Contrib lives under
+	// web/modules/contrib, which every composer-based Drupal project
+	// gitignores, so "git diff" against the repository sees nothing at all.
+	pristine, err := os.MkdirTemp("", "drup-pristine-*")
+	if err != nil {
+		return nil, fmt.Errorf("create pristine copy: %w", err)
+	}
+	defer os.RemoveAll(pristine)
+	pristineModule := filepath.Join(pristine, params.ModuleName)
+	if err := copyTree(modulePath, pristineModule); err != nil {
+		return nil, fmt.Errorf("copy module for diff: %w", err)
+	}
+
+	// Run rector on the specific module, through the environment prefix so it
+	// uses the site's PHP version.
+	configPath, err := ensureRectorConfig(projectPath)
+	if err != nil {
+		return nil, err
+	}
+	rectorTarget := modulePath
+	if rel, relErr := filepath.Rel(projectPath, modulePath); relErr == nil && isContainerized(projectPath) {
+		rectorTarget = rel
+	}
+	_, _, _, err = cliRun(projectPath, projectRelPath(projectPath, "vendor", "bin", "rector"), "process", rectorTarget, "--config="+configPath)
 	if err != nil {
 		return nil, fmt.Errorf("rector process: %w", err)
 	}
 
-	// Generate diff.
-	stdout, _, exitCode, err := drupexec.Run("git", "-C", projectPath, "diff", "--", modulePath)
+	// Generate diff between the snapshot and the rewritten module.
+	// --no-index compares two trees regardless of .gitignore, and exits 1 when
+	// they differ.
+	stdout, _, exitCode, err := drupexec.Run("git", "diff", "--no-index", "--no-color", pristineModule, modulePath)
 	if err != nil {
 		return nil, fmt.Errorf("git diff: %w", err)
+	}
+	stdout = normalizePatchPaths(stdout, pristineModule, modulePath)
+	// --no-index reports differences with exit code 1; only higher codes are
+	// real failures.
+	if exitCode == 1 && stdout != "" {
+		exitCode = 0
 	}
 	if exitCode != 0 || stdout == "" {
 		response := map[string]interface{}{
@@ -355,7 +468,15 @@ func realHandleCreatePatch(args json.RawMessage) (json.RawMessage, error) {
 	}
 
 	// Write patch to temp file.
-	patchFile, err := os.CreateTemp("", fmt.Sprintf("drup-%s-*.patch", params.ModuleName))
+	// composer.json references patches by path, so they must live inside the
+	// project. A file under /tmp disappears and breaks every later
+	// composer install.
+	patchDir := filepath.Join(projectPath, "patches", params.ModuleName)
+	if err := os.MkdirAll(patchDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create patch directory: %w", err)
+	}
+	patchFile, err := os.CreateTemp(patchDir, fmt.Sprintf("drup-%s-*.patch", params.ModuleName))
+	// CreateTemp uses 0600; composer and CI need to read the patch too.
 	if err != nil {
 		return nil, err
 	}
@@ -365,6 +486,9 @@ func realHandleCreatePatch(args json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 	patchFile.Close()
+	if err := os.Chmod(patchFile.Name(), 0o644); err != nil {
+		return nil, fmt.Errorf("set patch permissions: %w", err)
+	}
 
 	response := map[string]interface{}{
 		"patch_path": patchFile.Name(),
@@ -691,29 +815,38 @@ func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 		if enExit != 0 {
 			return nil, fmt.Errorf("enable upgrade_status failed (exit %d): %s", enExit, enStderr)
 		}
+		// Drush caches its command list, so upgrade_status:checkstyle stays
+		// undefined until the cache is rebuilt.
+		crArgs := []string{"cr", "--root=" + params.ProjectPath}
+		_, _, _, _ = drupexec.RunWithEnv(detection.CommandPrefix, "drush", crArgs...)
 		upgradeStatusEnabled = true
 	}
 
-	// Run analysis.
-	analyzeTarget := "all"
+	// Run analysis. "--all" is a flag; passing a bare "all" makes
+	// upgrade_status look for a project by that name and report nothing.
+	analyzeTarget := "--all"
 	if params.Module != "" {
 		analyzeTarget = params.Module
 	}
-	analyzeArgs := []string{"upgrade_status:analyze", analyzeTarget, "--root=" + params.ProjectPath}
+	analyzeArgs := []string{"upgrade_status:analyze", analyzeTarget, "--format=checkstyle", "--root=" + params.ProjectPath}
 	analyzeStdout, analyzeStderr, analyzeExit, analyzeErr := drupexec.RunWithEnv(detection.CommandPrefix, "drush", analyzeArgs...)
 	if analyzeErr != nil {
 		return nil, drushExecError("drush", analyzeArgs, -1, analyzeErr.Error(), "")
 	}
 
 	// Parse results.
-	scanResult, parseErr := scan.Parse(strings.NewReader(analyzeStdout))
+	scanResult, parseErr := scan.ParseCheckstyle(strings.NewReader(analyzeStdout))
 
 	// Filter by scope if specified.
+	scope, scopeErr := normalizeScope(params.Scope)
+	if scopeErr != nil {
+		return nil, scopeErr
+	}
 	var modules []interface{}
 	totalErrors := 0
 	if parseErr == nil && scanResult != nil {
 		for _, mod := range scanResult.Modules {
-			if params.Scope != "" && string(mod.Type) != params.Scope {
+			if scope != "" && string(mod.Type) != scope {
 				continue
 			}
 			modules = append(modules, map[string]interface{}{
@@ -786,7 +919,7 @@ func realHandlePatchStatus(args json.RawMessage) (json.RawMessage, error) {
 
 	var composerJSON struct {
 		Extra struct {
-			Patches map[string][]patchEntry `json:"patches"`
+			Patches map[string]patchList `json:"patches"`
 		} `json:"extra"`
 	}
 	if err := json.Unmarshal(composerData, &composerJSON); err != nil {
@@ -829,22 +962,33 @@ func realHandlePatchStatus(args json.RawMessage) (json.RawMessage, error) {
 		}
 	}
 
-	// Check git log for patch commit.
+	// Check git log for the patch commit. drup commits patches as
+	// "apply D11 patch to <package>", so searching for the URL never matched
+	// its own commits.
 	commitHash := ""
-	searchTerm := params.PatchURL
-	if searchTerm == "" && foundPatchInfo != nil {
-		searchTerm = foundPatchInfo.URL
+	pkg := params.ComposerPackage
+	if pkg == "" && foundPatchInfo != nil {
+		pkg = foundPatchInfo.Package
 	}
-	if searchTerm != "" {
-		stdout, _, gitExit, _ := drupexec.Run("git", "-C", params.ProjectPath, "log", "--oneline", "--grep="+searchTerm)
-		if gitExit == 0 && stdout != "" {
-			lines := strings.Split(strings.TrimSpace(stdout), "\n")
-			if len(lines) > 0 {
-				parts := strings.Fields(lines[0])
-				if len(parts) > 0 {
-					commitHash = parts[0]
-				}
-			}
+	searchTerms := []string{}
+	if pkg != "" {
+		searchTerms = append(searchTerms, patch.CommitSubject(pkg))
+	}
+	if params.PatchURL != "" {
+		searchTerms = append(searchTerms, params.PatchURL)
+	}
+	if foundPatchInfo != nil && foundPatchInfo.URL != "" {
+		searchTerms = append(searchTerms, foundPatchInfo.URL)
+	}
+	for _, searchTerm := range searchTerms {
+		stdout, _, gitExit, _ := drupexec.Run("git", "-C", params.ProjectPath, "log", "--oneline", "--fixed-strings", "--grep="+searchTerm)
+		if gitExit != 0 || strings.TrimSpace(stdout) == "" {
+			continue
+		}
+		parts := strings.Fields(strings.Split(strings.TrimSpace(stdout), "\n")[0])
+		if len(parts) > 0 {
+			commitHash = parts[0]
+			break
 		}
 	}
 
@@ -870,6 +1014,48 @@ func realHandlePatchStatus(args json.RawMessage) (json.RawMessage, error) {
 type patchEntry struct {
 	URL         string `json:"url"`
 	Description string `json:"description"`
+}
+
+// patchList reads the composer-patches entries for one package. The supported
+// format maps a description to a patch URL; drup used to write a list of
+// objects instead, so both shapes are accepted on read.
+type patchList []patchEntry
+
+func (p *patchList) UnmarshalJSON(data []byte) error {
+	var asMap map[string]string
+	if err := json.Unmarshal(data, &asMap); err == nil {
+		descriptions := make([]string, 0, len(asMap))
+		for description := range asMap {
+			descriptions = append(descriptions, description)
+		}
+		sort.Strings(descriptions)
+		list := make(patchList, 0, len(asMap))
+		for _, description := range descriptions {
+			list = append(list, patchEntry{URL: asMap[description], Description: description})
+		}
+		*p = list
+		return nil
+	}
+
+	var asList []patchEntry
+	if err := json.Unmarshal(data, &asList); err != nil {
+		return fmt.Errorf("unsupported extra.patches entry: %w", err)
+	}
+	*p = asList
+	return nil
+}
+
+// MarshalJSON always writes the format composer-patches understands.
+func (p patchList) MarshalJSON() ([]byte, error) {
+	out := make(map[string]string, len(p))
+	for _, entry := range p {
+		key := entry.Description
+		if key == "" {
+			key = entry.URL
+		}
+		out[key] = entry.URL
+	}
+	return json.Marshal(out)
 }
 
 func realHandlePatchRollback(args json.RawMessage) (json.RawMessage, error) {
@@ -920,6 +1106,10 @@ func realHandlePatchRollback(args json.RawMessage) (json.RawMessage, error) {
 	var status struct {
 		IsApplied  bool   `json:"is_applied"`
 		CommitHash string `json:"commit_hash"`
+		PatchInfo  *struct {
+			URL     string `json:"url"`
+			Package string `json:"package"`
+		} `json:"patch_info"`
 	}
 	if err := json.Unmarshal(statusResult, &status); err != nil {
 		return nil, err
@@ -945,6 +1135,24 @@ func realHandlePatchRollback(args json.RawMessage) (json.RawMessage, error) {
 		return json.Marshal(result)
 	}
 
+	// Keep a copy of the patch: reverting the commit removes the file, and the
+	// patched code itself lives in a gitignored directory that the revert
+	// cannot touch.
+	patchCopy := ""
+	if info := status.PatchInfo; info != nil && info.URL != "" {
+		if local, isLocal, localErr := patch.LocalPatchPath(info.URL, params.ProjectPath); localErr == nil && isLocal {
+			if data, readErr := os.ReadFile(local); readErr == nil {
+				if tmp, tmpErr := os.CreateTemp("", "drup-rollback-*.patch"); tmpErr == nil {
+					if _, writeErr := tmp.Write(data); writeErr == nil {
+						patchCopy = tmp.Name()
+						defer os.Remove(patchCopy)
+					}
+					tmp.Close()
+				}
+			}
+		}
+	}
+
 	// Step 1: git revert (atomic — must succeed before modifying composer.json).
 	revertStdout, revertStderr, revertExit, revertErr := drupexec.Run("git", "-C", params.ProjectPath, "revert", status.CommitHash, "--no-edit")
 	if revertErr != nil {
@@ -958,6 +1166,15 @@ func realHandlePatchRollback(args json.RawMessage) (json.RawMessage, error) {
 			"error":                 fmt.Sprintf("revert conflict: %s", revertStderr),
 		}
 		return json.Marshal(result)
+	}
+
+	// Reverse the patch in the package directory when the code is not tracked.
+	if patchCopy != "" {
+		pkgName := params.ComposerPackage
+		if pkgName == "" && status.PatchInfo != nil {
+			pkgName = status.PatchInfo.Package
+		}
+		patch.ReverseInPackage(params.ProjectPath, pkgName, patchCopy)
 	}
 
 	// Get new revert commit hash.
@@ -1013,10 +1230,10 @@ func realHandlePatchRollback(args json.RawMessage) (json.RawMessage, error) {
 		}
 		if patches != nil {
 			if raw, ok := patches[params.ComposerPackage]; ok {
-				var entries []patchEntry
+				var entries patchList
 				json.Unmarshal(raw, &entries)
 				// Filter out the matching patch.
-				var remaining []patchEntry
+				var remaining patchList
 				for _, e := range entries {
 					if e.URL != params.PatchURL {
 						remaining = append(remaining, e)
@@ -1072,6 +1289,12 @@ func realHandleGenerateReport(args json.RawMessage) (json.RawMessage, error) {
 	if reportType == "" {
 		reportType = "both"
 	}
+	// An unrecognized type used to return success with no files written.
+	switch reportType {
+	case "json", "markdown", "both":
+	default:
+		return nil, fmt.Errorf("invalid report_type %q: use json, markdown or both", params.ReportType)
+	}
 
 	// Collect report data.
 	data := &report.ReportData{
@@ -1082,12 +1305,16 @@ func realHandleGenerateReport(args json.RawMessage) (json.RawMessage, error) {
 	}
 
 	// Get live scan data if requested
+	modulesChecked := 0
 	if params.IncludeScanData {
 		result, filtered, err := DoValidate(params.ProjectPath, "")
 		if err != nil {
 			return nil, fmt.Errorf("scan for report: %w", err)
 		}
 		data.TotalErrors = len(filtered)
+		if result != nil {
+			modulesChecked = len(result.Modules)
+		}
 
 		// Convert scan errors to pending items
 		for _, depErr := range filtered {
@@ -1098,7 +1325,6 @@ func realHandleGenerateReport(args json.RawMessage) (json.RawMessage, error) {
 				SuggestedAction: fmt.Sprintf("Fix deprecation at %s:%d", depErr.File, depErr.Line),
 			})
 		}
-		_ = result // Use result for additional context if needed
 	}
 
 	// Count patches from composer.json.
@@ -1107,7 +1333,7 @@ func realHandleGenerateReport(args json.RawMessage) (json.RawMessage, error) {
 		if composerData, err := os.ReadFile(composerPath); err == nil {
 			var composerJSON struct {
 				Extra struct {
-					Patches map[string][]patchEntry `json:"patches"`
+					Patches map[string]patchList `json:"patches"`
 				} `json:"extra"`
 			}
 			if json.Unmarshal(composerData, &composerJSON) == nil {
@@ -1125,7 +1351,7 @@ func realHandleGenerateReport(args json.RawMessage) (json.RawMessage, error) {
 		"json_report_path":     "",
 		"markdown_report_path": "",
 		"summary": map[string]interface{}{
-			"total_modules_checked": 0,
+			"total_modules_checked": modulesChecked,
 			"patches_applied":       data.TokenAccounting.Total,
 			"errors_remaining":      data.TotalErrors,
 		},

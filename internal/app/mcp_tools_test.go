@@ -625,18 +625,8 @@ func TestRealHandleAutofix_RemainingErrors(t *testing.T) {
 	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			callCount++
-			// Re-scan returns plain text with 2 remaining errors.
-			return `
-Project: mymod (modules/custom/mymod)
-
-  - modules/custom/mymod/a.module:1
-    Error one.
-    Rule: r1
-
-  - modules/custom/mymod/b.module:2
-    Error two.
-    Rule: r2
-`, "", 0, nil
+			// Re-scan returns checkstyle XML with 2 remaining errors.
+			return `<?xml version="1.0"?><checkstyle><file name="modules/custom/mymod/a.module"><error line="1" message="Error one." severity="error"/></file><file name="modules/custom/mymod/b.module"><error line="2" message="Error two." severity="error"/></file></checkstyle>`, "", 0, nil
 		}
 		return "", "", 0, nil
 	}
@@ -670,15 +660,7 @@ func TestRealHandleScan_PlainText(t *testing.T) {
 	origRun := drupexec.RunWithEnv
 	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
-			return `
-====================
-
-Project: token (modules/contrib/token)
-
-  - modules/contrib/token/token.module:42
-    Call to deprecated function foo().
-    Rule: deprecation
-`, "", 0, nil
+			return `<?xml version="1.0"?><checkstyle><file name="modules/contrib/token/token.module"><error line="42" message="Call to deprecated function foo()." severity="error"/></file></checkstyle>`, "", 0, nil
 		}
 		return "", "", 0, nil
 	}
@@ -860,13 +842,7 @@ func TestRealHandleValidate_PlainText(t *testing.T) {
 	origRun := drupexec.RunWithEnv
 	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
-			return `
-Project: mymod (modules/custom/mymod)
-
-  - modules/custom/mymod/mymod.module:5
-    Deprecated function foo().
-    Rule: deprecation
-`, "", 0, nil
+			return `<?xml version="1.0"?><checkstyle><file name="modules/custom/mymod/mymod.module"><error line="5" message="Deprecated function foo()." severity="error"/></file></checkstyle>`, "", 0, nil
 		}
 		return "", "", 0, nil
 	}
@@ -1013,13 +989,7 @@ func TestRealHandleUpgradeScan_PlainText(t *testing.T) {
 				return `{"upgrade_status":"11.0.0"}`, "", 0, nil
 			}
 			if arg == "upgrade_status:analyze" {
-				return `
-Project: mymod (modules/custom/mymod)
-
-  - modules/custom/mymod/mymod.module:5
-    Deprecated function foo().
-    Rule: deprecation
-`, "", 0, nil
+				return `<?xml version="1.0"?><checkstyle><file name="modules/custom/mymod/mymod.module"><error line="5" message="Deprecated function foo()." severity="error"/></file></checkstyle>`, "", 0, nil
 			}
 		}
 		return "", "", 0, nil
@@ -1085,19 +1055,24 @@ func TestRealHandleCreatePatch_UsesProjectPath(t *testing.T) {
 	runGitCmd(t, dir, "add", ".")
 	runGitCmd(t, dir, "commit", "-m", "initial")
 
-	// Override exec to capture rector and git calls.
+	// Override exec to capture rector and git calls. Rector goes through the
+	// environment prefix, git stays on the host.
 	origRun := drupexec.Run
+	origRunWithEnv := drupexec.RunWithEnv
 	var capturedCmds []string
-	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
-		full := cmd + " " + strings.Join(args, " ")
-		capturedCmds = append(capturedCmds, full)
+	capture := func(cmd string, args ...string) (string, string, int, error) {
+		capturedCmds = append(capturedCmds, cmd+" "+strings.Join(args, " "))
 		// Return empty diff so it reports "not applied".
-		if cmd == "git" {
-			return "", "", 0, nil
-		}
 		return "", "", 0, nil
 	}
-	defer func() { drupexec.Run = origRun }()
+	drupexec.Run = capture
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+		return capture(cmd, args...)
+	}
+	defer func() {
+		drupexec.Run = origRun
+		drupexec.RunWithEnv = origRunWithEnv
+	}()
 
 	args := json.RawMessage(fmt.Sprintf(`{"module_name":"testmod","deprecation_details":"test","project_path":%q}`, dir))
 	_, err := realHandleCreatePatch(args)
@@ -1115,5 +1090,45 @@ func TestRealHandleCreatePatch_UsesProjectPath(t *testing.T) {
 	}
 	if !rectorFound {
 		t.Errorf("rector should be called with docroot-based path, got commands: %v", capturedCmds)
+	}
+}
+
+// Contrib lives in a gitignored directory, so the patch has to come from a
+// tree comparison rather than the repository index.
+func TestNormalizePatchPaths_MakesPatchApplyFromPackageRoot(t *testing.T) {
+	pristine := "/tmp/drup-pristine-123/active_filters"
+	module := "/srv/site/web/modules/contrib/active_filters"
+	diff := "diff --git a" + pristine + "/src/Foo.php b" + module + "/src/Foo.php\n" +
+		"--- a" + pristine + "/src/Foo.php\n" +
+		"+++ b" + module + "/src/Foo.php\n" +
+		"@@ -1 +1 @@\n-old\n+new\n"
+
+	got := normalizePatchPaths(diff, pristine, module)
+
+	if strings.Contains(got, pristine) || strings.Contains(got, module) {
+		t.Errorf("absolute paths survived normalization:\n%s", got)
+	}
+	for _, want := range []string{"--- a/src/Foo.php", "+++ b/src/Foo.php"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestCopyTree_CopiesNestedFiles(t *testing.T) {
+	src := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(src, "src", "Plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "src", "Plugin", "Block.php"), []byte("<?php"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "copy")
+	if err := copyTree(src, dst); err != nil {
+		t.Fatalf("copyTree error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "src", "Plugin", "Block.php")); err != nil {
+		t.Errorf("nested file not copied: %v", err)
 	}
 }

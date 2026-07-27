@@ -241,3 +241,45 @@ func TestRender_ContribPatchSkillExists(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderCodexAgentConfig_RejectsUnquotableContent(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{
+			name:    "unquoted description",
+			content: "+++\ndescription = bare words\n+++\n\nInstructions.\n",
+			wantErr: "quoted single-line string",
+		},
+		{
+			name:    "instructions close the literal string",
+			content: "+++\ndescription = \"Agent\"\n+++\n\nUse ''' carefully.\n",
+			wantErr: "must not contain",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := renderCodexAgentConfig("agents/drup-test.md", tt.content)
+			if err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestRenderCodexAgentConfig_ValidTemplate(t *testing.T) {
+	got, err := renderCodexAgentConfig("agents/drup-test.md", "+++\ndescription = \"Agent\"\n+++\n\n# Title\n\nDo the work.\n")
+	if err != nil {
+		t.Fatalf("renderCodexAgentConfig error: %v", err)
+	}
+	want := "description = \"Agent\"\ndeveloper_instructions = '''\n# Title\n\nDo the work.\n'''\n"
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}

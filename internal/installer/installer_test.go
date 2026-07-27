@@ -342,6 +342,116 @@ func TestBackupConfig_CreatesTarGzWithNestedSkillDirectories(t *testing.T) {
 	}
 }
 
+func TestBackupFile_CopiesOriginalContent(t *testing.T) {
+	home := t.TempDir()
+	configPath := filepath.Join(home, ".claude.json")
+	original := `{"mcpServers":{"context7":{"command":"npx"}},"oauthAccount":{"id":"u-1"}}`
+	os.WriteFile(configPath, []byte(original), 0o644)
+
+	bDir := t.TempDir()
+	orig := backupDir
+	backupDir = func() string { return bDir }
+	defer func() { backupDir = orig }()
+
+	if err := BackupFile(configPath); err != nil {
+		t.Fatalf("BackupFile error: %v", err)
+	}
+
+	entries, err := os.ReadDir(bDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 backup, got %d", len(entries))
+	}
+	if !strings.HasPrefix(entries[0].Name(), "drup-file-claude.json-") {
+		t.Errorf("backup file = %q, want drup-file-claude.json- prefix", entries[0].Name())
+	}
+	got, err := os.ReadFile(filepath.Join(bDir, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != original {
+		t.Errorf("backup content = %q, want %q", got, original)
+	}
+}
+
+func TestBackupFile_DeduplicatesIdentical(t *testing.T) {
+	home := t.TempDir()
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	os.MkdirAll(filepath.Dir(configPath), 0o755)
+	os.WriteFile(configPath, []byte("model = \"gpt-5-codex\"\n"), 0o644)
+
+	bDir := t.TempDir()
+	orig := backupDir
+	backupDir = func() string { return bDir }
+	defer func() { backupDir = orig }()
+
+	for i := 0; i < 3; i++ {
+		if err := BackupFile(configPath); err != nil {
+			t.Fatalf("BackupFile error: %v", err)
+		}
+	}
+
+	entries, _ := os.ReadDir(bDir)
+	if len(entries) != 1 {
+		t.Errorf("expected 1 backup for unchanged content, got %d", len(entries))
+	}
+}
+
+func TestBackupFile_SeparateRetentionPerConfig(t *testing.T) {
+	home := t.TempDir()
+	claudePath := filepath.Join(home, ".claude.json")
+	codexPath := filepath.Join(home, "config.toml")
+
+	bDir := t.TempDir()
+	orig := backupDir
+	backupDir = func() string { return bDir }
+	defer func() { backupDir = orig }()
+
+	// More versions than the retention limit, interleaved between two configs.
+	for i := 0; i < maxBackups+2; i++ {
+		os.WriteFile(claudePath, []byte(fmt.Sprintf(`{"v":%d}`, i)), 0o644)
+		os.WriteFile(codexPath, []byte(fmt.Sprintf("v = %d\n", i)), 0o644)
+		if err := BackupFile(claudePath); err != nil {
+			t.Fatalf("BackupFile error: %v", err)
+		}
+		if err := BackupFile(codexPath); err != nil {
+			t.Fatalf("BackupFile error: %v", err)
+		}
+	}
+
+	entries, _ := os.ReadDir(bDir)
+	var claudeCount, codexCount int
+	for _, e := range entries {
+		switch {
+		case strings.HasPrefix(e.Name(), "drup-file-claude.json-"):
+			claudeCount++
+		case strings.HasPrefix(e.Name(), "drup-file-config.toml-"):
+			codexCount++
+		}
+	}
+	if claudeCount != maxBackups || codexCount != maxBackups {
+		t.Errorf("retention per config = claude:%d codex:%d, want %d each", claudeCount, codexCount, maxBackups)
+	}
+}
+
+func TestBackupFile_MissingFile(t *testing.T) {
+	bDir := t.TempDir()
+	orig := backupDir
+	backupDir = func() string { return bDir }
+	defer func() { backupDir = orig }()
+
+	if err := BackupFile(filepath.Join(t.TempDir(), "absent.json")); err != nil {
+		t.Fatalf("BackupFile error: %v", err)
+	}
+
+	entries, _ := os.ReadDir(bDir)
+	if len(entries) != 0 {
+		t.Errorf("expected no backups, got %d", len(entries))
+	}
+}
+
 func TestBackupConfig_Retention5(t *testing.T) {
 	srcDir := t.TempDir()
 	os.WriteFile(filepath.Join(srcDir, "config.json"), []byte(`{"v": 1}`), 0o644)
@@ -1688,5 +1798,128 @@ func TestInstall_ClaudeDoesNotWriteCommands(t *testing.T) {
 	cmdDir := filepath.Join(home, ".claude", "commands")
 	if _, err := os.Stat(cmdDir); !os.IsNotExist(err) {
 		t.Errorf("Claude should not have a commands directory, but %s exists", cmdDir)
+	}
+}
+
+func TestUninstall_RemovesEverySkillDrupInstalls(t *testing.T) {
+	home := t.TempDir()
+	agent := &ClaudeAdapter{HomeDir: home}
+
+	// Skills drup writes on install, main plus auxiliary ones.
+	for _, skill := range []string{"drup", "drupal-contrib-patch-writer", "drupal-custom-d11-fixes"} {
+		if err := agent.WriteSkill(skill, "# skill"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A skill drup does not own must survive.
+	if err := agent.WriteSkill("unrelated", "# other"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Uninstall([]AgentAdapter{agent}, false); err != nil {
+		t.Fatalf("Uninstall error: %v", err)
+	}
+
+	for _, skill := range []string{"drup", "drupal-contrib-patch-writer", "drupal-custom-d11-fixes"} {
+		if _, err := os.Stat(filepath.Join(agent.SkillsDir(), skill)); !os.IsNotExist(err) {
+			t.Errorf("skill %q still present after uninstall", skill)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(agent.SkillsDir(), "unrelated")); err != nil {
+		t.Errorf("unrelated skill was removed: %v", err)
+	}
+}
+
+func TestBackupConfig_PreservesSymlinks(t *testing.T) {
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "SKILL.md"), []byte("# skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("SKILL.md", filepath.Join(srcDir, "alias.md")); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	bDir := t.TempDir()
+	orig := backupDir
+	backupDir = func() string { return bDir }
+	defer func() { backupDir = orig }()
+
+	if err := BackupConfig(srcDir); err != nil {
+		t.Fatalf("BackupConfig error: %v", err)
+	}
+
+	backups := listBackups(bDir, dirBackupPrefix, dirBackupSuffix)
+	if len(backups) != 1 {
+		t.Fatalf("expected 1 backup, got %d", len(backups))
+	}
+
+	dest := t.TempDir()
+	if err := extractTarGz(backups[0], dest); err != nil {
+		t.Fatalf("extractTarGz error: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(dest, "alias.md"))
+	if err != nil {
+		t.Fatalf("symlink missing from backup: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Error("alias.md restored as a regular file, want symlink")
+	}
+}
+
+func TestExtractTarGz_RejectsEscapingSymlink(t *testing.T) {
+	srcDir := t.TempDir()
+	if err := os.Symlink("/etc", filepath.Join(srcDir, "escape")); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
+	if err := createTarGz(archive, srcDir); err != nil {
+		t.Fatalf("createTarGz error: %v", err)
+	}
+
+	err := extractTarGz(archive, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "symlink escape") {
+		t.Errorf("error = %v, want a symlink escape rejection", err)
+	}
+}
+
+func TestCodexAdapter_MCPConfigFormatting(t *testing.T) {
+	home := t.TempDir()
+	agent := &CodexAdapter{HomeDir: home}
+	snippet := `{"mcpServers":{"drup":{"command":"/usr/local/bin/drup","args":["mcp"]}}}`
+
+	if err := agent.WriteMCPConfig(snippet); err != nil {
+		t.Fatalf("WriteMCPConfig error: %v", err)
+	}
+	data, err := os.ReadFile(agent.MCPConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := string(data)
+
+	if strings.HasPrefix(config, "\n") {
+		t.Error("config starts with a blank line")
+	}
+	if strings.Contains(config, "\n\n\n") {
+		t.Errorf("config contains consecutive blank lines:\n%s", config)
+	}
+	if !strings.Contains(config, "args = [\"mcp\"]\n\n[agents.drup-contrib]") {
+		t.Errorf("missing blank line between the MCP table and the agent tables:\n%s", config)
+	}
+}
+
+func TestCodexAdapter_RemoveMCPConfig_DropsEmptyFile(t *testing.T) {
+	home := t.TempDir()
+	agent := &CodexAdapter{HomeDir: home}
+
+	if err := agent.WriteMCPConfig(`{"mcpServers":{"drup":{"command":"/usr/local/bin/drup","args":["mcp"]}}}`); err != nil {
+		t.Fatalf("WriteMCPConfig error: %v", err)
+	}
+	if _, err := agent.RemoveMCPConfig(false); err != nil {
+		t.Fatalf("RemoveMCPConfig error: %v", err)
+	}
+
+	if _, err := os.Stat(agent.MCPConfigPath()); !os.IsNotExist(err) {
+		t.Error("empty config.toml left behind after uninstall")
 	}
 }

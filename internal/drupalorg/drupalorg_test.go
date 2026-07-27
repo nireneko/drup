@@ -377,11 +377,14 @@ func TestUpgradePath_FallbackToCurrentVersion(t *testing.T) {
 }
 
 func TestModuleInfo_FetchesMetadata(t *testing.T) {
+	// api-d7 answers with a list of matching nodes.
 	nodeJSON := `{
-		"nid": "100",
-		"title": "Token",
-		"field_download_count": 15000000,
-		"maintainers": [{"name": "admin"}, {"name": "dev1"}]
+		"list": [{
+			"nid": "100",
+			"title": "Token",
+			"field_download_count": 15000000,
+			"maintainers": [{"name": "admin"}, {"name": "dev1"}]
+		}]
 	}`
 
 	releaseXML := `<?xml version="1.0" encoding="utf-8"?>
