@@ -94,8 +94,10 @@ var toolRegistry = map[string]toolSchema{
 	"apply_patch": {
 		Description: "Download and apply a patch to the project",
 		Properties: map[string]jsonSchemaProperty{
-			"patch_url":    {Type: "string", Description: "URL of the patch file"},
-			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+			"patch_url":        {Type: "string", Description: "URL of the patch file, or a path inside the project"},
+			"project_path":     {Type: "string", Description: "Absolute path to the Drupal project"},
+			"composer_package": {Type: "string", Description: "Package the patch belongs to, e.g. drupal/devel. Required for module and theme patches so paths resolve from the package root"},
+			"description":      {Type: "string", Description: "Patch description recorded in composer.json extra.patches"},
 		},
 		Required: []string{"patch_url", "project_path"},
 	},
@@ -103,7 +105,7 @@ var toolRegistry = map[string]toolSchema{
 		Description: "Re-run scan and return error state",
 		Properties: map[string]jsonSchemaProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
-			"scope":        {Type: "string", Description: "Scope filter (optional)"},
+			"scope":        {Type: "string", Description: "Scope filter: custom, contrib, theme, core or all (default all)"},
 			"module":       {Type: "string", Description: "Module name filter (optional)"},
 			"file":         {Type: "string", Description: "File path filter (optional)"},
 		},
@@ -159,7 +161,7 @@ var toolRegistry = map[string]toolSchema{
 		Description: "Run upgrade scan with environment setup",
 		Properties: map[string]jsonSchemaProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
-			"scope":        {Type: "string", Description: "Scope filter"},
+			"scope":        {Type: "string", Description: "Scope filter: custom, contrib, theme, core or all (default all)"},
 			"module":       {Type: "string", Description: "Module name filter"},
 		},
 		Required: []string{"project_path"},
