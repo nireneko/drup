@@ -205,20 +205,27 @@ func realHandleAutofix(args json.RawMessage) (json.RawMessage, error) {
 	args2 = append(args2, "--config="+configPath)
 	// Rector must run against the site's PHP, so it goes through the same
 	// environment prefix as drush and composer.
-	stdout, _, _, err := cliRun(params.ProjectPath, projectRelPath(params.ProjectPath, "vendor", "bin", "rector"), args2...)
+	stdout, rectorStderr, rectorExit, err := cliRun(params.ProjectPath, projectRelPath(params.ProjectPath, "vendor", "bin", "rector"), args2...)
 	if err != nil {
 		return nil, fmt.Errorf("exec rector: %w", err)
 	}
-
-	// Re-scan to get remaining errors.
-	scanStdout, _, scanExit, _ := cliRun(params.ProjectPath, "drush", "upgrade_status:analyze", "--all", "--format=checkstyle", "--root="+params.ProjectPath)
-	remaining := 0
-	if isScanExitOK(scanExit) && strings.TrimSpace(scanStdout) != "" {
-		result, err := scan.ParseCheckstyle(strings.NewReader(scanStdout))
-		if err == nil {
-			remaining = result.TotalErrs
-		}
+	// Rector's exit code used to be discarded, so a failed run reported an
+	// empty summary and looked like success.
+	if rectorExit != 0 {
+		return nil, fmt.Errorf("rector exited %d: %s%.500s", rectorExit, rectorStderr, stdout)
 	}
+
+	// Re-scan to get remaining errors. A rescan that cannot be parsed must not
+	// be reported as zero remaining errors.
+	scanStdout, scanStderr, scanExit, _ := cliRun(params.ProjectPath, "drush", "upgrade_status:analyze", "--all", "--format=checkstyle", "--root="+params.ProjectPath)
+	if !isScanExitOK(scanExit) {
+		return nil, drushExecError("drush", []string{"upgrade_status:analyze", "--all", "--format=checkstyle"}, scanExit, scanStderr, scanStdout)
+	}
+	rescan, err := scan.ParseCheckstyle(strings.NewReader(scanStdout))
+	if err != nil {
+		return nil, fmt.Errorf("parse rescan after rector: %w", err)
+	}
+	remaining := rescan.TotalErrs
 
 	response := map[string]interface{}{
 		"rector_summary":   stdout,
