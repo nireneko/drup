@@ -838,7 +838,7 @@ func TestRunScan_PassesAllFlag(t *testing.T) {
 	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedArgs = args
-			return "no errors found", "", 0, nil
+			return `<?xml version="1.0"?><checkstyle/>`, "", 0, nil
 		}
 		return "", "", 0, nil
 	}
@@ -873,15 +873,7 @@ func TestRunScan_PlainTextParsing(t *testing.T) {
 	origRun := drupexec.RunWithEnv
 	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
-			return `
-====================
-
-Project: token (modules/contrib/token)
-
-  - modules/contrib/token/token.module:42
-    Call to deprecated function foo().
-    Rule: deprecation
-`, "", 0, nil
+			return `<?xml version="1.0"?><checkstyle><file name="modules/contrib/token/token.module"><error line="42" message="Call to deprecated function foo()." severity="error"/></file></checkstyle>`, "", 0, nil
 		}
 		return "", "", 0, nil
 	}
@@ -1050,13 +1042,7 @@ func TestRunValidate_ErrorsRemain(t *testing.T) {
 	origRun := drupexec.RunWithEnv
 	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
-			return `
-Project: mymod (modules/custom/mymod)
-
-  - modules/custom/mymod/mymod.module:5
-    Deprecated function foo().
-    Rule: deprecation
-`, "", 0, nil
+			return `<?xml version="1.0"?><checkstyle><file name="modules/custom/mymod/mymod.module"><error line="5" message="Deprecated function foo()." severity="error"/></file></checkstyle>`, "", 0, nil
 		}
 		return "", "", 0, nil
 	}
@@ -1332,13 +1318,7 @@ func TestRunScan_ExitCode3WithFindings(t *testing.T) {
 	origRun := drupexec.RunWithEnv
 	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
-			return `
-Project: token (modules/contrib/token)
-
-  - modules/contrib/token/token.module:42
-    Call to deprecated function foo().
-    Rule: deprecation
-`, "", 3, nil
+			return `<?xml version="1.0"?><checkstyle><file name="modules/contrib/token/token.module"><error line="42" message="Call to deprecated function foo()." severity="error"/></file></checkstyle>`, "", 3, nil
 		}
 		return "", "", 0, nil
 	}
@@ -1512,7 +1492,7 @@ func TestRunScan_CustomModulesExist_ProceedsNormally(t *testing.T) {
 	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			drushCalled = true
-			return "no errors found", "", 0, nil
+			return `<?xml version="1.0"?><checkstyle/>`, "", 0, nil
 		}
 		return "", "", 0, nil
 	}
@@ -1820,5 +1800,39 @@ func TestInstallAgents_IsolatesFailingAgent(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, ".codex", "skills", "drup", "SKILL.md")); err != nil {
 		t.Errorf("codex assets not written: %v", err)
+	}
+}
+
+func TestResolveDrupalRoot_AcceptsProjectRootAndDocroot(t *testing.T) {
+	projectRoot := t.TempDir()
+	docroot := filepath.Join(projectRoot, "web")
+	if err := os.MkdirAll(filepath.Join(docroot, "modules", "custom", "my_module"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "composer.json"), []byte(`{"extra":{"drupal-scaffold":{"locations":{"web-root":"web/"}}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolveDrupalRoot(projectRoot); got != docroot {
+		t.Errorf("resolveDrupalRoot(project root) = %q, want %q", got, docroot)
+	}
+	if got := resolveDrupalRoot(docroot); got != docroot {
+		t.Errorf("resolveDrupalRoot(docroot) = %q, want %q", got, docroot)
+	}
+	if hasNoCustomCode(projectRoot) {
+		t.Error("custom module under the docroot reported as no custom code")
+	}
+	if hasNoCustomCode(docroot) {
+		t.Error("custom module reported as no custom code when given the docroot")
+	}
+}
+
+func TestHasNoCustomCode_EmptyProject(t *testing.T) {
+	projectRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectRoot, "web", "modules", "custom"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !hasNoCustomCode(projectRoot) {
+		t.Error("empty custom directory reported as having custom code")
 	}
 }

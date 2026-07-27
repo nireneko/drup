@@ -18,6 +18,11 @@ import (
 // upstream release history for Drupal core itself.
 const drupalCorePackage = "drupal/core"
 
+// coreReleaseProject is the drupal.org project name for core. The
+// release-history feed is keyed by project, so the composer package name
+// "drupal/core" resolves to no release history at all.
+const coreReleaseProject = "drupal"
+
 // checkRelease is the drupal.org release lookup used by NextMajor.
 // Package-level var for testability — tests override it to avoid real HTTP calls.
 var checkRelease = drupalorg.CheckRelease
@@ -39,7 +44,7 @@ func NextMajor(currentVersion string) (*CheckResult, error) {
 		return nil, fmt.Errorf("parse current version %q: %w", currentVersion, err)
 	}
 
-	info, err := checkRelease(drupalCorePackage)
+	info, err := checkRelease(coreReleaseProject)
 	if err != nil {
 		return nil, fmt.Errorf("check drupal/core release: %w", err)
 	}

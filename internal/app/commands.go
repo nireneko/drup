@@ -73,11 +73,25 @@ func isScanExitOK(exitCode int) bool {
 	return exitCode == 0 || exitCode == 3
 }
 
-// hasNoCustomCode returns true if both web/modules/custom/ and web/themes/custom/
+// resolveDrupalRoot returns the directory holding modules/ and themes/.
+// Callers pass either the project root (composer.json level) or the docroot,
+// and assuming the wrong one makes a project full of custom code look empty.
+func resolveDrupalRoot(path string) string {
+	if webRoot := composerutil.ReadWebRoot(path); webRoot != "" {
+		candidate := filepath.Join(path, webRoot)
+		if info, err := os.Stat(filepath.Join(candidate, "modules")); err == nil && info.IsDir() {
+			return candidate
+		}
+	}
+	return path
+}
+
+// hasNoCustomCode returns true if both modules/custom/ and themes/custom/
 // have no subdirectories (i.e., no custom modules or themes exist).
 func hasNoCustomCode(projectPath string) bool {
-	customModules := filepath.Join(projectPath, "modules", "custom")
-	customThemes := filepath.Join(projectPath, "themes", "custom")
+	root := resolveDrupalRoot(projectPath)
+	customModules := filepath.Join(root, "modules", "custom")
+	customThemes := filepath.Join(root, "themes", "custom")
 	return dirHasNoSubdirs(customModules) && dirHasNoSubdirs(customThemes)
 }
 
@@ -106,6 +120,27 @@ func cliRun(projectPath string, cmd string, args ...string) (string, string, int
 	return drupexec.RunWithEnv(detection.CommandPrefix, cmd, args...)
 }
 
+// isContainerized reports whether commands for projectPath run inside a
+// container. Host paths are meaningless there: the project is mounted at the
+// container's own working directory, so binaries and config must be addressed
+// relative to the project root.
+func isContainerized(projectPath string) bool {
+	detection, err := defaultEnvDetector.Detect(projectPath, false)
+	if err != nil {
+		return false
+	}
+	return len(detection.CommandPrefix) > 0
+}
+
+// projectRelPath returns the path to use for a file inside the project:
+// relative when the command runs in a container, absolute on the host.
+func projectRelPath(projectPath string, parts ...string) string {
+	if isContainerized(projectPath) {
+		return filepath.Join(parts...)
+	}
+	return filepath.Join(append([]string{projectPath}, parts...)...)
+}
+
 // drushExecError wraps a drush execution failure with command context.
 func drushExecError(cmd string, args []string, exitCode int, stderr, stdout string) error {
 	fullCmd := cmd + " " + strings.Join(args, " ")
@@ -119,7 +154,7 @@ func drushExecError(cmd string, args []string, exitCode int, stderr, stdout stri
 	return fmt.Errorf("drush command %q failed: %s\nstderr: %s\nstdout: %s", fullCmd, stderr, stderr, truncated)
 }
 
-// RunScan runs upgrade_status:analyze and outputs structured JSON.
+// RunScan runs upgrade_status:checkstyle and outputs structured JSON.
 func RunScan(path string) error {
 	// Smart no-op bypass: skip if both custom dirs are empty.
 	if hasNoCustomCode(path) {
@@ -137,22 +172,26 @@ func RunScan(path string) error {
 		return nil
 	}
 
-	stdout, stderr, exitCode, err := cliRun(path, "drush", "upgrade_status:analyze", "--all", "--root="+path)
+	// --format=checkstyle: the XML schema is stable, while the human-readable
+	// table changes shape between upgrade_status releases. The standalone
+	// upgrade_status:checkstyle command is deprecated.
+	scanArgs := []string{"upgrade_status:analyze", "--all", "--format=checkstyle", "--root=" + path}
+	stdout, stderr, exitCode, err := cliRun(path, "drush", scanArgs...)
 	if err != nil {
-		return drushExecError("drush", []string{"upgrade_status:analyze", "--all", "--root=" + path}, -1, err.Error(), "")
+		return drushExecError("drush", scanArgs, -1, err.Error(), "")
 	}
 	if !isScanExitOK(exitCode) {
-		return drushExecError("drush", []string{"upgrade_status:analyze", "--all", "--root=" + path}, exitCode, stderr, stdout)
+		return drushExecError("drush", scanArgs, exitCode, stderr, stdout)
 	}
 
 	// Exit code 3 with empty stdout means drush crashed, not findings.
 	if exitCode == 3 && strings.TrimSpace(stdout) == "" {
-		return fmt.Errorf("drush exited with code 3 but produced no output (command: drush upgrade_status:analyze --all --root=%s)\nstderr: %s", path, stderr)
+		return fmt.Errorf("drush exited with code 3 but produced no output (command: drush %s)\nstderr: %s", strings.Join(scanArgs, " "), stderr)
 	}
 
-	result, err := scan.Parse(strings.NewReader(stdout))
+	result, err := scan.ParseCheckstyle(strings.NewReader(stdout))
 	if err != nil {
-		return fmt.Errorf("parse scan output (command: drush upgrade_status:analyze --all --root=%s): %w\nstdout (truncated): %.500s", path, err, stdout)
+		return fmt.Errorf("parse scan output (command: drush %s): %w\nstdout (truncated): %.500s", strings.Join(scanArgs, " "), err, stdout)
 	}
 
 	result.ProjectPath = path
@@ -165,16 +204,62 @@ func RunScan(path string) error {
 	return nil
 }
 
+// ensureRectorConfig returns the rector config path to pass on the command
+// line, creating one from drupal-rector's shipped sample when the project has
+// none. Rector refuses to run without a config, and drupal-rector ships the
+// sample precisely to be copied into the project root.
+func ensureRectorConfig(projectPath string) (string, error) {
+	configFile := filepath.Join(projectPath, "rector.php")
+	if _, err := os.Stat(configFile); err == nil {
+		return projectRelPath(projectPath, "rector.php"), nil
+	}
+
+	sample := filepath.Join(projectPath, "vendor", "palantirnet", "drupal-rector", "rector.php")
+	data, err := os.ReadFile(sample)
+	source := "the drupal-rector sample"
+	if err != nil {
+		data = []byte(defaultRectorConfig)
+		source = "drup's built-in defaults"
+	}
+	if err := os.WriteFile(configFile, data, 0o644); err != nil {
+		return "", fmt.Errorf("write rector.php: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "fix: created rector.php from %s\n", source)
+	return projectRelPath(projectPath, "rector.php"), nil
+}
+
+// defaultRectorConfig is used when drupal-rector ships no sample to copy.
+const defaultRectorConfig = `<?php
+
+declare(strict_types=1);
+
+use DrupalRector\Set\Drupal10SetList;
+use Rector\Config\RectorConfig;
+
+return static function (RectorConfig $rectorConfig): void {
+    $rectorConfig->sets([Drupal10SetList::DRUPAL_10]);
+    $rectorConfig->fileExtensions(['php', 'module', 'theme', 'install', 'profile', 'inc', 'engine']);
+    $rectorConfig->importNames(true, false);
+    $rectorConfig->importShortClasses(false);
+};
+`
+
 // RunFix runs drupal-rector on the target project.
 func RunFix(path string) error {
 	// Run rector on custom modules and themes.
-	customModules := filepath.Join(path, "modules", "custom")
-	themes := filepath.Join(path, "themes")
+	root := resolveDrupalRoot(path)
+	customModules := filepath.Join(root, "modules", "custom")
+	themes := filepath.Join(root, "themes")
 
 	targets := []string{}
 	for _, dir := range []string{customModules, themes} {
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			targets = append(targets, dir)
+			rel, err := filepath.Rel(path, dir)
+			if err != nil || !isContainerized(path) {
+				targets = append(targets, dir)
+				continue
+			}
+			targets = append(targets, rel)
 		}
 	}
 
@@ -182,10 +267,17 @@ func RunFix(path string) error {
 		return fmt.Errorf("no custom modules or themes directories found in %s", path)
 	}
 
-	args := append([]string{"process"}, targets...)
-	args = append(args, "--config="+filepath.Join(path, "rector.php"))
+	configPath, err := ensureRectorConfig(path)
+	if err != nil {
+		return err
+	}
 
-	stdout, stderr, exitCode, err := drupexec.Run(filepath.Join(path, "vendor", "bin", "rector"), args...)
+	args := append([]string{"process"}, targets...)
+	args = append(args, "--config="+configPath)
+
+	// Rector must run against the site's PHP, so it goes through the same
+	// environment prefix as drush and composer.
+	stdout, stderr, exitCode, err := cliRun(path, projectRelPath(path, "vendor", "bin", "rector"), args...)
 	if err != nil {
 		return fmt.Errorf("exec rector: %w", err)
 	}
@@ -312,7 +404,7 @@ func RunMCP() error {
 	return server.Run()
 }
 
-// DoValidate runs upgrade_status:analyze and returns parsed results.
+// DoValidate runs upgrade_status:checkstyle and returns parsed results.
 // Shared between CLI and MCP handlers.
 // For Drupal >= 11.x, uses drush updb/cr/status as primary gates.
 func DoValidate(projectPath, module string) (*scan.ScanResult, []scan.DepError, error) {
@@ -332,29 +424,29 @@ func DoValidate(projectPath, module string) (*scan.ScanResult, []scan.DepError, 
 	return doValidatePreD11(projectPath, module)
 }
 
-// doValidatePreD11 uses upgrade_status:analyze as the primary gate.
+// doValidatePreD11 uses upgrade_status:checkstyle as the primary gate.
 func doValidatePreD11(projectPath, module string) (*scan.ScanResult, []scan.DepError, error) {
 	analyzeTarget := "--all"
 	if module != "" {
 		analyzeTarget = module
 	}
 
-	stdout, stderr, exitCode, err := cliRun(projectPath, "drush", "upgrade_status:analyze", analyzeTarget, "--root="+projectPath)
+	stdout, stderr, exitCode, err := cliRun(projectPath, "drush", "upgrade_status:analyze", analyzeTarget, "--format=checkstyle", "--root="+projectPath)
 	if err != nil {
-		return nil, nil, drushExecError("drush", []string{"upgrade_status:analyze", analyzeTarget, "--root=" + projectPath}, -1, err.Error(), "")
+		return nil, nil, drushExecError("drush", []string{"upgrade_status:analyze", analyzeTarget, "--format=checkstyle", "--root=" + projectPath}, -1, err.Error(), "")
 	}
 	if !isScanExitOK(exitCode) {
-		return nil, nil, drushExecError("drush", []string{"upgrade_status:analyze", analyzeTarget, "--root=" + projectPath}, exitCode, stderr, stdout)
+		return nil, nil, drushExecError("drush", []string{"upgrade_status:analyze", analyzeTarget, "--format=checkstyle", "--root=" + projectPath}, exitCode, stderr, stdout)
 	}
 
 	// Exit code 3 with empty stdout means drush crashed, not findings.
 	if exitCode == 3 && strings.TrimSpace(stdout) == "" {
-		return nil, nil, fmt.Errorf("drush exited with code 3 but produced no output (command: drush upgrade_status:analyze %s --root=%s)\nstderr: %s", analyzeTarget, projectPath, stderr)
+		return nil, nil, fmt.Errorf("drush exited with code 3 but produced no output (command: drush upgrade_status:checkstyle %s --root=%s)\nstderr: %s", analyzeTarget, projectPath, stderr)
 	}
 
-	result, err := scan.Parse(strings.NewReader(stdout))
+	result, err := scan.ParseCheckstyle(strings.NewReader(stdout))
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse scan output (command: drush upgrade_status:analyze %s --root=%s): %w\nstdout (truncated): %.500s", projectPath, analyzeTarget, err, stdout)
+		return nil, nil, fmt.Errorf("parse scan output (command: drush upgrade_status:checkstyle %s --root=%s): %w\nstdout (truncated): %.500s", projectPath, analyzeTarget, err, stdout)
 	}
 
 	// Filter by module if specified.
@@ -370,7 +462,7 @@ func doValidatePreD11(projectPath, module string) (*scan.ScanResult, []scan.DepE
 }
 
 // doValidatePostD11 uses drush updb/cr/status as primary gates.
-// upgrade_status:analyze is run as informational output only.
+// upgrade_status:checkstyle is run as informational output only.
 func doValidatePostD11(projectPath, module string) (*scan.ScanResult, []scan.DepError, error) {
 	// Gate 1: drush updb -y.
 	_, stderr, exitCode, err := cliRun(projectPath, "drush", "updb", "-y", "--root="+projectPath)
@@ -399,12 +491,12 @@ func doValidatePostD11(projectPath, module string) (*scan.ScanResult, []scan.Dep
 		return nil, nil, fmt.Errorf("site bootstrap failed: drush status exit %d: %s", exitCode, stderr)
 	}
 
-	// Informational: run upgrade_status:analyze but don't gate on it.
+	// Informational: run upgrade_status:checkstyle but don't gate on it.
 	analyzeTarget := "--all"
 	if module != "" {
 		analyzeTarget = module
 	}
-	stdout, _, analyzeExit, _ := cliRun(projectPath, "drush", "upgrade_status:analyze", analyzeTarget, "--root="+projectPath)
+	stdout, _, analyzeExit, _ := cliRun(projectPath, "drush", "upgrade_status:analyze", analyzeTarget, "--format=checkstyle", "--root="+projectPath)
 
 	result := &scan.ScanResult{
 		ProjectPath: projectPath,
@@ -413,7 +505,7 @@ func doValidatePostD11(projectPath, module string) (*scan.ScanResult, []scan.Dep
 	var filtered []scan.DepError
 
 	if isScanExitOK(analyzeExit) && strings.TrimSpace(stdout) != "" {
-		if parsed, err := scan.Parse(strings.NewReader(stdout)); err == nil {
+		if parsed, err := scan.ParseCheckstyle(strings.NewReader(stdout)); err == nil {
 			result = parsed
 			for _, mod := range parsed.Modules {
 				if module != "" && mod.Name != module {
@@ -427,7 +519,7 @@ func doValidatePostD11(projectPath, module string) (*scan.ScanResult, []scan.Dep
 	return result, filtered, nil
 }
 
-// RunValidate runs upgrade_status:analyze and outputs JSON with error count.
+// RunValidate runs upgrade_status:checkstyle and outputs JSON with error count.
 // Exit 0 if clean, exit 1 if errors remain.
 func RunValidate(args []string) error {
 	if len(args) < 1 {
@@ -459,21 +551,31 @@ func RunValidate(args []string) error {
 }
 
 // DoApplyPatch downloads and applies a patch to the project.
-// Shared between CLI and MCP handlers.
-func DoApplyPatch(patchURL, projectPath string) (*patch.ApplyResult, error) {
-	return patch.Apply(patchURL, projectPath, "", "")
+// Shared between CLI and MCP handlers. composerPackage decides both where the
+// patch is applied from and how it is registered in composer.json; without it
+// a module patch cannot resolve its paths.
+func DoApplyPatch(patchURL, projectPath, composerPackage, description string) (*patch.ApplyResult, error) {
+	return patch.Apply(patchURL, projectPath, composerPackage, description)
 }
 
 // RunApplyPatch downloads and applies a patch, outputting JSON result.
 func RunApplyPatch(args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: drup apply-patch <url> <path>")
+		return fmt.Errorf("usage: drup apply-patch <url> <path> [composer-package] [description]")
 	}
 
 	patchURL := args[0]
 	projectPath := args[1]
+	composerPackage := ""
+	if len(args) > 2 {
+		composerPackage = args[2]
+	}
+	description := ""
+	if len(args) > 3 {
+		description = args[3]
+	}
 
-	result, err := DoApplyPatch(patchURL, projectPath)
+	result, err := DoApplyPatch(patchURL, projectPath, composerPackage, description)
 	if err != nil {
 		return err
 	}
@@ -768,9 +870,11 @@ func RunPreflight() error {
 			continue
 		}
 
-		// Install the dev dependency.
+		// Install the dev dependency. It must run where the site runs: the
+		// host PHP version rarely matches the container's, and composer
+		// resolves platform requirements against the PHP running it.
 		fmt.Printf("Installing %s...\n", dep.Pkg)
-		_, stderr, exitCode, err := drupexec.Run("composer", "require", "--dev", dep.Pkg)
+		_, stderr, exitCode, err := cliRun(cwd, "composer", "require", "--dev", dep.Pkg)
 		if err != nil || exitCode != 0 {
 			results = append(results, PreflightResult{
 				Check:   "dev_dep_" + dep.Pkg,
@@ -835,6 +939,9 @@ func RunPreflight() error {
 		})
 		allPass = false
 	} else {
+		// Drush caches its command list, so upgrade_status:checkstyle stays
+		// undefined until the cache is rebuilt.
+		_, _, _, _ = cliRun(cwd, "drush", "cr", "--root="+cwd)
 		results = append(results, PreflightResult{
 			Check:   "enable_upgrade_status",
 			Pass:    true,
@@ -956,9 +1063,9 @@ func checkCoreReadiness(projectPath string) ([]PreflightResult, error) {
 	}
 
 	// 2. Scan custom modules/themes for core_version_requirement.
-	webRoot := composerutil.ReadWebRoot(projectPath)
-	customModulesDir := filepath.Join(projectPath, webRoot, "modules", "custom")
-	customThemesDir := filepath.Join(projectPath, webRoot, "themes", "custom")
+	drupalRoot := resolveDrupalRoot(projectPath)
+	customModulesDir := filepath.Join(drupalRoot, "modules", "custom")
+	customThemesDir := filepath.Join(drupalRoot, "themes", "custom")
 
 	infoFiles := findInfoYMLFiles(customModulesDir)
 	infoFiles = append(infoFiles, findInfoYMLFiles(customThemesDir)...)
