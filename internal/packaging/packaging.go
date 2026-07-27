@@ -100,10 +100,18 @@ func renderCodexAgentConfig(path, content string) (string, error) {
 	if description == "" {
 		return "", fmt.Errorf("invalid Codex agent %s: missing description", path)
 	}
+	// The description is copied verbatim into TOML, so it must already be a
+	// single-line quoted string.
+	if len(description) < 2 || description[0] != '"' || description[len(description)-1] != '"' {
+		return "", fmt.Errorf("invalid Codex agent %s: description must be a quoted single-line string, got %s", path, description)
+	}
 
 	body := strings.TrimSpace(parts[1])
-	// A quoted basic string is sufficient for current descriptions. The agent
-	// instructions use a literal multiline string so Markdown remains intact.
+	// The agent instructions use a literal multiline string so Markdown
+	// remains intact, which the delimiter itself cannot appear inside.
+	if strings.Contains(body, "'''") {
+		return "", fmt.Errorf("invalid Codex agent %s: instructions must not contain ''', it closes the TOML literal string", path)
+	}
 	return "description = " + description + "\n" +
 		"developer_instructions = '''\n" + body + "\n'''\n", nil
 }
