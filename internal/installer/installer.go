@@ -703,6 +703,14 @@ func (a *CodexAdapter) RemoveMCPConfig(dryRun bool) (string, error) {
 	if updated == string(data) {
 		return "", nil
 	}
+	// Nothing but drup's own tables were in the file: drop it instead of
+	// leaving an empty config behind.
+	if strings.TrimSpace(updated) == "" {
+		if err := os.Remove(path); err != nil {
+			return "", err
+		}
+		return path, nil
+	}
 	if err := writeAtomic(path, []byte(updated)); err != nil {
 		return "", err
 	}
@@ -723,17 +731,18 @@ func replaceCodexMCPSection(config, section string) string {
 }
 
 func replaceCodexAgentSections(config, agentsDir string) string {
-	config = removeCodexAgentSections(config)
-	config = strings.TrimRight(config, "\n")
-	for _, name := range codexAgentNames {
-		if config != "" {
-			config += "\n\n"
-		}
-		config += "[agents." + name + "]\n"
-		config += "description = " + strconv.Quote("Drup "+strings.TrimPrefix(name, "drup-")+" migration agent") + "\n"
-		config += "config_file = " + strconv.Quote(filepath.Join(agentsDir, name+".toml")) + "\n"
+	// Every part ends with a newline, so joining with one more newline leaves
+	// exactly one blank line between TOML tables.
+	var parts []string
+	if existing := strings.TrimRight(removeCodexAgentSections(config), "\n"); existing != "" {
+		parts = append(parts, existing+"\n")
 	}
-	return config + "\n"
+	for _, name := range codexAgentNames {
+		parts = append(parts, "[agents."+name+"]\n"+
+			"description = "+strconv.Quote("Drup "+strings.TrimPrefix(name, "drup-")+" migration agent")+"\n"+
+			"config_file = "+strconv.Quote(filepath.Join(agentsDir, name+".toml"))+"\n")
+	}
+	return strings.Join(parts, "\n")
 }
 
 func removeCodexAgentSections(config string) string {
@@ -756,7 +765,11 @@ func removeCodexAgentSections(config string) string {
 			kept = append(kept, line)
 		}
 	}
-	return strings.TrimRight(strings.Join(kept, ""), "\n") + "\n"
+	remaining := strings.TrimRight(strings.Join(kept, ""), "\n")
+	if remaining == "" {
+		return ""
+	}
+	return remaining + "\n"
 }
 
 func removeCodexMCPSection(config string) string {
@@ -773,7 +786,11 @@ func removeCodexMCPSection(config string) string {
 			kept = append(kept, line)
 		}
 	}
-	return strings.TrimRight(strings.Join(kept, ""), "\n") + "\n"
+	remaining := strings.TrimRight(strings.Join(kept, ""), "\n")
+	if remaining == "" {
+		return ""
+	}
+	return remaining + "\n"
 }
 
 func writeAtomic(path string, content []byte) error {

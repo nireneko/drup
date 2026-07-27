@@ -1882,3 +1882,44 @@ func TestExtractTarGz_RejectsEscapingSymlink(t *testing.T) {
 		t.Errorf("error = %v, want a symlink escape rejection", err)
 	}
 }
+
+func TestCodexAdapter_MCPConfigFormatting(t *testing.T) {
+	home := t.TempDir()
+	agent := &CodexAdapter{HomeDir: home}
+	snippet := `{"mcpServers":{"drup":{"command":"/usr/local/bin/drup","args":["mcp"]}}}`
+
+	if err := agent.WriteMCPConfig(snippet); err != nil {
+		t.Fatalf("WriteMCPConfig error: %v", err)
+	}
+	data, err := os.ReadFile(agent.MCPConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := string(data)
+
+	if strings.HasPrefix(config, "\n") {
+		t.Error("config starts with a blank line")
+	}
+	if strings.Contains(config, "\n\n\n") {
+		t.Errorf("config contains consecutive blank lines:\n%s", config)
+	}
+	if !strings.Contains(config, "args = [\"mcp\"]\n\n[agents.drup-contrib]") {
+		t.Errorf("missing blank line between the MCP table and the agent tables:\n%s", config)
+	}
+}
+
+func TestCodexAdapter_RemoveMCPConfig_DropsEmptyFile(t *testing.T) {
+	home := t.TempDir()
+	agent := &CodexAdapter{HomeDir: home}
+
+	if err := agent.WriteMCPConfig(`{"mcpServers":{"drup":{"command":"/usr/local/bin/drup","args":["mcp"]}}}`); err != nil {
+		t.Fatalf("WriteMCPConfig error: %v", err)
+	}
+	if _, err := agent.RemoveMCPConfig(false); err != nil {
+		t.Fatalf("RemoveMCPConfig error: %v", err)
+	}
+
+	if _, err := os.Stat(agent.MCPConfigPath()); !os.IsNotExist(err) {
+		t.Error("empty config.toml left behind after uninstall")
+	}
+}
