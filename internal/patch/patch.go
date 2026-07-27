@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nireneko/drup/internal/composerutil"
 	drupexec "github.com/nireneko/drup/internal/exec"
 )
 
@@ -40,6 +41,30 @@ func defaultCheckAllowedURL(url string) bool {
 	return false
 }
 
+// localPatchPath resolves a patch reference that points at a file inside the
+// project. Paths outside the project are rejected so a tool call cannot read
+// arbitrary files from disk.
+func localPatchPath(patchRef, projectPath string) (string, bool, error) {
+	if strings.HasPrefix(patchRef, "http://") || strings.HasPrefix(patchRef, "https://") {
+		return "", false, nil
+	}
+
+	candidate := patchRef
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(projectPath, candidate)
+	}
+	candidate = filepath.Clean(candidate)
+
+	root := filepath.Clean(projectPath)
+	if candidate != root && !strings.HasPrefix(candidate, root+string(filepath.Separator)) {
+		return "", false, fmt.Errorf("patch path outside the project: %s", patchRef)
+	}
+	if _, err := os.Stat(candidate); err != nil {
+		return "", false, fmt.Errorf("patch file not found: %s", patchRef)
+	}
+	return candidate, true, nil
+}
+
 // ApplyResult contains the result of a patch apply operation.
 type ApplyResult struct {
 	Applied    bool   `json:"applied"`
@@ -51,26 +76,46 @@ type ApplyResult struct {
 // registers it in composer.json under extra.patches.
 // The operation is atomic: if any step fails, changes are reverted.
 func Apply(patchURL, projectPath, composerPackage, description string) (*ApplyResult, error) {
-	// Validate URL against allowlist.
-	if !checkAllowedURL(patchURL) {
-		return nil, fmt.Errorf("patch URL not in allowlist: %s", patchURL)
+	// A patch already inside the project needs no download and no allowlist:
+	// create_patch writes exactly such files, and refusing them made the
+	// create-then-apply flow impossible.
+	local, isLocal, err := localPatchPath(patchURL, projectPath)
+	if err != nil {
+		return nil, err
 	}
 
-	// Download patch to temp file.
-	tmpFile, err := downloadPatch(patchURL)
-	if err != nil {
-		return nil, fmt.Errorf("download patch: %w", err)
+	tmpFile := local
+	if !isLocal {
+		if !checkAllowedURL(patchURL) {
+			return nil, fmt.Errorf("patch URL not in allowlist: %s", patchURL)
+		}
+
+		// Download patch to temp file.
+		tmpFile, err = downloadPatch(patchURL)
+		if err != nil {
+			return nil, fmt.Errorf("download patch: %w", err)
+		}
+		defer os.Remove(tmpFile)
 	}
-	defer os.Remove(tmpFile)
+
+	// Module patches are written relative to the package root, which is where
+	// composer-patches applies them from. git apply resolves paths against the
+	// repository root, so the package directory goes through --directory.
+	applyArgs := []string{"-C", projectPath, "apply"}
+	if rel := packageRelDir(projectPath, composerPackage); rel != "" {
+		applyArgs = append(applyArgs, "--directory="+rel)
+	}
+	revertArgs := append(append([]string{}, applyArgs...), "-R", tmpFile)
 
 	// Try git apply.
-	_, stderr, exitCode, err := runCommand("git", "-C", projectPath, "apply", tmpFile)
+	_, stderr, exitCode, err := runCommand("git", append(append([]string{}, applyArgs...), tmpFile)...)
 	if err != nil {
 		return &ApplyResult{Applied: false, Error: err.Error()}, nil
 	}
 	if exitCode != 0 {
 		// Try with --whitespace=nowarn fallback.
-		_, stderr2, exitCode2, err2 := runCommand("git", "-C", projectPath, "apply", "--whitespace=nowarn", tmpFile)
+		fallback := append(append([]string{}, applyArgs...), "--whitespace=nowarn", tmpFile)
+		_, stderr2, exitCode2, err2 := runCommand("git", fallback...)
 		if err2 != nil {
 			return &ApplyResult{Applied: false, Error: err2.Error()}, nil
 		}
@@ -79,19 +124,51 @@ func Apply(patchURL, projectPath, composerPackage, description string) (*ApplyRe
 		}
 	}
 
-	// Stage and commit.
-	_, stderr, exitCode, err = runCommand("git", "-C", projectPath, "add", "-A")
+	// Register in composer.json before committing, so the commit carries both
+	// the patch file and its registration.
+	reference := patchURL
+	if isLocal {
+		if rel, relErr := filepath.Rel(projectPath, tmpFile); relErr == nil {
+			reference = rel
+		}
+	}
+	if err := registerPatch(projectPath, composerPackage, reference, description); err != nil {
+		runCommand("git", revertArgs...)
+		return &ApplyResult{Applied: false, Error: "composer.json update failed: " + err.Error()}, nil
+	}
+
+	// Stage only what this patch touched. "git add -A" swept the whole working
+	// tree into the commit, so any unrelated work in progress ended up
+	// committed under a patch message and was destroyed by a later rollback.
+	stagePaths := []string{"composer.json"}
+	if isLocal {
+		if rel, relErr := filepath.Rel(projectPath, tmpFile); relErr == nil {
+			stagePaths = append(stagePaths, rel)
+		}
+	}
+	if rel := packageRelDir(projectPath, composerPackage); rel != "" {
+		// Only matters for projects that track their contrib code; ignored
+		// otherwise.
+		stagePaths = append(stagePaths, rel)
+	}
+	addArgs := append([]string{"-C", projectPath, "add", "--"}, stagePaths...)
+	_, stderr, exitCode, err = runCommand("git", addArgs...)
 	if err != nil || exitCode != 0 {
-		// Revert the apply.
-		runCommand("git", "-C", projectPath, "apply", "-R", tmpFile)
+		runCommand("git", revertArgs...)
 		return &ApplyResult{Applied: false, Error: "git add failed: " + stderr}, nil
 	}
 
-	commitMsg := fmt.Sprintf("fix(contrib): apply D11 patch to %s", composerPackage)
-	_, stderr, exitCode, err = runCommand("git", "-C", projectPath, "commit", "-m", commitMsg)
+	// Contrib code is gitignored in composer-based projects, so there may be
+	// nothing staged beyond composer.json; that is success, not failure.
+	staged, _, stagedExit, _ := runCommand("git", "-C", projectPath, "diff", "--cached", "--name-only")
+	if stagedExit != 0 || strings.TrimSpace(staged) == "" {
+		return &ApplyResult{Applied: true}, nil
+	}
+
+	commitMsg := CommitSubject(composerPackage)
+	commitArgs := append([]string{"-C", projectPath, "commit", "-m", commitMsg, "--"}, stagePaths...)
+	_, stderr, exitCode, err = runCommand("git", commitArgs...)
 	if err != nil || exitCode != 0 {
-		runCommand("git", "-C", projectPath, "reset", "HEAD~1")
-		runCommand("git", "-C", projectPath, "apply", "-R", tmpFile)
 		return &ApplyResult{Applied: false, Error: "git commit failed: " + stderr}, nil
 	}
 
@@ -99,14 +176,69 @@ func Apply(patchURL, projectPath, composerPackage, description string) (*ApplyRe
 	stdout, _, _, _ := runCommand("git", "-C", projectPath, "rev-parse", "HEAD")
 	commitHash := strings.TrimSpace(stdout)
 
-	// Register in composer.json.
-	if err := registerPatch(projectPath, composerPackage, patchURL, description); err != nil {
-		// Revert commit.
-		runCommand("git", "-C", projectPath, "revert", "--no-edit", "HEAD")
-		return &ApplyResult{Applied: false, Error: "composer.json update failed: " + err.Error()}, nil
+	return &ApplyResult{Applied: true, CommitHash: commitHash}, nil
+}
+
+// LocalPatchPath exposes local patch resolution to callers that need to read
+// a registered patch file.
+func LocalPatchPath(patchRef, projectPath string) (string, bool, error) {
+	return localPatchPath(patchRef, projectPath)
+}
+
+// ReverseInPackage undoes a patch inside the package directory. Contrib code
+// is gitignored in composer-based projects, so reverting the commit leaves the
+// patched files in place. Failures are not fatal: the patch may already be
+// gone if the project tracks its contrib code.
+func ReverseInPackage(projectPath, composerPackage, patchFile string) {
+	args := []string{"-C", projectPath, "apply", "-R"}
+	if rel := packageRelDir(projectPath, composerPackage); rel != "" {
+		args = append(args, "--directory="+rel)
+	}
+	runCommand("git", append(args, patchFile)...)
+}
+
+// CommitSubject is the commit message used when a patch is applied. Rollback
+// finds the commit by this exact text, so both sides share one definition.
+func CommitSubject(composerPackage string) string {
+	return fmt.Sprintf("fix(contrib): apply D11 patch to %s", composerPackage)
+}
+
+// packageRelDir returns the install directory of a composer package relative
+// to the project root, or "" when the package is not a Drupal extension.
+func packageRelDir(projectPath, composerPackage string) string {
+	dir := packageDir(projectPath, composerPackage)
+	if dir == projectPath {
+		return ""
+	}
+	rel, err := filepath.Rel(projectPath, dir)
+	if err != nil {
+		return ""
+	}
+	return filepath.ToSlash(rel)
+}
+
+// packageDir returns the directory a composer package is installed into, so a
+// patch can be applied from the same root composer-patches uses. Falls back to
+// the project root for packages that are not Drupal extensions.
+func packageDir(projectPath, composerPackage string) string {
+	name := composerPackage
+	if idx := strings.Index(name, "/"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	if name == "" {
+		return projectPath
 	}
 
-	return &ApplyResult{Applied: true, CommitHash: commitHash}, nil
+	webRoot := composerutil.ReadWebRoot(projectPath)
+	for _, kind := range []string{"modules", "themes", "profiles"} {
+		for _, group := range []string{"contrib", "custom"} {
+			candidate := filepath.Join(projectPath, webRoot, kind, group, name)
+			if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+				return candidate
+			}
+		}
+	}
+	return projectPath
 }
 
 func downloadPatch(url string) (string, error) {
@@ -158,15 +290,37 @@ func registerPatch(projectPath, composerPackage, patchURL, description string) e
 		extra["patches"] = patches
 	}
 
-	// Add patch entry.
-	modulePatches, ok := patches[composerPackage].([]interface{})
+	// Add patch entry. composer-patches keys each patch by its description:
+	// {"drupal/foo": {"Fix bar": "https://…patch"}}. Writing a list here would
+	// both be ignored by composer and discard the project's existing patches
+	// for this package.
+	modulePatches, ok := patches[composerPackage].(map[string]interface{})
 	if !ok {
-		modulePatches = []interface{}{}
+		modulePatches = make(map[string]interface{})
+		// Convert entries written by older drup versions.
+		if legacy, isList := patches[composerPackage].([]interface{}); isList {
+			for _, item := range legacy {
+				entry, isMap := item.(map[string]interface{})
+				if !isMap {
+					continue
+				}
+				url, _ := entry["url"].(string)
+				if url == "" {
+					continue
+				}
+				desc, _ := entry["description"].(string)
+				if desc == "" {
+					desc = url
+				}
+				modulePatches[desc] = url
+			}
+		}
 	}
-	modulePatches = append(modulePatches, map[string]interface{}{
-		"description": description,
-		"url":         patchURL,
-	})
+	key := description
+	if key == "" {
+		key = patchURL
+	}
+	modulePatches[key] = patchURL
 	patches[composerPackage] = modulePatches
 
 	// Write back.

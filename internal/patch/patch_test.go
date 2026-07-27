@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -104,5 +105,113 @@ func TestApply_AllowlistViolation(t *testing.T) {
 	_, err := Apply("https://evil.com/malicious.patch", t.TempDir(), "drupal/test", "test")
 	if err == nil {
 		t.Error("expected error for non-drupal.org URL, got nil")
+	}
+}
+
+// composer-patches keys patches by description. Writing a list here makes
+// composer ignore them, and clobbering the map discards the project's own
+// patches for that package.
+func TestRegisterPatch_PreservesExistingComposerPatches(t *testing.T) {
+	dir := t.TempDir()
+	composerFile := filepath.Join(dir, "composer.json")
+	existing := `{
+  "extra": {
+    "patches": {
+      "drupal/facets": {
+        "Existing fix": "patches/facets/existing.patch"
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(composerFile, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := registerPatch(dir, "drupal/facets", "https://drupal.org/files/new.patch", "New fix"); err != nil {
+		t.Fatalf("registerPatchInComposer error: %v", err)
+	}
+
+	var got struct {
+		Extra struct {
+			Patches map[string]map[string]string `json:"patches"`
+		} `json:"extra"`
+	}
+	data, err := os.ReadFile(composerFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("composer.json is no longer in composer-patches format: %v\n%s", err, data)
+	}
+
+	entries := got.Extra.Patches["drupal/facets"]
+	if entries["Existing fix"] != "patches/facets/existing.patch" {
+		t.Errorf("existing patch lost: %+v", entries)
+	}
+	if entries["New fix"] != "https://drupal.org/files/new.patch" {
+		t.Errorf("new patch not registered: %+v", entries)
+	}
+}
+
+// A patch commit must never sweep unrelated work in progress into itself:
+// a later rollback reverts that commit and would delete the user's files.
+func TestApply_CommitsOnlyItsOwnFiles(t *testing.T) {
+	dir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("init")
+	runGit("config", "user.email", "test@test.com")
+	runGit("config", "user.name", "Test")
+
+	modDir := filepath.Join(dir, "web", "modules", "contrib", "example")
+	if err := os.MkdirAll(modDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(modDir, "example.info.yml"), []byte("name: old\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte("{\"extra\":{\"patches\":{}}}"), 0o644)
+	os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("v1\n"), 0o644)
+	runGit("add", ".")
+	runGit("commit", "-m", "initial")
+
+	// Work in progress that must survive the patch commit.
+	os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("work in progress\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "untracked.md"), []byte("notes\n"), 0o644)
+
+	patchDir := filepath.Join(dir, "patches")
+	os.MkdirAll(patchDir, 0o755)
+	patchFile := filepath.Join(patchDir, "fix.patch")
+	patchBody := "--- a/example.info.yml\n+++ b/example.info.yml\n@@ -1 +1 @@\n-name: old\n+name: new\n"
+	os.WriteFile(patchFile, []byte(patchBody), 0o644)
+
+	result, err := Apply(patchFile, dir, "drupal/example", "Fix")
+	if err != nil {
+		t.Fatalf("Apply error: %v", err)
+	}
+	if !result.Applied {
+		t.Fatalf("patch not applied: %s", result.Error)
+	}
+
+	out, err := exec.Command("git", "-C", dir, "show", "--name-only", "--format=", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := string(out)
+	for _, unrelated := range []string{"tracked.txt", "untracked.md"} {
+		if strings.Contains(committed, unrelated) {
+			t.Errorf("commit swept %s:\n%s", unrelated, committed)
+		}
+	}
+	if !strings.Contains(committed, "composer.json") {
+		t.Errorf("composer.json not committed:\n%s", committed)
+	}
+
+	// The work in progress must still be on disk, uncommitted.
+	if data, _ := os.ReadFile(filepath.Join(dir, "tracked.txt")); string(data) != "work in progress\n" {
+		t.Errorf("work in progress lost: %q", data)
 	}
 }
