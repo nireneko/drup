@@ -114,6 +114,7 @@ var toolRegistry = map[string]toolSchema{
 		Properties: map[string]jsonSchemaProperty{
 			"module_name":         {Type: "string", Description: "Module machine name"},
 			"deprecation_details": {Type: "string", Description: "Deprecation details"},
+			"project_path":        {Type: "string", Description: "Absolute path to the Drupal project root (defaults to the current directory)"},
 		},
 		Required: []string{"module_name"},
 	},
