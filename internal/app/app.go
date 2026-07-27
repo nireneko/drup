@@ -104,7 +104,7 @@ func printUsage() {
 
 Commands:
   init                  Initialize a Drupal project for upgrade automation
-  scan <path>           Run upgrade_status:analyze and output structured JSON
+  scan <path>           Run upgrade_status:checkstyle and output structured JSON
   fix <path>            Run drupal-rector on the target project
   contrib <module>      Check Drupal.org for D11 compatibility
   issue <module_or_nid> Extract patch/diff/MR links from Drupal.org issues
