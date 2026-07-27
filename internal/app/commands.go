@@ -748,11 +748,49 @@ func RunUpgrade() error {
 	return nil
 }
 
+// Preflight check categories. The distinction decides what blocks a run:
+// the environment must work before anything else can, while readiness
+// describes the upgrade the pipeline exists to perform.
+const (
+	CategoryEnvironment = "environment"
+	CategoryReadiness   = "readiness"
+)
+
+// readinessChecks are the checks that report outstanding upgrade work rather
+// than a broken environment. Failing them is the reason to run the pipeline,
+// not a reason to refuse to start it.
+var readinessChecks = map[string]bool{
+	"core_composer_constraint": true,
+	"core_module_compat":       true,
+}
+
 // PreflightResult holds the outcome of each preflight check.
 type PreflightResult struct {
-	Check   string `json:"check"`
-	Pass    bool   `json:"pass"`
-	Message string `json:"message"`
+	Check    string `json:"check"`
+	Pass     bool   `json:"pass"`
+	Message  string `json:"message"`
+	Category string `json:"category"`
+}
+
+// categorize fills in the category and reports whether a failure blocks the run.
+func categorize(results []PreflightResult) (environmentFailures, readinessFailures int) {
+	for i := range results {
+		r := &results[i]
+		if readinessChecks[r.Check] {
+			r.Category = CategoryReadiness
+		} else {
+			r.Category = CategoryEnvironment
+		}
+		if r.Pass {
+			continue
+		}
+		if r.Category == CategoryReadiness {
+			readinessFailures++
+		} else {
+			environmentFailures++
+		}
+	}
+	return environmentFailures, readinessFailures
 }
 
 // RunPreflight checks project readiness for upgrade automation.
@@ -964,11 +1002,21 @@ func RunPreflight() error {
 	}
 
 	// Output results.
+	environmentFailures, readinessFailures := categorize(results)
+	_ = allPass
+
 	data, _ := json.MarshalIndent(results, "", "  ")
 	fmt.Println(string(data))
 
-	if !allPass {
-		return fmt.Errorf("preflight: some checks failed")
+	if environmentFailures > 0 {
+		return fmt.Errorf("preflight: %d environment check(s) failed — the pipeline cannot run until they are fixed", environmentFailures)
+	}
+	if readinessFailures > 0 {
+		// Outstanding upgrade work is the normal state of a project about to
+		// be upgraded. Gating on it would make the pipeline wait for its own
+		// later stages.
+		fmt.Printf("Environment ready. %d readiness item(s) remain — that is the work the pipeline performs.\n", readinessFailures)
+		return nil
 	}
 	fmt.Println("All preflight checks passed.")
 	return nil

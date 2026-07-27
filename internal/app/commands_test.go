@@ -1836,3 +1836,30 @@ func TestHasNoCustomCode_EmptyProject(t *testing.T) {
 		t.Error("empty custom directory reported as having custom code")
 	}
 }
+
+// preflight must distinguish a broken environment, which blocks the run, from
+// outstanding upgrade work, which is what the pipeline exists to do. Gating on
+// the latter makes stage 2 wait for stage 6, which never runs.
+func TestCategorize_SeparatesEnvironmentFromReadiness(t *testing.T) {
+	results := []PreflightResult{
+		{Check: "composer", Pass: true},
+		{Check: "drush", Pass: false},
+		{Check: "core_composer_constraint", Pass: false},
+		{Check: "core_module_compat", Pass: false},
+	}
+
+	envFailures, readinessFailures := categorize(results)
+
+	if envFailures != 1 {
+		t.Errorf("environment failures = %d, want 1", envFailures)
+	}
+	if readinessFailures != 2 {
+		t.Errorf("readiness failures = %d, want 2", readinessFailures)
+	}
+	if results[0].Category != CategoryEnvironment {
+		t.Errorf("composer category = %q, want %q", results[0].Category, CategoryEnvironment)
+	}
+	if results[2].Category != CategoryReadiness {
+		t.Errorf("core_composer_constraint category = %q, want %q", results[2].Category, CategoryReadiness)
+	}
+}

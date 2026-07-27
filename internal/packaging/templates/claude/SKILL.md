@@ -27,7 +27,7 @@ Backup rules are mandatory: Stage 0 must succeed before any other stage; preserv
 | drup-contrib | haiku → sonnet (2 retries) | `contrib_check`, `contrib_upgrade_path`, `issue_patches`, `apply_patch`, `create_patch`, `patch_status`, `patch_rollback`, `patch_reconcile`, `core_upgrade_check`, `core_upgrade_apply` | Per-module contrib resolution + core version bump |
 | drup-custom | haiku → sonnet (2 retries) | file edits only | Per-file custom PHP refactor |
 | drup-theme | haiku → sonnet (2 retries) | file edits only | Per-file twig/theme refactor |
-| drup-validator | haiku → sonnet (2 retries) | `scan`, `validate`, `upgrade_scan`, `module_info`, `drupal_version_matrix`, `patch_status`, `generate_report` | Authoritative gate confirmation + final report generation |
+| drup-validator | haiku → sonnet (2 retries) | `scan`, `validate`, `upgrade_scan`, `module_info`, `drupal_version_matrix`, `patch_status`, `custom_compat_fix` (dry run), `generate_report` | Authoritative gate confirmation + final report generation |
 
 Every retry escalation follows the same rule: **haiku is the default model for every sub-agent; after 2 failed attempts on haiku, re-dispatch the same sub-agent on sonnet for one more try; if that also fails, add the item to the PENDING HUMAN LIST.**
 
@@ -82,8 +82,10 @@ Dispatch `drup-preflight` with `{project_path}`. It detects the environment (`dd
 
 Dispatch `drup-validator` with `{scope: "env"}`. This is the gate for Stage 1's work — you never confirm dependency installation yourself.
 
-- **`evidence.total_errors == 0`**: go to Stage 3.
-- **`evidence.total_errors > 0`**: re-dispatch `drup-preflight` with `prior_evidence` from this validator report (max 2 retries, then escalate, then PENDING HUMAN LIST).
+Preflight results carry a `category`. Gate on `environment` only: those are the checks that must pass for any tool to run. Results with `category: "readiness"` — the core composer constraint and custom `core_version_requirement` declarations — describe the upgrade itself and are resolved by Stages 3.5 and 6. **Never block Stage 2 on them**, or the pipeline waits for work only its later stages can do.
+
+- **No failing `environment` check**: record the readiness items for Stages 3.5 and 6, then go to Stage 3.
+- **Any failing `environment` check**: re-dispatch `drup-preflight` with `prior_evidence` from this validator report (max 2 retries, then escalate, then PENDING HUMAN LIST).
 
 ### Stage 3: RECTOR — Deterministic Auto-Fix
 
@@ -91,8 +93,22 @@ Dispatch `drup-rector` with `{project_path}` (no `commit_message` yet — nothin
 
 Then dispatch `drup-validator` with `{scope: "rector"}` to confirm the result.
 
-- **`evidence.total_errors == 0`**: re-dispatch `drup-rector` with the commit message `fix(rector): apply drupal-rector auto-fixes for D11 compatibility` in `commit_message` so it commits. Go to Stage 4.
-- **`evidence.total_errors > 0`**: re-dispatch `drup-rector` with `prior_evidence` describing the remaining rector-fixable errors (max 2 retries, then escalate, then PENDING HUMAN LIST for those specific paths — do not block the whole pipeline on rector alone; carry unresolved rector errors into Stage 4/5 classification).
+Most of what `upgrade_status` reports is advisory — rows a human is asked to look at, which no rector rule, patch or version bump can clear. **Do not gate on `total_errors == 0`**: on a real project that number never reaches zero and the pipeline would loop forever. Gate on whether rector still has work to do.
+
+- **Rector reports no further changes**: re-dispatch `drup-rector` with the commit message `fix(rector): apply drupal-rector auto-fixes for D11 compatibility` in `commit_message` so it commits. Go to Stage 3.5.
+- **Rector still changes files, or errored**: re-dispatch `drup-rector` with `prior_evidence` describing what remains (max 2 retries, then escalate, then PENDING HUMAN LIST for those specific paths — do not block the whole pipeline on rector alone; carry unresolved errors into Stage 4/5 classification).
+
+### Stage 3.5: COMPATIBILITY DECLARATIONS — Custom Modules and Themes
+
+```bash
+drup compat-fix <project-path> --dry-run   # review first
+drup compat-fix <project-path>
+```
+
+Widens `core_version_requirement` in the project's own modules, themes and profiles so they declare the target major. These are the `core_module_compat` blockers Stage 2 recorded; nothing else in the pipeline rewrites them, and Drupal refuses to install an extension that excludes the running core version.
+
+- **`needs_attention: 0`**: commit with `fix(compat): declare Drupal <target> support in custom extensions`, then go to Stage 4.
+- **`needs_attention > 0`**: those extensions have no `core_version_requirement` at all. Add them to the PENDING HUMAN LIST with the file path — where the key belongs in the file is a judgement call.
 
 ### Stage 4: CONTRIB LOOP — Contributed Modules
 
