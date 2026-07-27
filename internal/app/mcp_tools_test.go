@@ -94,6 +94,25 @@ func TestRealHandleAutofix_InvalidJSON(t *testing.T) {
 }
 
 func TestRunPreflight_Dispatch(t *testing.T) {
+	// Run the dispatch check in an isolated project directory and stub external
+	// commands. RunPreflight may otherwise invoke Composer in the package
+	// directory, leaving composer.json, composer.lock, vendor/, and MCP metadata
+	// behind in the working tree.
+	t.Chdir(t.TempDir())
+
+	origRun := drupexec.Run
+	origRunWithEnv := drupexec.RunWithEnv
+	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
+		return "", "unavailable in dispatch test", 1, nil
+	}
+	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+		return "", "unavailable in dispatch test", 1, nil
+	}
+	t.Cleanup(func() {
+		drupexec.Run = origRun
+		drupexec.RunWithEnv = origRunWithEnv
+	})
+
 	// Verify preflight command is dispatched correctly.
 	err := Run([]string{"preflight"})
 	// Will fail because we're not in a Drupal project, but should not be "unknown command".

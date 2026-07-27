@@ -11,6 +11,11 @@
 # Output of go coverage
 *.out
 
+# Guard against preflight tests invoking Composer from the Go package directory
+/internal/app/composer.json
+/internal/app/composer.lock
+/internal/app/vendor/
+
 # IDE
 .idea/
 .vscode/
