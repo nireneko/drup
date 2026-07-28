@@ -3,6 +3,7 @@ package backup
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"crypto/rand"
 	"crypto/sha256"
@@ -30,7 +31,10 @@ type Manifest struct {
 	DatabaseCommand  []string  `json:"database_command"`
 	FilesChecksum    string    `json:"files_checksum"`
 	DatabaseChecksum string    `json:"database_checksum"`
-	ArchiveVersion   int       `json:"archive_version"`
+	// Excluded names what the archive deliberately leaves out, so a restore
+	// never implies coverage it does not have.
+	Excluded       []string `json:"excluded_from_files_archive"`
+	ArchiveVersion int      `json:"archive_version"`
 }
 
 type Manager struct{ Root string }
@@ -39,6 +43,8 @@ func NewManager(project string) *Manager {
 	return &Manager{Root: filepath.Join(project, ".drup", "backups")}
 }
 
+// run executes a command from the project directory. Container CLIs resolve
+// the project from there, so the directory is part of the call, not ambient.
 var run = drupexec.RunWithEnv
 var runInput = drupexec.RunWithEnvInput
 var detectEnv = func(path string) (*envdetect.Detection, error) { return envdetect.NewDetector().Detect(path, false) }
@@ -78,17 +84,34 @@ func (m *Manager) Create(project string) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
-	dump, err := os.CreateTemp("", "drup-backup-*.sql")
+	// Where the dump goes has to be exact. A host temp path is invisible to a
+	// drush running in a container, and a relative path is resolved against
+	// the Drupal root — which would drop a full database dump inside the
+	// web-served docroot.
+	dumpName := ".drup-dump-" + id + ".sql"
+	dumpPath := filepath.Join(project, dumpName)
+	defer os.Remove(dumpPath)
+	target, err := dumpTarget(project, detection.CommandPrefix, dumpName)
 	if err != nil {
 		return Manifest{}, err
 	}
-	dumpPath := dump.Name()
-	dump.Close()
-	defer os.Remove(dumpPath)
-	cmd := []string{"sql:dump", "--result-file=" + dumpPath, "--root=" + project}
-	_, stderr, code, runErr := run(detection.CommandPrefix, "drush", cmd...)
+	// A failed attempt used to leave a 270 MB dump behind; four retries filled
+	// a gigabyte. Clean up wherever it landed, not just where we expected it.
+	defer func() {
+		if hostTarget := hostPathFor(project, target, dumpName); hostTarget != dumpPath {
+			_ = os.Remove(hostTarget)
+		}
+	}()
+	cmd := []string{"sql:dump", "--result-file=" + target}
+	_, stderr, code, runErr := run(project, detection.CommandPrefix, "drush", cmd...)
 	if runErr != nil || code != 0 {
 		return Manifest{}, fmt.Errorf("database dump failure: %s", commandError(runErr, stderr, code))
+	}
+	// drush reports success even when mysqldump refuses (missing PROCESS
+	// privilege, for one), so the only trustworthy signal is the file itself.
+	// A backup that silently contains nothing is worse than no backup.
+	if err = verifyDump(dumpPath); err != nil {
+		return Manifest{}, fmt.Errorf("database dump failure: %w (drush said: %s)", err, strings.TrimSpace(stderr))
 	}
 
 	filesPath := filepath.Join(dir, "files.tar.gz")
@@ -99,7 +122,7 @@ func (m *Manager) Create(project string) (Manifest, error) {
 	if err = gzipFile(dumpPath, dbPath); err != nil {
 		return Manifest{}, err
 	}
-	manifest := Manifest{id, time.Now().UTC(), project, project, append([]string(nil), cmd...), checksum(filesPath), checksum(dbPath), version}
+	manifest := Manifest{id, time.Now().UTC(), project, project, append([]string(nil), cmd...), checksum(filesPath), checksum(dbPath), excludedFromArchive(), version}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return Manifest{}, err
@@ -235,6 +258,112 @@ func checksum(path string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// regenerableDirs are rebuilt from a lockfile rather than restored.
+var regenerableDirs = map[string]bool{
+	"node_modules": true,
+	"vendor":       true,
+}
+
+// excludedFromArchive explains, for the manifest, what the files archive
+// leaves out and why.
+func excludedFromArchive() []string {
+	return []string{
+		"vendor/ and node_modules/ — rebuilt from the lockfiles, which are in the archive",
+		"the docroot's core/ — reinstalled by composer",
+		"sites/*/files — the media library, which no upgrade stage writes to; a 4 GB media directory made every backup impractical",
+		".git — the repository is its own history, and restoring an old copy over it would destroy work",
+	}
+}
+
+// isRegenerableDir reports whether a directory is left out of the files
+// archive: rebuilt by a package manager, or outside anything an upgrade
+// touches. "core" only counts directly under the docroot, never a module's own
+// core/ directory.
+func isRegenerableDir(root, path, name string) bool {
+	if regenerableDirs[name] {
+		return true
+	}
+
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+
+	if name == ".git" && len(parts) == 1 {
+		return true
+	}
+	// sites/<site>/files — the media library. No upgrade stage writes there,
+	// and including it made a backup cost gigabytes.
+	if name == "files" && len(parts) >= 3 {
+		if parts[len(parts)-3] == "sites" {
+			return true
+		}
+	}
+	if name != "core" {
+		return false
+	}
+	// <docroot>/core — one level deep at most.
+	return len(parts) <= 2
+}
+
+// dumpTarget returns the absolute path drush must write the dump to. Outside a
+// container that is simply the host path. Inside one, drush resolves a
+// relative --result-file against the Drupal root, so the path is derived from
+// the root drush itself reports and kept out of the docroot.
+func dumpTarget(project string, prefix []string, dumpName string) (string, error) {
+	if len(prefix) == 0 {
+		return filepath.Join(project, dumpName), nil
+	}
+
+	stdout, stderr, code, err := run(project, prefix, "drush", "status", "--field=root")
+	root := strings.TrimSpace(stdout)
+	if err != nil || code != 0 || root == "" {
+		return "", fmt.Errorf("could not resolve the Drupal root inside the container: %s", commandError(err, stderr, code))
+	}
+
+	// The project root is the docroot's parent, unless the site is served from
+	// the project root itself.
+	base := root
+	if filepath.Base(root) != filepath.Base(project) {
+		base = filepath.Dir(root)
+	}
+	return filepath.Join(base, dumpName), nil
+}
+
+// hostPathFor maps the path drush wrote to back onto the host. The project is
+// mounted into the container, so only the base name is reliable.
+func hostPathFor(project, target, dumpName string) string {
+	if filepath.IsAbs(target) && strings.HasPrefix(target, project) {
+		return target
+	}
+	return filepath.Join(project, dumpName)
+}
+
+// verifyDump rejects an empty or obviously truncated SQL dump.
+func verifyDump(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("no dump was written to %s", path)
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("the dump at %s is empty", path)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("read dump: %w", err)
+	}
+	defer f.Close()
+	head := make([]byte, 512)
+	n, _ := f.Read(head)
+	if !bytes.Contains(head[:n], []byte("--")) && !bytes.Contains(head[:n], []byte("CREATE")) &&
+		!bytes.Contains(head[:n], []byte("INSERT")) && !bytes.Contains(head[:n], []byte("/*")) {
+		return fmt.Errorf("the dump at %s does not look like SQL", path)
+	}
+	return nil
+}
+
 func archive(root, dest, excluded string) error {
 	f, err := os.Create(dest)
 	if err != nil {
@@ -255,9 +384,11 @@ func archive(root, dest, excluded string) error {
 			}
 			return nil
 		}
-		// node_modules is a build artifact: huge, regenerable, and full of
-		// symlinks. Backing it up made every real theme fail.
-		if info.IsDir() && info.Name() == "node_modules" {
+		// Skip trees a package manager can rebuild. Archiving vendor/ and
+		// web/core/ pushed a single backup past 4 GB, which makes taking one
+		// before every risky step impractical. composer.lock and
+		// package-lock.json travel with the backup, so they are restorable.
+		if info.IsDir() && isRegenerableDir(root, path, info.Name()) {
 			return filepath.SkipDir
 		}
 		rel, _ := filepath.Rel(root, path)

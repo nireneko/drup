@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nireneko/drup/internal/envdetect"
@@ -41,10 +42,16 @@ func TestManagerCreateRestoreListDelete(t *testing.T) {
 	originalRun, originalInput, originalDetect := run, runInput, detectEnv
 	defer func() { run, runInput, detectEnv = originalRun, originalInput, originalDetect }()
 	detectEnv = func(string) (*envdetect.Detection, error) { return &envdetect.Detection{}, nil }
-	run = func(_ []string, _ string, args ...string) (string, string, int, error) {
+	run = func(dir string, _ []string, _ string, args ...string) (string, string, int, error) {
 		for _, arg := range args {
 			if len(arg) > len("--result-file=") && arg[:len("--result-file=")] == "--result-file=" {
-				if err := os.WriteFile(arg[len("--result-file="):], []byte("database"), 0o600); err != nil {
+				// drush resolves a relative --result-file against its working
+				// directory, exactly as the real command does.
+				target := arg[len("--result-file="):]
+				if !filepath.IsAbs(target) {
+					target = filepath.Join(dir, target)
+				}
+				if err := os.WriteFile(target, []byte("-- database dump\nCREATE TABLE x;\n"), 0o600); err != nil {
 					return "", "", -1, err
 				}
 			}
@@ -124,5 +131,154 @@ func TestRestoreRequiresConfirmation(t *testing.T) {
 	}
 	if err := NewManager(project).Restore(project, "missing", false); err == nil {
 		t.Fatal("restore without confirmation succeeded")
+	}
+}
+
+// A backup that includes vendor/ and web/core/ runs to gigabytes, which stops
+// anyone from taking one before each risky step. Both rebuild from lockfiles.
+func TestArchive_SkipsRegenerableTrees(t *testing.T) {
+	project := t.TempDir()
+	for _, dir := range []string{
+		filepath.Join("web", "sites", "default", "files"),
+		".git",
+		filepath.Join("web", "core", "lib"),
+		filepath.Join("web", "modules", "custom", "mine"),
+		filepath.Join("web", "themes", "custom", "mine", "node_modules", "pkg"),
+		"vendor/drupal",
+	} {
+		if err := os.MkdirAll(filepath.Join(project, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(project, dir, "f.txt"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(project, "composer.lock"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "files.tar.gz")
+	if err := archive(project, dest, filepath.Join(project, ".drup")); err != nil {
+		t.Fatalf("archive error: %v", err)
+	}
+
+	out := t.TempDir()
+	if err := extract(dest, out); err != nil {
+		t.Fatalf("extract error: %v", err)
+	}
+
+	mustExist := []string{
+		filepath.Join("web", "modules", "custom", "mine", "f.txt"),
+		"composer.lock",
+	}
+	for _, p := range mustExist {
+		if _, err := os.Stat(filepath.Join(out, p)); err != nil {
+			t.Errorf("%s missing from backup: %v", p, err)
+		}
+	}
+	mustSkip := []string{
+		filepath.Join("web", "core", "lib", "f.txt"),
+		filepath.Join("vendor", "drupal", "f.txt"),
+		filepath.Join("web", "themes", "custom", "mine", "node_modules", "pkg", "f.txt"),
+		filepath.Join("web", "sites", "default", "files", "f.txt"),
+		filepath.Join(".git", "f.txt"),
+	}
+	for _, p := range mustSkip {
+		if _, err := os.Stat(filepath.Join(out, p)); !os.IsNotExist(err) {
+			t.Errorf("%s should not be archived", p)
+		}
+	}
+}
+
+// drush prints "[success] Database dump saved" even when mysqldump refused —
+// a missing PROCESS privilege, for instance. Trusting that message produced a
+// 23-byte backup, recorded a checksum of it, and left the run with no
+// database rollback point at all.
+func TestCreate_RejectsAnEmptyDatabaseDump(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "composer.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	originalRun, originalDetect := run, detectEnv
+	defer func() { run, detectEnv = originalRun, originalDetect }()
+	detectEnv = func(string) (*envdetect.Detection, error) { return &envdetect.Detection{}, nil }
+	// Report success without writing anything, exactly as drush does.
+	run = func(string, []string, string, ...string) (string, string, int, error) {
+		return "[success] Database dump saved", "", 0, nil
+	}
+
+	if _, err := NewManager(project).Create(project); err == nil {
+		t.Fatal("an empty dump was accepted as a valid backup")
+	} else if !strings.Contains(err.Error(), "database dump failure") {
+		t.Errorf("error = %v, want a database dump failure", err)
+	}
+}
+
+func TestVerifyDump(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	if err := verifyDump(filepath.Join(dir, "absent.sql")); err == nil {
+		t.Error("a missing dump was accepted")
+	}
+	if err := verifyDump(write("empty.sql", "")); err == nil {
+		t.Error("an empty dump was accepted")
+	}
+	if err := verifyDump(write("html.sql", "<html>error page</html>")); err == nil {
+		t.Error("a non-SQL payload was accepted")
+	}
+	if err := verifyDump(write("real.sql", "-- MySQL dump\nCREATE TABLE node;")); err != nil {
+		t.Errorf("a valid dump was rejected: %v", err)
+	}
+}
+
+// drush resolves a relative --result-file against the Drupal root, not the
+// working directory. Passing a bare filename dropped a full database dump
+// inside the web-served docroot and left drup looking for it one level up.
+func TestDumpTarget_ResolvesAgainstTheContainerProjectRoot(t *testing.T) {
+	originalRun := run
+	defer func() { run = originalRun }()
+	run = func(_ string, _ []string, _ string, args ...string) (string, string, int, error) {
+		return "/var/www/html/web\n", "", 0, nil
+	}
+
+	got, err := dumpTarget("/home/dev/site", []string{"ddev", "exec"}, ".drup-dump-1.sql")
+	if err != nil {
+		t.Fatalf("dumpTarget error: %v", err)
+	}
+	if got != "/var/www/html/.drup-dump-1.sql" {
+		t.Errorf("target = %q, want the container project root, not the docroot", got)
+	}
+	if strings.Contains(got, "/web/") {
+		t.Error("the dump would land inside the web-served docroot")
+	}
+}
+
+func TestDumpTarget_HostRunsUseTheProjectPath(t *testing.T) {
+	got, err := dumpTarget("/home/dev/site", nil, ".drup-dump-1.sql")
+	if err != nil {
+		t.Fatalf("dumpTarget error: %v", err)
+	}
+	if got != filepath.Join("/home/dev/site", ".drup-dump-1.sql") {
+		t.Errorf("target = %q, want the host project path", got)
+	}
+}
+
+func TestDumpTarget_FailsWhenTheRootCannotBeResolved(t *testing.T) {
+	originalRun := run
+	defer func() { run = originalRun }()
+	run = func(string, []string, string, ...string) (string, string, int, error) {
+		return "", "no bootstrap", 1, nil
+	}
+
+	if _, err := dumpTarget("/home/dev/site", []string{"ddev", "exec"}, "d.sql"); err == nil {
+		t.Error("an unresolvable Drupal root was accepted; the dump would go somewhere unknown")
 	}
 }

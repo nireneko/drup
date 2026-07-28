@@ -120,8 +120,8 @@ func TestServer_ListTools(t *testing.T) {
 	if !ok {
 		t.Fatal("missing tools array in result")
 	}
-	if len(tools) != 21 {
-		t.Errorf("len(tools) = %d, want 21", len(tools))
+	if len(tools) != 24 {
+		t.Errorf("len(tools) = %d, want 24", len(tools))
 	}
 }
 
@@ -352,11 +352,11 @@ var runtimeBackupNames = []string{
 	"test_backup_delete",
 }
 
-// TestServer_PostWireUpCountIs25 asserts that after the production-style
+// TestServer_PostWireUpCountIs28 asserts that after the production-style
 // registration of the 4 backup tools, tools/list reports 25 tools (the 21
 // default stubs + 4 reverse-asymmetric backup tools). This locks the runtime
 // count that docs/mcp-tools.md §1 advertises.
-func TestServer_PostWireUpCountIs25(t *testing.T) {
+func TestServer_PostWireUpCountIs28(t *testing.T) {
 	req := JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      1,
@@ -389,8 +389,8 @@ func TestServer_PostWireUpCountIs25(t *testing.T) {
 	if !ok {
 		t.Fatal("missing tools array in result")
 	}
-	if len(tools) != 25 {
-		t.Errorf("post-wire-up tool count = %d, want 25 (21 default + 4 backup)", len(tools))
+	if len(tools) != 28 {
+		t.Errorf("post-wire-up tool count = %d, want 28 (24 default + 4 backup)", len(tools))
 	}
 }
 

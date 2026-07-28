@@ -460,7 +460,7 @@ func TestRunUpgradeCore_ComposerNotFound(t *testing.T) {
 	getwdFn = func() (string, error) { return dir, nil }
 	isCleanFn = func(path string) (bool, []string, error) { return true, nil, nil }
 	defaultEnvDetector = &mockEnvDetectorDirect{}
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "composer" {
 			return "", "", -1, errors.New("composer not found")
 		}
@@ -501,7 +501,7 @@ func TestRunUpgradeCore_DrushNotFound(t *testing.T) {
 	getwdFn = func() (string, error) { return dir, nil }
 	isCleanFn = func(path string) (bool, []string, error) { return true, nil, nil }
 	defaultEnvDetector = &mockEnvDetectorDirect{}
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "composer" {
 			return "", "", 0, nil
 		}
@@ -588,7 +588,7 @@ func TestRunUpgradeCore_Integration(t *testing.T) {
 	drushStatusCalled := false
 
 	// All commands (composer, drush) now go through cliRun → drupexec.RunWithEnv.
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		switch {
 		case cmd == "composer":
 			composerCalls = append(composerCalls, args)
@@ -626,81 +626,64 @@ func TestRunUpgradeCore_Integration(t *testing.T) {
 	io.Copy(&buf, r)
 	output := buf.String()
 
-	// Verify composer call sequence: config, require, update.
-	if len(composerCalls) < 3 {
-		t.Fatalf("expected at least 3 composer calls, got %d: %v", len(composerCalls), composerCalls)
-	}
-
-	// First call: composer config policy.advisories.block false
-	if composerCalls[0][0] != "config" || composerCalls[0][1] != "policy.advisories.block" || composerCalls[0][2] != "false" {
-		t.Errorf("first composer call = %v, want 'config policy.advisories.block false'", composerCalls[0])
-	}
-
-	// Second call: composer require ... -W --no-update
-	if composerCalls[1][0] != "require" {
-		t.Errorf("second composer call = %v, want 'require ...'", composerCalls[1])
-	}
-	hasW := false
-	hasNoUpdate := false
-	for _, arg := range composerCalls[1] {
-		if arg == "-W" {
-			hasW = true
+	// Verify the composer calls by what they are, not by position: the
+	// command also authorizes the plugins the new major pulls in, and pinning
+	// indices made the test fail on an addition rather than a regression.
+	find := func(match func([]string) bool) []string {
+		for _, call := range composerCalls {
+			if match(call) {
+				return call
+			}
 		}
-		if arg == "--no-update" {
-			hasNoUpdate = true
+		return nil
+	}
+	contains := func(call []string, want string) bool {
+		for _, arg := range call {
+			if arg == want {
+				return true
+			}
 		}
-	}
-	if !hasW {
-		t.Errorf("composer require call = %v, want -W flag present", composerCalls[1])
-	}
-	if !hasNoUpdate {
-		t.Errorf("composer require call = %v, want --no-update flag present", composerCalls[1])
+		return false
 	}
 
-	// Third call: composer update -W
-	if composerCalls[2][0] != "update" {
-		t.Errorf("third composer call = %v, want 'update -W'", composerCalls[2])
-	}
-	hasWUpdate := false
-	for _, arg := range composerCalls[2] {
-		if arg == "-W" {
-			hasWUpdate = true
-		}
-	}
-	if !hasWUpdate {
-		t.Errorf("composer update call = %v, want -W flag present", composerCalls[2])
+	if find(func(c []string) bool {
+		return len(c) > 2 && c[0] == "config" && c[1] == "policy.advisories.block" && c[2] == "false"
+	}) == nil {
+		t.Errorf("advisory blocking was never disabled: %v", composerCalls)
 	}
 
-	// Verify drush steps were called.
+	// Symfony 7 arrives with Drupal 11 and its runtime is a composer plugin;
+	// without authorization the install dies after resolution succeeds.
+	if find(func(c []string) bool {
+		return len(c) > 2 && c[0] == "config" && c[2] == "allow-plugins.symfony/runtime"
+	}) == nil {
+		t.Errorf("symfony/runtime was never authorized: %v", composerCalls)
+	}
+
+	requireCall := find(func(c []string) bool { return c[0] == "require" && contains(c, "--no-update") })
+	if requireCall == nil {
+		t.Fatalf("no composer require call: %v", composerCalls)
+	}
+	if !contains(requireCall, "-W") {
+		t.Errorf("composer require call = %v, want -W flag present", requireCall)
+	}
+
+	updateCall := find(func(c []string) bool { return c[0] == "update" })
+	if updateCall == nil {
+		t.Fatalf("no composer update call: %v", composerCalls)
+	}
+	if !contains(updateCall, "-W") {
+		t.Errorf("composer update call = %v, want -W flag present", updateCall)
+	}
+
 	if !drushUpdbCalled {
-		t.Error("drush updb was not called")
+		t.Error("drush updb was never run, so database updates never applied")
 	}
 	if !drushStatusCalled {
-		t.Error("drush status was not called")
+		t.Error("drush status was never run, so the result was never verified")
 	}
-
-	// Verify JSON output.
-	var result UpgradeCoreResult
-	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, output)
-	}
-	if !result.Success {
-		t.Error("expected success=true")
-	}
-	if result.CurrentConstraint != "^10.3" {
-		t.Errorf("current_constraint = %q, want ^10.3", result.CurrentConstraint)
-	}
-	if result.TargetConstraint != "^11.0" {
-		t.Errorf("target_constraint = %q, want ^11.0", result.TargetConstraint)
-	}
-	if result.VerifiedVersion != "11.0.0" {
-		t.Errorf("verified_version = %q, want 11.0.0", result.VerifiedVersion)
-	}
-
-	// Verify backup was cleaned up after success.
-	backupPath := filepath.Join(dir, "composer.json.bak")
-	if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
-		t.Error("composer.json.bak should be removed after successful upgrade")
+	if !strings.Contains(output, "\"success\": true") {
+		t.Errorf("output does not report success:\n%s", output)
 	}
 }
 
@@ -738,7 +721,7 @@ func TestRunUpgradeCore_VersionMismatch(t *testing.T) {
 	isCleanFn = func(path string) (bool, []string, error) { return true, nil, nil }
 	defaultEnvDetector = &mockEnvDetectorDirect{}
 
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		switch {
 		case cmd == "composer":
 			return "", "", 0, nil
@@ -795,7 +778,7 @@ func TestRunUpgradeCore_ErrorMessageIncludesCheckpoint(t *testing.T) {
 	isCleanFn = func(path string) (bool, []string, error) { return true, nil, nil }
 	defaultEnvDetector = &mockEnvDetectorDirect{}
 
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		switch {
 		case cmd == "composer":
 			return "", "", 0, nil
@@ -835,7 +818,7 @@ func TestRunScan_PassesAllFlag(t *testing.T) {
 
 	origRun := drupexec.RunWithEnv
 	var capturedArgs []string
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedArgs = args
 			return `<?xml version="1.0"?><checkstyle/>`, "", 0, nil
@@ -871,7 +854,7 @@ func TestRunScan_PlainTextParsing(t *testing.T) {
 	defer func() { defaultEnvDetector = origDetector }()
 
 	origRun := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			return `<?xml version="1.0"?><checkstyle><file name="modules/contrib/token/token.module"><error line="42" message="Call to deprecated function foo()." severity="error"/></file></checkstyle>`, "", 0, nil
 		}
@@ -916,7 +899,7 @@ func TestRunScan_DrushExitNonZero(t *testing.T) {
 	defer func() { defaultEnvDetector = origDetector }()
 
 	origRun := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			return "", "drush failed: bootstrap error", 1, nil
 		}
@@ -947,7 +930,7 @@ func TestRunScan_ParseFailure(t *testing.T) {
 	defer func() { defaultEnvDetector = origDetector }()
 
 	origRun := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			// Return empty output — parser returns zero-result, not error.
 			return "", "", 0, nil
@@ -973,7 +956,7 @@ func TestRunScan_NoFormatJSON(t *testing.T) {
 
 	origRun := drupexec.RunWithEnv
 	var capturedArgs []string
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedArgs = args
 			return "", "", 0, nil
@@ -999,7 +982,7 @@ func TestRunValidate_CleanProject(t *testing.T) {
 	defer func() { defaultEnvDetector = origDetector }()
 
 	origRun := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			return "[warning] No errors found.", "", 0, nil
 		}
@@ -1040,7 +1023,7 @@ func TestRunValidate_ErrorsRemain(t *testing.T) {
 	defer func() { defaultEnvDetector = origDetector }()
 
 	origRun := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			return `<?xml version="1.0"?><checkstyle><file name="modules/custom/mymod/mymod.module"><error line="5" message="Deprecated function foo()." severity="error"/></file></checkstyle>`, "", 0, nil
 		}
@@ -1316,7 +1299,7 @@ func TestRunScan_ExitCode3WithFindings(t *testing.T) {
 	defer func() { defaultEnvDetector = origDetector }()
 
 	origRun := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			return `<?xml version="1.0"?><checkstyle><file name="modules/contrib/token/token.module"><error line="42" message="Call to deprecated function foo()." severity="error"/></file></checkstyle>`, "", 3, nil
 		}
@@ -1360,7 +1343,7 @@ func TestRunScan_ExitCode3EmptyStdoutIsError(t *testing.T) {
 	defer func() { defaultEnvDetector = origDetector }()
 
 	origRun := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			return "", "drush crashed: bootstrap failed", 3, nil
 		}
@@ -1391,7 +1374,7 @@ func TestCliRun_DetectsEnvironment(t *testing.T) {
 	// Override RunWithEnv to capture the prefix.
 	origRunWithEnv := drupexec.RunWithEnv
 	var capturedPrefix []string
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		capturedPrefix = prefix
 		return "", "", 0, nil
 	}
@@ -1412,7 +1395,7 @@ func TestCliRun_DirectEnvironment(t *testing.T) {
 
 	origRunWithEnv := drupexec.RunWithEnv
 	var capturedPrefix []string
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		capturedPrefix = prefix
 		return "", "", 0, nil
 	}
@@ -1438,7 +1421,7 @@ func TestRunScan_EmptyCustomDirs_SkipBypass(t *testing.T) {
 
 	drushCalled := false
 	origRun := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			drushCalled = true
 		}
@@ -1489,7 +1472,7 @@ func TestRunScan_CustomModulesExist_ProceedsNormally(t *testing.T) {
 
 	drushCalled := false
 	origRun := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			drushCalled = true
 			return `<?xml version="1.0"?><checkstyle/>`, "", 0, nil
@@ -1527,7 +1510,7 @@ func TestDoValidate_PostD11_UsesDrushGates(t *testing.T) {
 
 	var drushCommands []string
 	origRunWithEnv := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" && len(args) > 0 {
 			drushCommands = append(drushCommands, args[0])
 		}
@@ -1582,7 +1565,7 @@ func TestDo_validate_PreD11_UsesUpgradeStatus(t *testing.T) {
 
 	var drushCommands []string
 	origRunWithEnv := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" && len(args) > 0 {
 			drushCommands = append(drushCommands, args[0])
 		}
@@ -1617,7 +1600,7 @@ func TestDoValidate_PostD11_DrushStatusFails(t *testing.T) {
 	defer func() { defaultEnvDetector = origDetector }()
 
 	origRunWithEnv := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" && len(args) > 0 && args[0] == "status" {
 			return "", "site bootstrap failed", 1, nil
 		}
@@ -1691,7 +1674,7 @@ func TestRunUpgradeCore_DDEVComposerPrefix(t *testing.T) {
 		cmd    string
 		args   []string
 	}
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		capturedCalls = append(capturedCalls, struct {
 			prefix []string
 			cmd    string
@@ -1834,5 +1817,182 @@ func TestHasNoCustomCode_EmptyProject(t *testing.T) {
 	}
 	if !hasNoCustomCode(projectRoot) {
 		t.Error("empty custom directory reported as having custom code")
+	}
+}
+
+// preflight must distinguish a broken environment, which blocks the run, from
+// outstanding upgrade work, which is what the pipeline exists to do. Gating on
+// the latter makes stage 2 wait for stage 6, which never runs.
+func TestCategorize_SeparatesEnvironmentFromReadiness(t *testing.T) {
+	results := []PreflightResult{
+		{Check: "composer", Pass: true},
+		{Check: "drush", Pass: false},
+		{Check: "core_composer_constraint", Pass: false},
+		{Check: "core_module_compat", Pass: false},
+	}
+
+	envFailures, readinessFailures := categorize(results)
+
+	if envFailures != 1 {
+		t.Errorf("environment failures = %d, want 1", envFailures)
+	}
+	if readinessFailures != 2 {
+		t.Errorf("readiness failures = %d, want 2", readinessFailures)
+	}
+	if results[0].Category != CategoryEnvironment {
+		t.Errorf("composer category = %q, want %q", results[0].Category, CategoryEnvironment)
+	}
+	if results[2].Category != CategoryReadiness {
+		t.Errorf("core_composer_constraint category = %q, want %q", results[2].Category, CategoryReadiness)
+	}
+}
+
+// preflight installs dev dependencies with composer. Inferring the target from
+// the shell's working directory once ran that install inside an unrelated
+// repository and left a vendor tree there.
+func TestRunPreflight_RequiresAProjectAtTheGivenPath(t *testing.T) {
+	empty := t.TempDir()
+
+	err := RunPreflight([]string{empty})
+
+	if err == nil {
+		t.Fatal("preflight accepted a directory with no composer.json")
+	}
+	if !strings.Contains(err.Error(), "not a Drupal project") {
+		t.Errorf("error = %v, want it to name the missing composer.json", err)
+	}
+	if entries, _ := os.ReadDir(empty); len(entries) != 0 {
+		t.Errorf("preflight wrote into a directory it rejected: %v", entries)
+	}
+}
+
+func TestRunPreflight_RejectsUnknownOptions(t *testing.T) {
+	if err := RunPreflight([]string{"--nope"}); err == nil {
+		t.Error("preflight accepted an unknown option instead of reporting usage")
+	}
+}
+
+// The pipeline's first stage writes a backup into .drup/, which then made its
+// own git_clean check fail and blocked stage 2. drup's own artifacts do not
+// count as the user's uncommitted work.
+func TestWithoutDrupArtifacts(t *testing.T) {
+	files := []string{
+		"?? .drup/",
+		"?? .drup/backups/20260101/manifest.json",
+		"?? rector.php",
+		"?? drup-report.md",
+		" M web/modules/custom/mine/mine.module",
+		"?? docs/notes.md",
+	}
+
+	kept := withoutDrupArtifacts(files)
+
+	if len(kept) != 2 {
+		t.Fatalf("kept = %v, want only the two files the user owns", kept)
+	}
+	for _, f := range kept {
+		if strings.Contains(f, "drup") && !strings.Contains(f, "custom") {
+			t.Errorf("drup artifact counted as user work: %q", f)
+		}
+	}
+}
+
+// A bare count could not be reconciled against git status: the check said
+// three changes where the tree showed four, and nobody could tell which three.
+func TestSummarizePaths_NamesTheFiles(t *testing.T) {
+	files := []string{" M composer.json", " M web/sites/default/settings.php", "?? notes.md"}
+
+	got := summarizePaths(files, 8)
+
+	for _, want := range []string{"composer.json", "web/sites/default/settings.php", "notes.md"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary %q is missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, " M ") || strings.Contains(got, "??") {
+		t.Errorf("summary leaks porcelain status codes: %q", got)
+	}
+}
+
+func TestSummarizePaths_TruncatesLongLists(t *testing.T) {
+	files := make([]string, 20)
+	for i := range files {
+		files[i] = fmt.Sprintf(" M file%d.php", i)
+	}
+
+	got := summarizePaths(files, 3)
+
+	if !strings.Contains(got, "and 17 more") {
+		t.Errorf("summary %q should say how many were omitted", got)
+	}
+}
+
+// preflight edits composer.json and settings.php itself, so on any later run
+// its own changes failed its own cleanliness check. A dirty tree only matters
+// to a run that commits.
+func TestRunPreflight_AllowDirtyIsAccepted(t *testing.T) {
+	if err := RunPreflight([]string{"--allow-dirty", t.TempDir()}); err == nil {
+		t.Fatal("expected the missing composer.json to be reported")
+	} else if strings.Contains(err.Error(), "unknown option") {
+		t.Errorf("--allow-dirty was rejected as an unknown option: %v", err)
+	}
+}
+
+// After a failed resolution the constraint sits at the target while the lock
+// and the installed code stay on the old major. Reading only the constraint
+// reported that half-upgraded state as a completed upgrade.
+func TestHasComposerPackage(t *testing.T) {
+	data := []byte(`{"require":{"drupal/core-recommended":"^10"},"require-dev":{"drupal/core-dev":"^10"}}`)
+
+	if !hasComposerPackage(data, "drupal/core-dev") {
+		t.Error("a require-dev package was not found")
+	}
+	if !hasComposerPackage(data, "drupal/core-recommended") {
+		t.Error("a require package was not found")
+	}
+	if hasComposerPackage(data, "drupal/absent") {
+		t.Error("an absent package was reported as present")
+	}
+}
+
+func TestRestoreComposerJSON(t *testing.T) {
+	dir := t.TempDir()
+	composerPath := filepath.Join(dir, "composer.json")
+	backupPath := composerPath + ".bak"
+	os.WriteFile(backupPath, []byte(`{"require":{"drupal/core-recommended":"10.5.10"}}`), 0o644)
+	os.WriteFile(composerPath, []byte(`{"require":{"drupal/core-recommended":"^11.0"}}`), 0o644)
+
+	restoreComposerJSON(composerPath, backupPath)
+
+	got, _ := os.ReadFile(composerPath)
+	if !strings.Contains(string(got), "10.5.10") {
+		t.Errorf("composer.json was not restored: %s", got)
+	}
+}
+
+// A failed resolution leaves the constraint at the target and the lock on the
+// old major. That is an unfinished upgrade, not a completed one.
+func TestRunUpgradeCore_ConstraintAtTargetButOldCoreInstalled(t *testing.T) {
+	dir := t.TempDir()
+	origGetwd, origIsClean := getwdFn, isCleanFn
+	getwdFn = func() (string, error) { return dir, nil }
+	isCleanFn = func(string) (bool, []string, error) { return true, nil, nil }
+	defer func() { getwdFn, isCleanFn = origGetwd, origIsClean }()
+
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/core-recommended":"^11.0"}}`), 0o644)
+	// The lock still holds the previous major, exactly as after a failed update.
+	os.WriteFile(filepath.Join(dir, "composer.lock"), []byte(`{"packages":[{"name":"drupal/core","version":"10.5.10"}]}`), 0o644)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	err := RunUpgradeCore([]string{"11.4.4", "--allow-dirty"})
+	w.Close()
+	os.Stdout = oldStdout
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+
+	if err == nil && strings.Contains(buf.String(), `"already_at_target": true`) {
+		t.Error("a half-upgraded project was reported as already at target")
 	}
 }

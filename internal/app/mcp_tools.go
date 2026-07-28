@@ -71,6 +71,9 @@ func WireMCPTools(s *mcp.Server) {
 	s.RegisterTool("core_upgrade_apply", realHandleCoreUpgradeApply)
 	s.RegisterTool("patch_reconcile", realHandlePatchReconcile)
 	s.RegisterTool("cleanup", realHandleCleanup)
+	s.RegisterTool("custom_compat_fix", realHandleCustomCompatFix)
+	s.RegisterTool("contrib_allow_lenient", realHandleContribAllowLenient)
+	s.RegisterTool("contrib_compat_patch", realHandleContribCompatPatch)
 	s.RegisterTool("test_backup_create", realHandleTestBackupCreate)
 	s.RegisterTool("test_backup_list", realHandleTestBackupList)
 	s.RegisterTool("test_backup_restore", realHandleTestBackupRestore)
@@ -205,20 +208,27 @@ func realHandleAutofix(args json.RawMessage) (json.RawMessage, error) {
 	args2 = append(args2, "--config="+configPath)
 	// Rector must run against the site's PHP, so it goes through the same
 	// environment prefix as drush and composer.
-	stdout, _, _, err := cliRun(params.ProjectPath, projectRelPath(params.ProjectPath, "vendor", "bin", "rector"), args2...)
+	stdout, rectorStderr, rectorExit, err := cliRun(params.ProjectPath, projectRelPath(params.ProjectPath, "vendor", "bin", "rector"), args2...)
 	if err != nil {
 		return nil, fmt.Errorf("exec rector: %w", err)
 	}
-
-	// Re-scan to get remaining errors.
-	scanStdout, _, scanExit, _ := cliRun(params.ProjectPath, "drush", "upgrade_status:analyze", "--all", "--format=checkstyle", "--root="+params.ProjectPath)
-	remaining := 0
-	if isScanExitOK(scanExit) && strings.TrimSpace(scanStdout) != "" {
-		result, err := scan.ParseCheckstyle(strings.NewReader(scanStdout))
-		if err == nil {
-			remaining = result.TotalErrs
-		}
+	// Rector's exit code used to be discarded, so a failed run reported an
+	// empty summary and looked like success.
+	if rectorExit != 0 {
+		return nil, fmt.Errorf("rector exited %d: %s%.500s", rectorExit, rectorStderr, stdout)
 	}
+
+	// Re-scan to get remaining errors. A rescan that cannot be parsed must not
+	// be reported as zero remaining errors.
+	scanStdout, scanStderr, scanExit, _ := cliRun(params.ProjectPath, "drush", "upgrade_status:analyze", "--all", "--format=checkstyle", "--root="+params.ProjectPath)
+	if !isScanExitOK(scanExit) {
+		return nil, drushExecError("drush", []string{"upgrade_status:analyze", "--all", "--format=checkstyle"}, scanExit, scanStderr, scanStdout)
+	}
+	rescan, err := scan.ParseCheckstyle(strings.NewReader(scanStdout))
+	if err != nil {
+		return nil, fmt.Errorf("parse rescan after rector: %w", err)
+	}
+	remaining := rescan.TotalErrs
 
 	response := map[string]interface{}{
 		"rector_summary":   stdout,
@@ -574,7 +584,7 @@ func realHandleComposerRequire(args json.RawMessage) (json.RawMessage, error) {
 	if params.NoUpdate {
 		dryArgs = append(dryArgs, "--no-update")
 	}
-	_, dryStderr, dryExit, err := drupexec.RunWithEnv(detection.CommandPrefix, "composer", dryArgs...)
+	_, dryStderr, dryExit, err := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "composer", dryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("exec composer dry-run: %w", err)
 	}
@@ -597,7 +607,7 @@ func realHandleComposerRequire(args json.RawMessage) (json.RawMessage, error) {
 	if params.NoUpdate {
 		realArgs = append(realArgs, "--no-update")
 	}
-	stdout, stderr, exitCode, err := drupexec.RunWithEnv(detection.CommandPrefix, "composer", realArgs...)
+	stdout, stderr, exitCode, err := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "composer", realArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("exec composer require: %w", err)
 	}
@@ -693,7 +703,7 @@ func realHandleDrushExec(args json.RawMessage) (json.RawMessage, error) {
 		cmdArgs = append(cmdArgs, "--format="+params.Format)
 	}
 
-	stdout, stderr, exitCode, err := drupexec.RunWithEnv(detection.CommandPrefix, "drush", cmdArgs...)
+	stdout, stderr, exitCode, err := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", cmdArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("exec drush: %w", err)
 	}
@@ -791,7 +801,7 @@ func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 	// Check if upgrade_status is enabled.
 	upgradeStatusEnabled := false
 	pmListArgs := []string{"pm:list", "--status=enabled", "--format=json"}
-	pmStdout, _, pmExit, _ := drupexec.RunWithEnv(detection.CommandPrefix, "drush", append(pmListArgs, "--root="+params.ProjectPath)...)
+	pmStdout, _, pmExit, _ := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", append(pmListArgs, "--root="+params.ProjectPath)...)
 	if pmExit == 0 {
 		var pmData map[string]interface{}
 		if json.Unmarshal([]byte(pmStdout), &pmData) == nil {
@@ -805,10 +815,10 @@ func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 	if !upgradeStatusEnabled {
 		// Delete conflicting update.settings config before enabling.
 		cdArgs := []string{"config:delete", "update.settings", "--root=" + params.ProjectPath}
-		_, _, _, _ = drupexec.RunWithEnv(detection.CommandPrefix, "drush", cdArgs...)
+		_, _, _, _ = drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", cdArgs...)
 
 		enArgs := []string{"en", "upgrade_status", "-y", "--root=" + params.ProjectPath}
-		_, enStderr, enExit, enErr := drupexec.RunWithEnv(detection.CommandPrefix, "drush", enArgs...)
+		_, enStderr, enExit, enErr := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", enArgs...)
 		if enErr != nil {
 			return nil, fmt.Errorf("enable upgrade_status: %w", enErr)
 		}
@@ -818,7 +828,7 @@ func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 		// Drush caches its command list, so upgrade_status:checkstyle stays
 		// undefined until the cache is rebuilt.
 		crArgs := []string{"cr", "--root=" + params.ProjectPath}
-		_, _, _, _ = drupexec.RunWithEnv(detection.CommandPrefix, "drush", crArgs...)
+		_, _, _, _ = drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", crArgs...)
 		upgradeStatusEnabled = true
 	}
 
@@ -829,7 +839,7 @@ func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 		analyzeTarget = params.Module
 	}
 	analyzeArgs := []string{"upgrade_status:analyze", analyzeTarget, "--format=checkstyle", "--root=" + params.ProjectPath}
-	analyzeStdout, analyzeStderr, analyzeExit, analyzeErr := drupexec.RunWithEnv(detection.CommandPrefix, "drush", analyzeArgs...)
+	analyzeStdout, analyzeStderr, analyzeExit, analyzeErr := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", analyzeArgs...)
 	if analyzeErr != nil {
 		return nil, drushExecError("drush", analyzeArgs, -1, analyzeErr.Error(), "")
 	}
@@ -1258,7 +1268,7 @@ func realHandlePatchRollback(args json.RawMessage) (json.RawMessage, error) {
 
 	// Step 3: composer update for the package.
 	detection, _ := defaultEnvDetector.Detect(params.ProjectPath, false)
-	_, compStderr, compExit, _ := drupexec.RunWithEnv(detection.CommandPrefix, "composer", "update", params.ComposerPackage)
+	_, compStderr, compExit, _ := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "composer", "update", params.ComposerPackage)
 
 	result := map[string]interface{}{
 		"success":               true,
@@ -1381,6 +1391,76 @@ func realHandleGenerateReport(args json.RawMessage) (json.RawMessage, error) {
 		result["markdown_report_path"] = mdPath
 	}
 
+	return json.Marshal(result)
+}
+
+func realHandleCustomCompatFix(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath   string `json:"project_path"`
+		TargetVersion string `json:"target_version,omitempty"`
+		DryRun        bool   `json:"dry_run,omitempty"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if params.ProjectPath == "" {
+		return nil, fmt.Errorf("project_path is required")
+	}
+	target := params.TargetVersion
+	if target == "" {
+		target = "11"
+	}
+
+	result, err := BumpCustomCoreCompat(params.ProjectPath, target, params.DryRun)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(result)
+}
+
+func realHandleContribAllowLenient(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath string   `json:"project_path"`
+		Packages    []string `json:"packages"`
+		DryRun      bool     `json:"dry_run,omitempty"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if params.ProjectPath == "" {
+		return nil, fmt.Errorf("project_path is required")
+	}
+
+	result, err := AllowLenient(params.ProjectPath, params.Packages, params.DryRun)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(result)
+}
+
+func realHandleContribCompatPatch(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath     string `json:"project_path"`
+		Module          string `json:"module_machine_name"`
+		TargetVersion   string `json:"target_version,omitempty"`
+		DryRun          bool   `json:"dry_run,omitempty"`
+		DeclarationOnly bool   `json:"declaration_only,omitempty"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if params.ProjectPath == "" || params.Module == "" {
+		return nil, fmt.Errorf("project_path and module_machine_name are required")
+	}
+	target := params.TargetVersion
+	if target == "" {
+		target = "11"
+	}
+
+	result, err := PatchContribForCore(params.ProjectPath, params.Module, target, params.DryRun, params.DeclarationOnly)
+	if err != nil {
+		return nil, err
+	}
 	return json.Marshal(result)
 }
 
@@ -1632,6 +1712,7 @@ func realHandleCoreUpgradeApply(args json.RawMessage) (json.RawMessage, error) {
 		ProjectPath   string `json:"project_path"`
 		TargetVersion string `json:"target_version"`
 		DryRun        bool   `json:"dry_run"`
+		AllowDirty    bool   `json:"allow_dirty,omitempty"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, err
@@ -1643,7 +1724,7 @@ func realHandleCoreUpgradeApply(args json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("target_version is required")
 	}
 
-	result, err := coreupgrade.Apply(params.ProjectPath, params.TargetVersion, params.DryRun)
+	result, err := coreupgrade.Apply(params.ProjectPath, params.TargetVersion, params.DryRun, params.AllowDirty, false)
 	if err != nil {
 		return nil, err
 	}

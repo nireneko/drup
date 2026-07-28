@@ -1,10 +1,8 @@
 package app
 
 import (
-	"archive/zip"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -73,6 +71,11 @@ func isScanExitOK(exitCode int) bool {
 	return exitCode == 0 || exitCode == 3
 }
 
+// webRootFor returns the configured docroot directory name.
+func webRootFor(projectPath string) string {
+	return composerutil.ReadWebRoot(projectPath)
+}
+
 // resolveDrupalRoot returns the directory holding modules/ and themes/.
 // Callers pass either the project root (composer.json level) or the docroot,
 // and assuming the wrong one makes a project full of custom code look empty.
@@ -117,7 +120,10 @@ func cliRun(projectPath string, cmd string, args ...string) (string, string, int
 	if err != nil {
 		return "", "", -1, fmt.Errorf("detect environment: %w", err)
 	}
-	return drupexec.RunWithEnv(detection.CommandPrefix, cmd, args...)
+	// Run from the project so container CLIs can resolve it. Without this the
+	// MCP server, whose working directory is wherever the agent started it,
+	// fails every ddev and lando call.
+	return drupexec.RunWithEnv(projectPath, detection.CommandPrefix, cmd, args...)
 }
 
 // isContainerized reports whether commands for projectPath run inside a
@@ -613,7 +619,7 @@ func RunInstall() error {
 		return fmt.Errorf("save state: %w", err)
 	}
 
-	fmt.Println("\nRestart your agents to load the drup MCP server. Agents write their own config files, so a session running during the install may overwrite this registration.")
+	fmt.Println("\nRestart your agents to load the drup MCP server. Agents write their own config files, so a session running during the install may overwrite this registration, and a server already running keeps the previous binary in memory.")
 
 	return nil
 }
@@ -641,6 +647,8 @@ func RunSync() error {
 		return fmt.Errorf("sync failed for every detected agent:\n  %s", strings.Join(failures, "\n  "))
 	}
 	reportInstallFailures(failures)
+
+	fmt.Println("\nRestart your agents. A running MCP server keeps the previous binary in memory, so an agent that stays open keeps calling the old code — including tools this build fixed.")
 
 	// Keep the flag set when an agent still needs a successful sync.
 	s.PendingSync = len(failures) > 0
@@ -701,7 +709,6 @@ var stateRemoveFn = statepkg.Remove
 // RunUpgradeCore override points for testability.
 var getwdFn = os.Getwd
 var isCleanFn = gitops.IsClean
-var execRunFn = drupexec.Run
 
 // doValidateFn wraps DoValidate for testability.
 var doValidateFn = DoValidate
@@ -746,18 +753,165 @@ func RunUpgrade() error {
 	return nil
 }
 
+// Preflight check categories. The distinction decides what blocks a run:
+// the environment must work before anything else can, while readiness
+// describes the upgrade the pipeline exists to perform.
+const (
+	CategoryEnvironment = "environment"
+	CategoryReadiness   = "readiness"
+)
+
+// readinessChecks are the checks that report outstanding upgrade work rather
+// than a broken environment. Failing them is the reason to run the pipeline,
+// not a reason to refuse to start it.
+var readinessChecks = map[string]bool{
+	"core_composer_constraint": true,
+	"core_module_compat":       true,
+}
+
+// drupArtifacts are paths drup itself writes into a project. They must not
+// count against the working tree being clean, or taking a backup would block
+// the run that requested it.
+var drupArtifacts = []string{".drup/", ".drup-dump-", "drup-report.json", "drup-report.md", "rector.php", "settings.php.bak"}
+
+// withoutDrupArtifacts filters drup's own files out of a git status listing.
+func withoutDrupArtifacts(files []string) []string {
+	kept := make([]string, 0, len(files))
+	for _, f := range files {
+		name := strings.TrimSpace(f)
+		// git status --porcelain lines start with a two-character status.
+		if len(name) > 3 && (name[2] == ' ' || name[1] == ' ') {
+			name = strings.TrimSpace(name[2:])
+		}
+		name = strings.Trim(name, `"`)
+		drupOwned := false
+		for _, artifact := range drupArtifacts {
+			if name == artifact || strings.HasPrefix(name, artifact) {
+				drupOwned = true
+				break
+			}
+		}
+		if !drupOwned {
+			kept = append(kept, f)
+		}
+	}
+	return kept
+}
+
+// summarizePaths renders git status entries as a readable list, truncated so a
+// large diff does not bury the rest of the report.
+func summarizePaths(files []string, max int) string {
+	names := make([]string, 0, len(files))
+	for _, f := range files {
+		name := strings.TrimSpace(f)
+		if len(name) > 3 && (name[2] == ' ' || name[1] == ' ') {
+			name = strings.TrimSpace(name[2:])
+		}
+		names = append(names, strings.Trim(name, `"`))
+	}
+	if len(names) <= max {
+		return strings.Join(names, ", ")
+	}
+	return strings.Join(names[:max], ", ") + fmt.Sprintf(" and %d more", len(names)-max)
+}
+
+// hasComposerPackage reports whether composer.json requires a package in
+// either section.
+func hasComposerPackage(composerData []byte, pkg string) bool {
+	var parsed struct {
+		Require    map[string]string `json:"require"`
+		RequireDev map[string]string `json:"require-dev"`
+	}
+	if err := json.Unmarshal(composerData, &parsed); err != nil {
+		return false
+	}
+	if _, ok := parsed.Require[pkg]; ok {
+		return true
+	}
+	_, ok := parsed.RequireDev[pkg]
+	return ok
+}
+
+// restoreComposerJSON puts back the pre-upgrade file after a failed
+// resolution, so the project is never left with constraints its lock cannot
+// satisfy.
+func restoreComposerJSON(composerPath, backupPath string) {
+	if data, err := os.ReadFile(backupPath); err == nil {
+		_ = os.WriteFile(composerPath, data, 0o644)
+	}
+}
+
+// corePlugins are the composer plugins a Drupal core upgrade needs authorized.
+// Resolution succeeds without them and the install then fails, which reads as
+// a mysterious late failure rather than a missing permission.
+var corePlugins = []string{
+	"symfony/runtime",
+	"drupal/core-composer-scaffold",
+	"drupal/core-project-message",
+	"composer/installers",
+	"cweagans/composer-patches",
+}
+
 // PreflightResult holds the outcome of each preflight check.
 type PreflightResult struct {
-	Check   string `json:"check"`
-	Pass    bool   `json:"pass"`
-	Message string `json:"message"`
+	Check    string `json:"check"`
+	Pass     bool   `json:"pass"`
+	Message  string `json:"message"`
+	Category string `json:"category"`
+}
+
+// categorize fills in the category and reports whether a failure blocks the run.
+func categorize(results []PreflightResult) (environmentFailures, readinessFailures int) {
+	for i := range results {
+		r := &results[i]
+		if readinessChecks[r.Check] {
+			r.Category = CategoryReadiness
+		} else {
+			r.Category = CategoryEnvironment
+		}
+		if r.Pass {
+			continue
+		}
+		if r.Category == CategoryReadiness {
+			readinessFailures++
+		} else {
+			environmentFailures++
+		}
+	}
+	return environmentFailures, readinessFailures
 }
 
 // RunPreflight checks project readiness for upgrade automation.
-func RunPreflight() error {
-	cwd, err := os.Getwd()
+// The project path is explicit: preflight installs dev dependencies with
+// composer, and inferring the target from the shell's working directory once
+// left a vendor tree in an unrelated repository.
+func RunPreflight(args []string) error {
+	cwd := ""
+	allowDirty := false
+	for _, arg := range args {
+		switch {
+		case arg == "--allow-dirty":
+			allowDirty = true
+		case strings.HasPrefix(arg, "-"):
+			return fmt.Errorf("unknown option %q — usage: drup preflight [path] [--allow-dirty]", arg)
+		default:
+			cwd = arg
+		}
+	}
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			return fmt.Errorf("get working directory: %w", err)
+		}
+	}
+	abs, err := filepath.Abs(cwd)
 	if err != nil {
-		return fmt.Errorf("get working directory: %w", err)
+		return fmt.Errorf("resolve %s: %w", cwd, err)
+	}
+	cwd = abs
+	if _, err := os.Stat(filepath.Join(cwd, "composer.json")); err != nil {
+		return fmt.Errorf("not a Drupal project: no composer.json in %s", cwd)
 	}
 
 	var results []PreflightResult
@@ -780,8 +934,14 @@ func RunPreflight() error {
 		allPass = false
 	}
 
-	// 2. Check git clean.
+	// 2. Check git clean, ignoring drup's own artifacts. The pipeline takes a
+	// backup into .drup/ before it starts, which used to make its own next
+	// check fail.
 	clean, files, err := gitops.IsClean(cwd)
+	if err == nil {
+		files = withoutDrupArtifacts(files)
+		clean = len(files) == 0
+	}
 	if err != nil {
 		results = append(results, PreflightResult{
 			Check:   "git_clean",
@@ -790,12 +950,23 @@ func RunPreflight() error {
 		})
 		allPass = false
 	} else if !clean {
+		// Name the files. A bare count could not be reconciled against git
+		// status, which left a reader unable to tell what the check objected
+		// to or whether drup had counted its own artifacts.
+		//
+		// A dirty tree only matters to a run that commits: it is what makes a
+		// per-fix commit sweep in unrelated work. When the caller has already
+		// decided not to commit — and after preflight's own composer and
+		// settings.php edits, which would otherwise fail every later run — it
+		// is information, not a blocker.
 		results = append(results, PreflightResult{
 			Check:   "git_clean",
-			Pass:    false,
-			Message: fmt.Sprintf("Working tree has %d uncommitted changes", len(files)),
+			Pass:    allowDirty,
+			Message: fmt.Sprintf("Working tree has %d uncommitted changes: %s", len(files), summarizePaths(files, 8)),
 		})
-		allPass = false
+		if !allowDirty {
+			allPass = false
+		}
 	} else {
 		results = append(results, PreflightResult{
 			Check:   "git_clean",
@@ -917,10 +1088,13 @@ func RunPreflight() error {
 				})
 				allPass = false
 			} else {
+				// Name the file and the backup: this is a mutation of a
+				// tracked file, not just a check that passed.
+				settingsPath := filepath.Join(cwd, webRootFor(cwd), "sites", "default", "settings.php")
 				results = append(results, PreflightResult{
 					Check:   "php84_compat",
 					Pass:    true,
-					Message: "settings.php patched to suppress E_DEPRECATED",
+					Message: fmt.Sprintf("MODIFIED %s: appended error_reporting() to silence PHP 8.4 deprecation notices (original saved as settings.php.bak)", settingsPath),
 				})
 			}
 		}
@@ -959,11 +1133,21 @@ func RunPreflight() error {
 	}
 
 	// Output results.
+	environmentFailures, readinessFailures := categorize(results)
+	_ = allPass
+
 	data, _ := json.MarshalIndent(results, "", "  ")
 	fmt.Println(string(data))
 
-	if !allPass {
-		return fmt.Errorf("preflight: some checks failed")
+	if environmentFailures > 0 {
+		return fmt.Errorf("preflight: %d environment check(s) failed — the pipeline cannot run until they are fixed", environmentFailures)
+	}
+	if readinessFailures > 0 {
+		// Outstanding upgrade work is the normal state of a project about to
+		// be upgraded. Gating on it would make the pipeline wait for its own
+		// later stages.
+		fmt.Printf("Environment ready. %d readiness item(s) remain — that is the work the pipeline performs.\n", readinessFailures)
+		return nil
 	}
 	fmt.Println("All preflight checks passed.")
 	return nil
@@ -1169,10 +1353,13 @@ func RunUpgradeCore(args []string) error {
 
 	targetVersion := ""
 	dryRun := false
+	allowDirty := false
 	for _, arg := range args {
 		switch {
 		case arg == "--dry-run":
 			dryRun = true
+		case arg == "--allow-dirty":
+			allowDirty = true
 		case strings.HasPrefix(arg, "-"):
 			continue
 		default:
@@ -1230,28 +1417,47 @@ func RunUpgradeCore(args []string) error {
 	}
 
 	// Check if already at target.
+	forceResolve := false
+	// A matching constraint is not an upgrade. After a failed resolution the
+	// constraint sits at the target while the lock and the installed code stay
+	// on the old major, and reading only the constraint reported that state as
+	// a success.
 	if currentConstraint == targetConstraint {
-		result.AlreadyAtTarget = true
-		result.Success = true
-		data, _ := json.MarshalIndent(result, "", "  ")
-		fmt.Println("already at target version")
-		fmt.Println(string(data))
-		return nil
+		installed := detectDrupalVersion(cwd)
+		installedMajor := majorOf(installed)
+		// With no lock there is nothing installed to contradict the
+		// constraint; only a readable mismatch means the upgrade is unfinished.
+		if installedMajor == "" || installedMajor == majorOf(targetVersion) {
+			result.AlreadyAtTarget = true
+			result.Success = true
+			data, _ := json.MarshalIndent(result, "", "  ")
+			fmt.Println("already at target version")
+			fmt.Println(string(data))
+			return nil
+		}
+		fmt.Printf("composer.json already requires %s but the installed core is %s — resolving\n", targetConstraint, installed)
+		forceResolve = true
 	}
 
 	// Check for clean working tree (unless dry-run).
-	if !dryRun {
+	if !dryRun && !allowDirty {
 		clean, dirtyFiles, err := isCleanFn(cwd)
 		if err != nil {
 			return fmt.Errorf("check git status: %w", err)
 		}
-		if !clean {
-			return fmt.Errorf("working tree is dirty; commit or stash changes first: %s", strings.Join(dirtyFiles, ", "))
+		// drup's own artifacts do not count: the earlier stages of the very
+		// pipeline that leads here write rector fixes, compatibility
+		// declarations and a backup directory, and refusing on those made the
+		// command unusable in the sequence it belongs to.
+		dirtyFiles = withoutDrupArtifacts(dirtyFiles)
+		if !clean && len(dirtyFiles) > 0 {
+			return fmt.Errorf("working tree has %d uncommitted changes; commit or stash them, or pass --allow-dirty to upgrade on top of them: %s",
+				len(dirtyFiles), summarizePaths(dirtyFiles, 8))
 		}
 	}
 
 	// Call coreupgrade.Apply for the composer.json mutation.
-	applyResult, err := coreupgrade.Apply(cwd, targetVersion, dryRun)
+	applyResult, err := coreupgrade.Apply(cwd, targetVersion, dryRun, allowDirty, forceResolve)
 	if err != nil {
 		return fmt.Errorf("core upgrade apply: %w", err)
 	}
@@ -1278,6 +1484,18 @@ func RunUpgradeCore(args []string) error {
 	backupPath := composerPath + ".bak"
 	os.WriteFile(backupPath, composerData, 0o644)
 
+	// Authorize the composer plugins the new major pulls in. Drupal 11 brings
+	// Symfony 7, whose symfony/runtime is a plugin: resolution succeeds and
+	// then the install dies on an unauthorized plugin, which every 10 to 11
+	// upgrade would hit.
+	for _, plugin := range corePlugins {
+		if _, stderr, exitCode, err := cliRun(cwd, "composer", "config", "--no-plugins", "allow-plugins."+plugin, "true"); err != nil {
+			return fmt.Errorf("allow %s: %w", plugin, err)
+		} else if exitCode != 0 {
+			return fmt.Errorf("allow %s failed (exit %d): %s", plugin, exitCode, stderr)
+		}
+	}
+
 	// Disable advisory blocking before require.
 	_, stderr, exitCode, err := cliRun(cwd, "composer", "config", "policy.advisories.block", "false")
 	if err != nil {
@@ -1288,11 +1506,20 @@ func RunUpgradeCore(args []string) error {
 	}
 
 	// Run composer require with -W and --no-update.
+	// Every core package moves together. Leaving drupal/core-dev on the old
+	// major made composer reject the whole set: it is required by the same
+	// project and pins the previous core.
 	composerArgs := []string{
 		"require",
 		fmt.Sprintf("drupal/core-recommended:%s", targetConstraint),
 		fmt.Sprintf("drupal/core-composer-scaffold:%s", targetConstraint),
 		fmt.Sprintf("drupal/core-project-message:%s", targetConstraint),
+		"-W",
+		"--no-update",
+	}
+	devArgs := []string{
+		"require", "--dev",
+		fmt.Sprintf("drupal/core-dev:%s", targetConstraint),
 		"-W",
 		"--no-update",
 	}
@@ -1305,13 +1532,29 @@ func RunUpgradeCore(args []string) error {
 		return fmt.Errorf("composer require failed (exit %d): %s", exitCode, stderr)
 	}
 
+	// core-dev only when the project actually uses it.
+	if hasComposerPackage(composerData, "drupal/core-dev") {
+		_, stderr, exitCode, err = cliRun(cwd, "composer", devArgs...)
+		if err != nil {
+			return fmt.Errorf("composer require --dev failed: %w", err)
+		}
+		if exitCode != 0 {
+			return fmt.Errorf("composer require drupal/core-dev failed (exit %d): %s", exitCode, stderr)
+		}
+	}
+
 	// Run composer update -W for full dependency resolution.
 	_, stderr, exitCode, err = cliRun(cwd, "composer", "update", "-W")
 	if err != nil {
+		restoreComposerJSON(composerPath, backupPath)
 		return fmt.Errorf("composer update failed: %w", err)
 	}
 	if exitCode != 0 {
-		return fmt.Errorf("composer update failed (exit %d): %s", exitCode, stderr)
+		// Leaving composer.json on the new constraint with an unchanged lock
+		// is a half-upgraded state that the next run then read as "already at
+		// target" and reported as success.
+		restoreComposerJSON(composerPath, backupPath)
+		return fmt.Errorf("composer update failed (exit %d), composer.json restored: %s", exitCode, stderr)
 	}
 
 	// Run drush updb.
@@ -1357,41 +1600,6 @@ func RunUpgradeCore(args []string) error {
 
 	data, _ := json.MarshalIndent(result, "", "  ")
 	fmt.Println(string(data))
-	return nil
-}
-
-func extractZip(archivePath, destDir string) error {
-	r, err := zip.OpenReader(archivePath)
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-
-	for _, f := range r.File {
-		target := filepath.Join(destDir, f.Name)
-		if f.FileInfo().IsDir() {
-			os.MkdirAll(target, 0o755)
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		outFile, err := os.Create(target)
-		if err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			outFile.Close()
-			return err
-		}
-		_, err = io.Copy(outFile, rc)
-		rc.Close()
-		outFile.Close()
-		if err != nil {
-			return err
-		}
-	}
 	return nil
 }
 

@@ -784,3 +784,59 @@ func TestDoWithRetry_TransportErrorRetries(t *testing.T) {
 		t.Errorf("attempts = %d, want 3", attempts)
 	}
 }
+
+// A project drupal.org has never heard of is usually local code in
+// modules/contrib. Reporting it exactly like a module awaiting a D11 release
+// sends the caller hunting for a patch that cannot exist.
+func TestCheckRelease_MarksUnknownProjects(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/xml")
+		fmt.Fprint(w, `<?xml version="1.0" encoding="utf-8"?><error>No release history was found for the requested project.</error>`)
+	}))
+	defer srv.Close()
+
+	restore := SetHTTPClientForTest(srv.Client())
+	defer restore()
+	origURL := releaseBaseURL
+	releaseBaseURL = srv.URL + "/%s"
+	defer func() { releaseBaseURL = origURL }()
+
+	info, err := CheckRelease("promotur_sso_application")
+	if err != nil {
+		t.Fatalf("CheckRelease error: %v", err)
+	}
+	if info.Found {
+		t.Error("unknown project reported as found on drupal.org")
+	}
+	if info.HasD11 {
+		t.Error("unknown project reported as D11 compatible")
+	}
+}
+
+// drupal.org publishes ">=9.1" for modules that never capped compatibility.
+// Reading that as "only Drupal 9" reported them as upgrade blockers for every
+// later major, sending the pipeline hunting for patches that cannot exist.
+func TestConstraintMatchesDrupal_OpenEndedLowerBounds(t *testing.T) {
+	cases := []struct {
+		constraint string
+		major      int
+		want       bool
+	}{
+		{">=9.1", 11, true},
+		{">=9.3", 11, true},
+		{">=9.1", 8, false},
+		{">9", 11, true},
+		{">11", 11, false},
+		{"<12", 11, true},
+		{"<=10", 11, false},
+		{">=10 <12", 11, true},
+		{"^8 || ^9 || ^10", 11, false},
+		{"^10.3 || ^11", 11, true},
+	}
+
+	for _, c := range cases {
+		if got := constraintMatchesDrupal(c.constraint, c.major); got != c.want {
+			t.Errorf("constraintMatchesDrupal(%q, %d) = %v, want %v", c.constraint, c.major, got, c.want)
+		}
+	}
+}

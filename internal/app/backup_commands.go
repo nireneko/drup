@@ -15,6 +15,20 @@ func RunTestBackupCreate(projectPath string) error {
 	return printBackupJSON(manifest)
 }
 
+// RunTestBackupList prints the backups recorded for a project. The skill's
+// stage 9 enumerates backups by id, so the CLI has to expose the same view the
+// MCP tool does.
+func RunTestBackupList(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: drup test-backup-list <path>")
+	}
+	manifests, err := backup.NewManager(args[0]).List(args[0])
+	if err != nil {
+		return fmt.Errorf("list testing backups: %w", err)
+	}
+	return printBackupJSON(manifests)
+}
+
 func RunTestBackupRestore(projectPath, backupID string) error {
 	if err := backup.NewManager(projectPath).Restore(projectPath, backupID, true); err != nil {
 		return fmt.Errorf("restore testing backup: %w", err)

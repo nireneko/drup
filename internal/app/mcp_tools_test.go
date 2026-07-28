@@ -105,7 +105,7 @@ func TestRunPreflight_Dispatch(t *testing.T) {
 	drupexec.Run = func(cmd string, args ...string) (string, string, int, error) {
 		return "", "unavailable in dispatch test", 1, nil
 	}
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		return "", "unavailable in dispatch test", 1, nil
 	}
 	t.Cleanup(func() {
@@ -583,7 +583,7 @@ func TestRealHandleScan_PassesAllFlag(t *testing.T) {
 
 	origRun := drupexec.RunWithEnv
 	var capturedArgs []string
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedArgs = args
 			return "", "", 0, nil // empty plain text = zero errors
@@ -622,7 +622,7 @@ func TestRealHandleAutofix_RemainingErrors(t *testing.T) {
 		// rector
 		return "rector summary", "", 0, nil
 	}
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			callCount++
 			// Re-scan returns checkstyle XML with 2 remaining errors.
@@ -658,7 +658,7 @@ func TestRealHandleScan_PlainText(t *testing.T) {
 	defer func() { defaultEnvDetector = origDetector }()
 
 	origRun := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			return `<?xml version="1.0"?><checkstyle><file name="modules/contrib/token/token.module"><error line="42" message="Call to deprecated function foo()." severity="error"/></file></checkstyle>`, "", 0, nil
 		}
@@ -690,7 +690,7 @@ func TestRealHandleScan_NoFormatJSON(t *testing.T) {
 
 	origRun := drupexec.RunWithEnv
 	var capturedArgs []string
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedArgs = args
 			return "", "", 0, nil
@@ -721,7 +721,7 @@ func TestRealHandleAutofix_PassesAllFlagInRescan(t *testing.T) {
 		// rector
 		return "rector output", "", 0, nil
 	}
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedDrushArgs = append(capturedDrushArgs, args)
 			return "", "", 0, nil // empty plain text = zero remaining errors
@@ -766,7 +766,7 @@ func TestRealHandleValidate_PassesAllFlagWhenNoModule(t *testing.T) {
 
 	origRun := drupexec.RunWithEnv
 	var capturedArgs []string
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedArgs = args
 			return "", "", 0, nil
@@ -800,7 +800,7 @@ func TestRealHandleValidate_PassesModuleNameWhenSet(t *testing.T) {
 
 	origRun := drupexec.RunWithEnv
 	var capturedArgs []string
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			capturedArgs = args
 			return "", "", 0, nil
@@ -840,7 +840,7 @@ func TestRealHandleValidate_PlainText(t *testing.T) {
 	defer func() { defaultEnvDetector = origDetector }()
 
 	origRun := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			return `<?xml version="1.0"?><checkstyle><file name="modules/custom/mymod/mymod.module"><error line="5" message="Deprecated function foo()." severity="error"/></file></checkstyle>`, "", 0, nil
 		}
@@ -872,7 +872,7 @@ func TestRealHandleUpgradeScan_DeletesUpdateSettingsBeforeEnable(t *testing.T) {
 	// Override RunWithEnv to capture drush calls.
 	origRunWithEnv := drupexec.RunWithEnv
 	var drushCalls [][]string
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			drushCalls = append(drushCalls, args)
 		}
@@ -923,7 +923,7 @@ func TestRealHandleUpgradeScan_SkipsEnableWhenAlreadyEnabled(t *testing.T) {
 
 	origRunWithEnv := drupexec.RunWithEnv
 	var drushCalls [][]string
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd != "drush" {
 			return "", "", 0, nil
 		}
@@ -980,7 +980,7 @@ func TestRealHandleUpgradeScan_PlainText(t *testing.T) {
 	defer func() { defaultEnvDetector = origDetector }()
 
 	origRunWithEnv := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd != "drush" {
 			return "", "", 0, nil
 		}
@@ -1066,7 +1066,7 @@ func TestRealHandleCreatePatch_UsesProjectPath(t *testing.T) {
 		return "", "", 0, nil
 	}
 	drupexec.Run = capture
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		return capture(cmd, args...)
 	}
 	defer func() {

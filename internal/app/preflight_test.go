@@ -73,7 +73,7 @@ func TestRunPreflight_DeletesUpdateSettingsBeforeEnable(t *testing.T) {
 
 	origRun := drupexec.RunWithEnv
 	var drushCalls [][]string
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			drushCalls = append(drushCalls, args)
 		}
@@ -93,7 +93,7 @@ func TestRunPreflight_DeletesUpdateSettingsBeforeEnable(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	// Run preflight (will fail because git/composer/drush aren't real, but we just want to capture the drush calls).
-	_ = RunPreflight()
+	_ = RunPreflight(nil)
 
 	// Find the config:delete and en calls.
 	configDeleteIdx := -1

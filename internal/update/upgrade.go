@@ -175,7 +175,7 @@ func ExtractBinaryFromTarGz(r io.Reader, binaryName, outPath string) error {
 		if filepath.Base(hdr.Name) != binaryName {
 			continue
 		}
-		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
 

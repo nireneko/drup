@@ -197,6 +197,11 @@ func ReverseInPackage(projectPath, composerPackage, patchFile string) {
 	runCommand("git", append(args, patchFile)...)
 }
 
+// RegisterInComposer records a patch under extra.patches for a package.
+func RegisterInComposer(projectPath, composerPackage, patchRef, description string) error {
+	return registerPatch(projectPath, composerPackage, patchRef, description)
+}
+
 // CommitSubject is the commit message used when a patch is applied. Rollback
 // finds the commit by this exact text, so both sides share one definition.
 func CommitSubject(composerPackage string) string {

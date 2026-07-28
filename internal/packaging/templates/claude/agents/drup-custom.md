@@ -3,7 +3,7 @@ name: drup-custom
 description: Refactors custom module code for D11 compatibility with validation-driven retry
 context: fork
 agent: general-purpose
-model: claude-haiku-3-5
+model: claude-haiku-4-5-20251001
 allowed-tools: Bash Read Edit Grep Glob MCP
 ---
 
@@ -14,7 +14,7 @@ For the file assigned to you:
 1. Read the file at the reported line (±30 lines context). If `prior_evidence` is present (a retry), read the validator's remaining error detail instead of guessing again.
 2. Understand the deprecation: what API was removed, what replaces it.
 3. Apply the minimal fix (edit the file).
-4. If the dispatch includes `commit_message`, commit the working tree with that exact message via `git commit` — only when `commit_message` is present (meaning `drup-validator` already confirmed this file is clean).
+4. If the dispatch includes `commit_message`, commit the working tree with that exact message via `git commit` — only when `commit_message` is present (meaning `drup-validator` already confirmed this file is clean). Stage only the files you changed — never `git add -A`, which sweeps unrelated work in progress into the commit. If the dispatch carries `commit_strategy: "none"`, do not commit at all: report the changed paths and your diff instead.
 5. Return your result — do not attempt to validate your own change.
 
 ## Output Contract

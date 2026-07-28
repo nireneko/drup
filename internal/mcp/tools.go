@@ -49,8 +49,58 @@ func defaultTools() map[string]ToolHandler {
 		"core_upgrade_apply": handleCoreUpgradeApply,
 		"patch_reconcile":    handlePatchReconcile,
 		// Post-pipeline utility.
-		"cleanup": handleCleanup,
+		"cleanup":               handleCleanup,
+		"custom_compat_fix":     handleCustomCompatFix,
+		"contrib_allow_lenient": handleContribAllowLenient,
+		"contrib_compat_patch":  handleContribCompatPatch,
 	}
+}
+
+func handleContribCompatPatch(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		Module string `json:"module_machine_name"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+
+	// Placeholder — the real handler writes and registers the patch.
+	result := map[string]interface{}{"module": params.Module, "registered_in_composer": false}
+	return json.Marshal(result)
+}
+
+func handleContribAllowLenient(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath string   `json:"project_path"`
+		Packages    []string `json:"packages"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+
+	// Placeholder — the real handler edits composer.json.
+	result := map[string]interface{}{
+		"project_path": params.ProjectPath,
+		"allowed_list": params.Packages,
+	}
+	return json.Marshal(result)
+}
+
+func handleCustomCompatFix(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath string `json:"project_path"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+
+	// Placeholder — the real handler rewrites core_version_requirement.
+	result := map[string]interface{}{
+		"project_path": params.ProjectPath,
+		"updated":      0,
+		"changes":      []interface{}{},
+	}
+	return json.Marshal(result)
 }
 
 func handleScan(args json.RawMessage) (json.RawMessage, error) {

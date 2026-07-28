@@ -83,7 +83,11 @@ func ParseCheckstyle(r io.Reader) (*ScanResult, error) {
 				Severity: severity,
 				Source:   source,
 			})
-			result.TotalErrs++
+			// upgrade_status emits informational rows alongside real
+			// findings; counting them inflated every total by dozens.
+			if severity != "info" {
+				result.TotalErrs++
+			}
 		}
 	}
 

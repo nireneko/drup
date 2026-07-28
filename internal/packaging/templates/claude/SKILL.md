@@ -27,9 +27,11 @@ Backup rules are mandatory: Stage 0 must succeed before any other stage; preserv
 | drup-contrib | haiku → sonnet (2 retries) | `contrib_check`, `contrib_upgrade_path`, `issue_patches`, `apply_patch`, `create_patch`, `patch_status`, `patch_rollback`, `patch_reconcile`, `core_upgrade_check`, `core_upgrade_apply` | Per-module contrib resolution + core version bump |
 | drup-custom | haiku → sonnet (2 retries) | file edits only | Per-file custom PHP refactor |
 | drup-theme | haiku → sonnet (2 retries) | file edits only | Per-file twig/theme refactor |
-| drup-validator | haiku → sonnet (2 retries) | `scan`, `validate`, `upgrade_scan`, `module_info`, `drupal_version_matrix`, `patch_status`, `generate_report` | Authoritative gate confirmation + final report generation |
+| drup-validator | the session model, never the cheapest (see below) | `scan`, `validate`, `upgrade_scan`, `module_info`, `drupal_version_matrix`, `patch_status`, `custom_compat_fix` (dry run), `generate_report` | Authoritative gate confirmation + final report generation |
 
-Every retry escalation follows the same rule: **haiku is the default model for every sub-agent; after 2 failed attempts on haiku, re-dispatch the same sub-agent on sonnet for one more try; if that also fails, add the item to the PENDING HUMAN LIST.**
+Every retry escalation follows the same rule: **a small fast model is the default for the fixer agents; after 2 failed attempts, re-dispatch the same sub-agent on a stronger model for one more try; if that also fails, add the item to the PENDING HUMAN LIST.**
+
+`drup-validator` is the exception and does not run on the cheap default. It is the gate: every decision the pipeline makes rests on its report, and it is the one agent that never writes code. Run on a small model it produced arithmetic that contradicted itself, claimed a package was missing that was installed, and repeatedly answered with prose instead of the report envelope — each of which cost a re-dispatch and another ten-minute scan. Cheap validation is the most expensive kind.
 
 ## Report Envelope (every sub-agent returns this)
 
@@ -58,6 +60,46 @@ Every retry escalation follows the same rule: **haiku is the default model for e
 
 Give each sub-agent ONLY the target module/file plus its own error context — never the whole project. This is context isolation, not withholding information: a sub-agent processing module X never sees module Y's data.
 
+## Stage -1: AGREE THE PLAN — Before Any Work
+
+The pipeline mutates a codebase and, by default, commits as it goes. Never start
+that without the user's word on how. Ask once, in one message, and wait:
+
+1. **Commit strategy.** `per-fix` (default — one commit per validated fix, the
+   safest to review and revert), `single` (all work in one commit at the end),
+   or `none` (leave every change uncommitted for the user to inspect). When the
+   user says no commits, no stage commits anything, ever — the fixer agents are
+   dispatched without `commit_message` and you say so in the final report.
+2. **Scope.** Everything, or only some of: rector, compatibility declarations,
+   contrib, custom code, themes, the core version bump. The core bump changes
+   `composer.json` and runs an update that can leave a site unbootable, so it is
+   opt-in and never assumed.
+3. **Uncommitted work.** If the tree is dirty, say exactly what is in it and ask
+   whether to stash, commit it first, or proceed and mix. Never decide alone.
+
+Then state the plan back in three or four lines — stages you will run, roughly
+how long it takes, what gets written — and start only after the user agrees.
+If the user already stated a preference in their request, honour it and confirm
+in one line instead of asking again.
+
+Record the answers in the run state and pass `commit_strategy` in every dispatch.
+A sub-agent that receives `commit_strategy: "none"` reports its diff and commits
+nothing.
+
+## Keeping the run short
+
+A full-site scan takes 8 to 10 minutes; a scoped one takes seconds. The
+difference decides whether a run is minutes or hours.
+
+- Validate a single module or file with `drup validate <path> <module>`, not a
+  full scan. Measured on a real project: 7.5 s scoped versus 437 s full.
+- Run exactly one full scan per phase boundary — after rector and at the end.
+  Never one per module: on a 60-module project that is over seven hours.
+- Reuse the evidence you already hold. The final report must be built from the
+  stage reports, not from a fresh scan.
+- Before entering any loop, multiply the per-item cost by the item count and
+  tell the user the estimate. If it exceeds thirty minutes, ask before starting.
+
 ## Pipeline (9 Stages, Sequential)
 
 ### Stage 0: SAFETY BACKUP — Before Any Work
@@ -82,8 +124,10 @@ Dispatch `drup-preflight` with `{project_path}`. It detects the environment (`dd
 
 Dispatch `drup-validator` with `{scope: "env"}`. This is the gate for Stage 1's work — you never confirm dependency installation yourself.
 
-- **`evidence.total_errors == 0`**: go to Stage 3.
-- **`evidence.total_errors > 0`**: re-dispatch `drup-preflight` with `prior_evidence` from this validator report (max 2 retries, then escalate, then PENDING HUMAN LIST).
+Preflight results carry a `category`. Gate on `environment` only: those are the checks that must pass for any tool to run. Results with `category: "readiness"` — the core composer constraint and custom `core_version_requirement` declarations — describe the upgrade itself and are resolved by Stages 3.5 and 6. **Never block Stage 2 on them**, or the pipeline waits for work only its later stages can do.
+
+- **No failing `environment` check**: record the readiness items for Stages 3.5 and 6, then go to Stage 3.
+- **Any failing `environment` check**: re-dispatch `drup-preflight` with `prior_evidence` from this validator report (max 2 retries, then escalate, then PENDING HUMAN LIST).
 
 ### Stage 3: RECTOR — Deterministic Auto-Fix
 
@@ -91,8 +135,22 @@ Dispatch `drup-rector` with `{project_path}` (no `commit_message` yet — nothin
 
 Then dispatch `drup-validator` with `{scope: "rector"}` to confirm the result.
 
-- **`evidence.total_errors == 0`**: re-dispatch `drup-rector` with the commit message `fix(rector): apply drupal-rector auto-fixes for D11 compatibility` in `commit_message` so it commits. Go to Stage 4.
-- **`evidence.total_errors > 0`**: re-dispatch `drup-rector` with `prior_evidence` describing the remaining rector-fixable errors (max 2 retries, then escalate, then PENDING HUMAN LIST for those specific paths — do not block the whole pipeline on rector alone; carry unresolved rector errors into Stage 4/5 classification).
+Most of what `upgrade_status` reports is advisory — rows a human is asked to look at, which no rector rule, patch or version bump can clear. **Do not gate on `total_errors == 0`**: on a real project that number never reaches zero and the pipeline would loop forever. Gate on whether rector still has work to do.
+
+- **Rector reports no further changes**: re-dispatch `drup-rector` with the commit message `fix(rector): apply drupal-rector auto-fixes for D11 compatibility` in `commit_message` so it commits. Go to Stage 3.5.
+- **Rector still changes files, or errored**: re-dispatch `drup-rector` with `prior_evidence` describing what remains (max 2 retries, then escalate, then PENDING HUMAN LIST for those specific paths — do not block the whole pipeline on rector alone; carry unresolved errors into Stage 4/5 classification).
+
+### Stage 3.5: COMPATIBILITY DECLARATIONS — Custom Modules and Themes
+
+```bash
+drup compat-fix <project-path> --dry-run   # review first
+drup compat-fix <project-path>
+```
+
+Widens `core_version_requirement` in the project's own modules, themes and profiles so they declare the target major. These are the `core_module_compat` blockers Stage 2 recorded; nothing else in the pipeline rewrites them, and Drupal refuses to install an extension that excludes the running core version.
+
+- **`needs_attention: 0`**: commit with `fix(compat): declare Drupal <target> support in custom extensions`, then go to Stage 4.
+- **`needs_attention > 0`**: those extensions have no `core_version_requirement` at all. Add them to the PENDING HUMAN LIST with the file path — where the key belongs in the file is a judgement call.
 
 ### Stage 4: CONTRIB LOOP — Contributed Modules
 
@@ -129,7 +187,7 @@ Updates composer.json constraints, runs `composer require`, `drush updb`, and ve
 
 ### Stage 8: REPORT
 
-Dispatch `drup-validator` with `{scope: "global"}` and every accumulated report from Stages 1–6 as `prior_evidence`, instructing it to call `generate_report`. The report must include:
+Dispatch `drup-validator` with `{scope: "global"}` and every accumulated report from Stages 1–6 as `prior_evidence`, instructing it to call `generate_report` with `include_scan_data: false` — the stage reports already hold the measurements, and a fresh full scan adds ten minutes to tell you what you know. The report must include:
 1. Summary: total modules checked, patches applied, custom/theme files fixed, errors remaining.
 2. Per module: action taken (update/patch/create), version/URL, validation result.
 3. Per custom/theme file: deprecation fixed, validation result.
@@ -155,7 +213,7 @@ Read `drup-validator`'s `artifacts` for the generated `UPGRADE-REPORT.md` path a
 Dispatch `drup-preflight` with `{scope: "backup", project_path, action: "finalize", backup_id}` after the report or any terminal error.
 
 - Successful run and final validation has zero errors: retain the backup and report its `backup_id` and path to the developer. Do not delete it automatically.
-- Any failed stage, unresolved validation error, or unsuccessful report: run `drup test-backup-restore <project-path> <backup-id> --confirm` and verify success.
+- Any failed stage or unsuccessful report: report what failed, name the backup, and **ask the user before restoring**. Never restore on your own initiative. A restore discards every commit the run produced, and most remaining findings are advisory rows the pipeline was never able to clear — treating those as a failure would throw away good work to satisfy a number that cannot reach zero. Restore only on the user's word: `drup test-backup-restore <project-path> <backup-id> --confirm`.
 - Delete a retained backup only as an explicit manual operation requested by the developer: `drup test-backup-delete <project-path> <backup-id>`.
 - If restoration fails, report both failures and retain the backup ID and path. If the user stops the run before a final result, retain the backup.
 

@@ -17,6 +17,16 @@ func Run(args []string) error {
 		return nil
 	}
 
+	// A --help anywhere in the arguments prints usage instead of running.
+	// "drup preflight --help" used to execute the command, and "drup report
+	// --help" passed --help through as a path.
+	for _, arg := range args[1:] {
+		if arg == "--help" || arg == "-h" || arg == "help" {
+			printUsage()
+			return nil
+		}
+	}
+
 	switch args[0] {
 	case "help", "--help", "-h":
 		printUsage()
@@ -62,11 +72,17 @@ func Run(args []string) error {
 	case "upgrade":
 		return RunUpgrade()
 	case "preflight":
-		return RunPreflight()
+		return RunPreflight(args[1:])
 	case "validate":
 		return RunValidate(args[1:])
 	case "apply-patch":
 		return RunApplyPatch(args[1:])
+	case "contrib-patch":
+		return RunContribPatch(args[1:])
+	case "allow-lenient":
+		return RunAllowLenient(args[1:])
+	case "compat-fix":
+		return RunCompatFix(args[1:])
 	case "upgrade-core":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: drup upgrade-core <target-version> [--dry-run]")
@@ -77,6 +93,8 @@ func Run(args []string) error {
 			return fmt.Errorf("usage: drup test-backup-create <path>")
 		}
 		return RunTestBackupCreate(args[1])
+	case "test-backup-list":
+		return RunTestBackupList(args[1:])
 	case "test-backup-restore":
 		if len(args) < 3 || args[2] != "--confirm" {
 			return fmt.Errorf("usage: drup test-backup-restore <path> <backup-id> --confirm")
@@ -114,11 +132,15 @@ Commands:
   uninstall             Remove drup from all installed agents
   sync                  Re-apply agent assets
   upgrade               Self-update binary
-  preflight             Check project readiness for upgrade automation
+  preflight [path] [--allow-dirty]  Check project readiness for upgrade automation
   validate <path> [mod] Re-run scan and return error state (exit 1 if errors)
+  compat-fix <path>     Declare Drupal 11 support in custom modules and themes
+  contrib-patch <path> <mod>     Patch a contrib module for the target core and register it
+  allow-lenient <path> <pkg>...  Let a patched contrib module install against the new core
   apply-patch <url> <p> Download and apply a patch to the project
-	upgrade-core <ver>    Upgrade Drupal core to target major version
+	upgrade-core <ver> [--dry-run] [--allow-dirty]  Upgrade Drupal core to the target version
 	 test-backup-create <p> Create a testing backup before mutations
+	 test-backup-list <p>   List testing backups for a project
 	 test-backup-restore <p> <id> --confirm Restore a testing backup
 	 test-backup-delete <p> <id> Delete a testing backup after success
   cleanup <path>        Post-validation cleanup (remove upgrade_status)
