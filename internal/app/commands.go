@@ -619,7 +619,7 @@ func RunInstall() error {
 		return fmt.Errorf("save state: %w", err)
 	}
 
-	fmt.Println("\nRestart your agents to load the drup MCP server. Agents write their own config files, so a session running during the install may overwrite this registration.")
+	fmt.Println("\nRestart your agents to load the drup MCP server. Agents write their own config files, so a session running during the install may overwrite this registration, and a server already running keeps the previous binary in memory.")
 
 	return nil
 }
@@ -647,6 +647,8 @@ func RunSync() error {
 		return fmt.Errorf("sync failed for every detected agent:\n  %s", strings.Join(failures, "\n  "))
 	}
 	reportInstallFailures(failures)
+
+	fmt.Println("\nRestart your agents. A running MCP server keeps the previous binary in memory, so an agent that stays open keeps calling the old code — including tools this build fixed.")
 
 	// Keep the flag set when an agent still needs a successful sync.
 	s.PendingSync = len(failures) > 0
@@ -770,7 +772,7 @@ var readinessChecks = map[string]bool{
 // drupArtifacts are paths drup itself writes into a project. They must not
 // count against the working tree being clean, or taking a backup would block
 // the run that requested it.
-var drupArtifacts = []string{".drup/", ".drup-dump-", "drup-report.json", "drup-report.md", "rector.php"}
+var drupArtifacts = []string{".drup/", ".drup-dump-", "drup-report.json", "drup-report.md", "rector.php", "settings.php.bak"}
 
 // withoutDrupArtifacts filters drup's own files out of a git status listing.
 func withoutDrupArtifacts(files []string) []string {
@@ -848,11 +850,16 @@ func categorize(results []PreflightResult) (environmentFailures, readinessFailur
 // left a vendor tree in an unrelated repository.
 func RunPreflight(args []string) error {
 	cwd := ""
+	allowDirty := false
 	for _, arg := range args {
-		if strings.HasPrefix(arg, "-") {
-			return fmt.Errorf("unknown option %q — usage: drup preflight [path]", arg)
+		switch {
+		case arg == "--allow-dirty":
+			allowDirty = true
+		case strings.HasPrefix(arg, "-"):
+			return fmt.Errorf("unknown option %q — usage: drup preflight [path] [--allow-dirty]", arg)
+		default:
+			cwd = arg
 		}
-		cwd = arg
 	}
 	if cwd == "" {
 		var err error
@@ -909,12 +916,20 @@ func RunPreflight(args []string) error {
 		// Name the files. A bare count could not be reconciled against git
 		// status, which left a reader unable to tell what the check objected
 		// to or whether drup had counted its own artifacts.
+		//
+		// A dirty tree only matters to a run that commits: it is what makes a
+		// per-fix commit sweep in unrelated work. When the caller has already
+		// decided not to commit — and after preflight's own composer and
+		// settings.php edits, which would otherwise fail every later run — it
+		// is information, not a blocker.
 		results = append(results, PreflightResult{
 			Check:   "git_clean",
-			Pass:    false,
+			Pass:    allowDirty,
 			Message: fmt.Sprintf("Working tree has %d uncommitted changes: %s", len(files), summarizePaths(files, 8)),
 		})
-		allPass = false
+		if !allowDirty {
+			allPass = false
+		}
 	} else {
 		results = append(results, PreflightResult{
 			Check:   "git_clean",

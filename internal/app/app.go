@@ -128,7 +128,7 @@ Commands:
   uninstall             Remove drup from all installed agents
   sync                  Re-apply agent assets
   upgrade               Self-update binary
-  preflight [path]      Check project readiness for upgrade automation
+  preflight [path] [--allow-dirty]  Check project readiness for upgrade automation
   validate <path> [mod] Re-run scan and return error state (exit 1 if errors)
   compat-fix <path>     Declare Drupal 11 support in custom modules and themes
   apply-patch <url> <p> Download and apply a patch to the project

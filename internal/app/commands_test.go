@@ -1943,3 +1943,14 @@ func TestSummarizePaths_TruncatesLongLists(t *testing.T) {
 		t.Errorf("summary %q should say how many were omitted", got)
 	}
 }
+
+// preflight edits composer.json and settings.php itself, so on any later run
+// its own changes failed its own cleanliness check. A dirty tree only matters
+// to a run that commits.
+func TestRunPreflight_AllowDirtyIsAccepted(t *testing.T) {
+	if err := RunPreflight([]string{"--allow-dirty", t.TempDir()}); err == nil {
+		t.Fatal("expected the missing composer.json to be reported")
+	} else if strings.Contains(err.Error(), "unknown option") {
+		t.Errorf("--allow-dirty was rejected as an unknown option: %v", err)
+	}
+}
