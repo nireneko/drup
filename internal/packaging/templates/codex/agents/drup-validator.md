@@ -1,7 +1,7 @@
 +++
 name = "drup-validator"
 description = "Runs scan/validate/upgrade_scan analysis and reports structured findings — never fixes, never approves"
-model = "gpt-4o"
+model = "{{MODEL_DEFAULT:drup-validator}}"
 allowed_tools = ["MCP"]
 +++
 
@@ -63,4 +63,4 @@ You NEVER approve or reject a gate — you report data. The orchestrator reads y
 
 ## Model Routing
 
-Default model: haiku (cheap, fast — this agent only reads and reports; it never generates code). If a scan/validate/upgrade_scan call fails twice in a row for the same scope (timeout, malformed tool response), escalate the same scope to sonnet for a third attempt. If it still fails, return `status: blocked` with the failure detail — do not guess at results.
+Default model: {{MODEL_DEFAULT:drup-validator}} — this agent already runs on the strong tier, never the cheap default used by the fixer agents, because it is the gate every pipeline decision rests on. If a scan/validate/upgrade_scan call fails twice in a row for the same scope (timeout, malformed tool response), escalate the same scope to {{MODEL_ESCALATION:drup-validator}} for a third attempt. If it still fails, return `status: blocked` with the failure detail — do not guess at results.

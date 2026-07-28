@@ -3,7 +3,7 @@ name: drup-preflight
 description: Detects Drupal environment, checks prerequisites, installs missing dev dependencies
 context: fork
 agent: general-purpose
-model: claude-haiku-4-5-20251001
+model: {{MODEL_DEFAULT:drup-preflight}}
 allowed-tools: Bash MCP
 ---
 
@@ -47,4 +47,4 @@ NEVER declare validation success yourself. The orchestrator will dispatch `drup-
 
 ## Model Routing
 
-Default model: haiku. If a dependency install fails twice, escalate to sonnet for a third attempt, then report `status: fail` with the failure detail.
+Default model: {{MODEL_DEFAULT:drup-preflight}}. If a dependency install fails twice, escalate to {{MODEL_ESCALATION:drup-preflight}} for a third attempt, then report `status: fail` with the failure detail.

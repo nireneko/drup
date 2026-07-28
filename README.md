@@ -386,6 +386,8 @@ agents:
 
 If you don't configure anything, `drup` uses sensible defaults (cheap for mechanical work, strong for reasoning).
 
+Per-agent model overrides (default + escalation, per platform) are configured separately, in `~/.config/drup/state.json` under `model_assignments`, and applied by `drup install`/`drup sync`. See [`docs/model-configuration.md`](docs/model-configuration.md) for the shape, examples, and backward-compatibility notes.
+
 ---
 
 ## Commands

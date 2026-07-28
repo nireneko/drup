@@ -1,12 +1,15 @@
 package packaging
 
 import (
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/nireneko/drup/internal/state"
 )
 
 func TestRender_Claude(t *testing.T) {
-	files, err := Render("claude", "/usr/local/bin/drup")
+	files, err := Render("claude", "/usr/local/bin/drup", nil)
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
@@ -17,7 +20,7 @@ func TestRender_Claude(t *testing.T) {
 }
 
 func TestRender_OpenCode(t *testing.T) {
-	files, err := Render("opencode", "/usr/local/bin/drup")
+	files, err := Render("opencode", "/usr/local/bin/drup", nil)
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
@@ -28,7 +31,7 @@ func TestRender_OpenCode(t *testing.T) {
 }
 
 func TestRender_Codex(t *testing.T) {
-	files, err := Render("codex", "/usr/local/bin/drup")
+	files, err := Render("codex", "/usr/local/bin/drup", nil)
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
@@ -51,7 +54,7 @@ func TestValidateCodexSkill(t *testing.T) {
 }
 
 func TestRender_UnsupportedPlatform(t *testing.T) {
-	_, err := Render("unknown", "/usr/local/bin/drup")
+	_, err := Render("unknown", "/usr/local/bin/drup", nil)
 	if err == nil {
 		t.Error("expected error for unsupported platform, got nil")
 	}
@@ -69,7 +72,7 @@ func TestPlatforms(t *testing.T) {
 func TestSKILLMD_NoPlatformPrimitives(t *testing.T) {
 	for _, platform := range Platforms() {
 		t.Run(platform, func(t *testing.T) {
-			files, err := Render(platform, "/usr/local/bin/drup")
+			files, err := Render(platform, "/usr/local/bin/drup", nil)
 			if err != nil {
 				t.Fatalf("Render error: %v", err)
 			}
@@ -92,7 +95,7 @@ func TestSKILLMD_NoPlatformPrimitives(t *testing.T) {
 func TestSKILLMD_ContainsDrupCLIPipeline(t *testing.T) {
 	for _, platform := range Platforms() {
 		t.Run(platform, func(t *testing.T) {
-			files, err := Render(platform, "/usr/local/bin/drup")
+			files, err := Render(platform, "/usr/local/bin/drup", nil)
 			if err != nil {
 				t.Fatalf("Render error: %v", err)
 			}
@@ -111,7 +114,7 @@ func TestSKILLMD_ContainsDrupCLIPipeline(t *testing.T) {
 
 func TestSKILLMD_CrossPlatformIdentical(t *testing.T) {
 	for _, platform := range Platforms() {
-		files, _ := Render(platform, "/usr/local/bin/drup")
+		files, _ := Render(platform, "/usr/local/bin/drup", nil)
 		content := files["SKILL.md"]
 		for _, required := range []string{"Stage 0: SAFETY BACKUP", "test-backup-create", "test-backup-restore", "manual `test-backup-delete`", "report its `backup_id` and path"} {
 			if !strings.Contains(content, required) {
@@ -132,7 +135,7 @@ func TestSKILLMD_CrossPlatformIdentical(t *testing.T) {
 func TestRender_AgentFiles(t *testing.T) {
 	for _, platform := range Platforms() {
 		t.Run(platform, func(t *testing.T) {
-			files, err := Render(platform, "/usr/local/bin/drup")
+			files, err := Render(platform, "/usr/local/bin/drup", nil)
 			if err != nil {
 				t.Fatalf("Render error: %v", err)
 			}
@@ -162,7 +165,7 @@ func TestRender_AgentFiles(t *testing.T) {
 }
 
 func TestRender_ClaudeBootstrap(t *testing.T) {
-	files, err := Render("claude", "/usr/local/bin/drup")
+	files, err := Render("claude", "/usr/local/bin/drup", nil)
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
@@ -172,7 +175,7 @@ func TestRender_ClaudeBootstrap(t *testing.T) {
 }
 
 func TestRender_CodexBootstrap(t *testing.T) {
-	files, err := Render("codex", "/usr/local/bin/drup")
+	files, err := Render("codex", "/usr/local/bin/drup", nil)
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
@@ -182,7 +185,7 @@ func TestRender_CodexBootstrap(t *testing.T) {
 }
 
 func TestRender_BootstrapSkillPathSubstitution(t *testing.T) {
-	files, err := Render("claude", "/usr/local/bin/drup")
+	files, err := Render("claude", "/usr/local/bin/drup", nil)
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
@@ -198,7 +201,7 @@ func TestRender_BootstrapSkillPathSubstitution(t *testing.T) {
 func TestRender_D11FixesSkillExists(t *testing.T) {
 	for _, platform := range Platforms() {
 		t.Run(platform, func(t *testing.T) {
-			files, err := Render(platform, "/usr/local/bin/drup")
+			files, err := Render(platform, "/usr/local/bin/drup", nil)
 			if err != nil {
 				t.Fatalf("Render error: %v", err)
 			}
@@ -220,7 +223,7 @@ func TestRender_D11FixesSkillExists(t *testing.T) {
 func TestRender_ContribPatchSkillExists(t *testing.T) {
 	for _, platform := range Platforms() {
 		t.Run(platform, func(t *testing.T) {
-			files, err := Render(platform, "/usr/local/bin/drup")
+			files, err := Render(platform, "/usr/local/bin/drup", nil)
 			if err != nil {
 				t.Fatalf("Render error: %v", err)
 			}
@@ -281,5 +284,283 @@ func TestRenderCodexAgentConfig_ValidTemplate(t *testing.T) {
 	want := "description = \"Agent\"\ndeveloper_instructions = '''\n# Title\n\nDo the work.\n'''\n"
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestRenderCodexAgentConfig_PreservesModel(t *testing.T) {
+	got, err := renderCodexAgentConfig("agents/drup-test.md", "+++\ndescription = \"Agent\"\nmodel = \"gpt-4o-mini\"\n+++\n\n# Title\n\nDo the work.\n")
+	if err != nil {
+		t.Fatalf("renderCodexAgentConfig error: %v", err)
+	}
+	want := "description = \"Agent\"\nmodel = \"gpt-4o-mini\"\ndeveloper_instructions = '''\n# Title\n\nDo the work.\n'''\n"
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestRenderCodexAgentConfig_RejectsUnquotedModel(t *testing.T) {
+	_, err := renderCodexAgentConfig("agents/drup-test.md", "+++\ndescription = \"Agent\"\nmodel = bare\n+++\n\nInstructions.\n")
+	if err == nil {
+		t.Fatal("expected an error for an unquoted model field, got nil")
+	}
+	if !strings.Contains(err.Error(), "quoted single-line string") {
+		t.Errorf("error = %q, want it to mention quoting", err.Error())
+	}
+}
+
+// --- Configurable per-phase models (Phase 2) ---
+
+func TestRender_NilAssignments_ByteIdentical(t *testing.T) {
+	for _, platform := range Platforms() {
+		t.Run(platform, func(t *testing.T) {
+			withNil, err := Render(platform, "/usr/local/bin/drup", nil)
+			if err != nil {
+				t.Fatalf("Render(nil) error: %v", err)
+			}
+			withEmpty, err := Render(platform, "/usr/local/bin/drup", map[string]map[string]state.ModelPhaseAssignment{})
+			if err != nil {
+				t.Fatalf("Render(empty) error: %v", err)
+			}
+			if len(withNil) != len(withEmpty) {
+				t.Fatalf("file count differs: nil=%d empty=%d", len(withNil), len(withEmpty))
+			}
+			for path, content := range withNil {
+				if withEmpty[path] != content {
+					t.Errorf("%s differs between nil and empty assignments", path)
+				}
+			}
+		})
+	}
+}
+
+func TestRender_SubstitutionCorrectness(t *testing.T) {
+	assignments := map[string]map[string]state.ModelPhaseAssignment{
+		"claude": {
+			"drup-rector": {Default: "claude-opus-4", Escalation: "claude-opus-4-max"},
+		},
+	}
+	files, err := Render("claude", "/usr/local/bin/drup", assignments)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	content, ok := files["agents/drup-rector.md"]
+	if !ok {
+		t.Fatal("missing agents/drup-rector.md")
+	}
+	if !strings.Contains(content, "model: claude-opus-4\n") {
+		t.Errorf("frontmatter model not substituted:\n%s", content)
+	}
+	if !strings.Contains(content, "claude-opus-4") || !strings.Contains(content, "claude-opus-4-max") {
+		t.Errorf("prose does not mention configured default/escalation:\n%s", content)
+	}
+
+	// Untouched agent must still resolve to its built-in default.
+	other, ok := files["agents/drup-contrib.md"]
+	if !ok {
+		t.Fatal("missing agents/drup-contrib.md")
+	}
+	if !strings.Contains(other, "model: claude-haiku-4-5-20251001\n") {
+		t.Errorf("unconfigured agent should keep the built-in default:\n%s", other)
+	}
+}
+
+func TestRender_UnknownPlatformKeyRejected(t *testing.T) {
+	assignments := map[string]map[string]state.ModelPhaseAssignment{
+		"chatgpt": {"drup-rector": {Default: "gpt-5"}},
+	}
+	files, err := Render("claude", "/usr/local/bin/drup", assignments)
+	if err == nil {
+		t.Fatal("expected an error for an unknown platform key, got nil")
+	}
+	if len(files) != 0 {
+		t.Errorf("expected zero files written, got %d", len(files))
+	}
+}
+
+func TestRender_UnknownAgentKeyRejected(t *testing.T) {
+	assignments := map[string]map[string]state.ModelPhaseAssignment{
+		"claude": {"drup-not-a-real-agent": {Default: "claude-opus-4"}},
+	}
+	files, err := Render("claude", "/usr/local/bin/drup", assignments)
+	if err == nil {
+		t.Fatal("expected an error for an unknown agent key, got nil")
+	}
+	if len(files) != 0 {
+		t.Errorf("expected zero files written, got %d", len(files))
+	}
+}
+
+func TestRender_InjectionCharsRejected(t *testing.T) {
+	tests := []string{"claude-opus\n4", `claude"opus`, `claude\opus`, "claude#opus", " claude-opus"}
+	for _, v := range tests {
+		t.Run(v, func(t *testing.T) {
+			assignments := map[string]map[string]state.ModelPhaseAssignment{
+				"claude": {"drup-rector": {Default: v}},
+			}
+			files, err := Render("claude", "/usr/local/bin/drup", assignments)
+			if err == nil {
+				t.Fatalf("expected an error for injection-unsafe model %q, got nil", v)
+			}
+			if len(files) != 0 {
+				t.Errorf("expected zero files written, got %d", len(files))
+			}
+		})
+	}
+}
+
+func TestRender_ArbitraryModelStringAccepted(t *testing.T) {
+	assignments := map[string]map[string]state.ModelPhaseAssignment{
+		"claude": {"drup-rector": {Escalation: "some-future-model-id"}},
+	}
+	files, err := Render("claude", "/usr/local/bin/drup", assignments)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	if !strings.Contains(files["agents/drup-rector.md"], "some-future-model-id") {
+		t.Error("arbitrary valid model string should pass through unmodified")
+	}
+}
+
+func TestRender_NoResidualPlaceholders(t *testing.T) {
+	for _, platform := range Platforms() {
+		t.Run(platform, func(t *testing.T) {
+			files, err := Render(platform, "/usr/local/bin/drup", nil)
+			if err != nil {
+				t.Fatalf("Render error: %v", err)
+			}
+			for path, content := range files {
+				if strings.Contains(content, "{{MODEL_") {
+					t.Errorf("%s/%s still contains an unsubstituted {{MODEL_ placeholder", platform, path)
+				}
+			}
+		})
+	}
+}
+
+// foreignModelVocab holds distinguishing substrings from each platform's
+// built-in model literals (see models.go builtinModels). A platform's
+// rendered output must never contain another platform's vocabulary — that
+// pattern (a hardcoded literal that bypassed the {{MODEL_ placeholder
+// grammar entirely) is exactly how CRITICAL-1 survived TestRender_NoResidualPlaceholders:
+// a literal that was never converted to a placeholder has no "{{MODEL_" to
+// detect.
+var foreignModelVocab = map[string][]string{
+	"claude":   {"haiku", "sonnet"},
+	"opencode": {"qwen3"},
+	"codex":    {"gpt-4o"},
+}
+
+func TestRender_NoForeignPlatformModelLiterals(t *testing.T) {
+	for _, platform := range Platforms() {
+		t.Run(platform, func(t *testing.T) {
+			files, err := Render(platform, "/usr/local/bin/drup", nil)
+			if err != nil {
+				t.Fatalf("Render error: %v", err)
+			}
+			for otherPlatform, words := range foreignModelVocab {
+				if otherPlatform == platform {
+					continue
+				}
+				for _, word := range words {
+					for path, content := range files {
+						if strings.Contains(content, word) {
+							t.Errorf("%s/%s contains foreign vocabulary %q belonging to platform %q — a hardcoded literal likely bypassed the {{MODEL_ substitution", platform, path, word, otherPlatform)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestRender_OpenCodeFrontmatterProseAgree(t *testing.T) {
+	files, err := Render("opencode", "/usr/local/bin/drup", nil)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	modelLine := regexp.MustCompile(`(?m)^model: (.+)$`)
+	for path, content := range files {
+		if !strings.HasPrefix(path, "agents/") {
+			continue
+		}
+		m := modelLine.FindStringSubmatch(content)
+		if m == nil {
+			t.Errorf("%s: no frontmatter model line found", path)
+			continue
+		}
+		frontmatterModel := m[1]
+		if !strings.Contains(content, frontmatterModel) {
+			continue
+		}
+		if !strings.Contains(content, "Default model:") {
+			t.Errorf("%s: missing 'Default model:' prose", path)
+			continue
+		}
+		prose := content[strings.Index(content, "Default model:"):]
+		if !strings.Contains(prose, frontmatterModel) {
+			t.Errorf("%s: frontmatter model %q not reachable from prose:\n%s", path, frontmatterModel, prose)
+		}
+	}
+}
+
+func TestRender_RosterReflectsOverride(t *testing.T) {
+	assignments := map[string]map[string]state.ModelPhaseAssignment{
+		"claude": {
+			"drup-rector": {Default: "claude-opus-4", Escalation: "claude-opus-4"},
+		},
+	}
+	files, err := Render("claude", "/usr/local/bin/drup", assignments)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	skill, ok := files["SKILL.md"]
+	if !ok {
+		t.Fatal("missing SKILL.md")
+	}
+	// The overridden agent's own roster row must reflect the configured
+	// value, not the built-in literal — other, unconfigured agent rows are
+	// unaffected and keep showing their own built-in default.
+	rosterLine := ""
+	for _, line := range strings.Split(skill, "\n") {
+		if strings.Contains(line, "| drup-rector |") {
+			rosterLine = line
+			break
+		}
+	}
+	if rosterLine == "" {
+		t.Fatal("missing drup-rector roster row")
+	}
+	if strings.Contains(rosterLine, "claude-haiku-4-5-20251001") {
+		t.Errorf("drup-rector roster row still shows the built-in literal: %q", rosterLine)
+	}
+	if !strings.Contains(rosterLine, "claude-opus-4") {
+		t.Errorf("drup-rector roster row does not reflect the override: %q", rosterLine)
+	}
+	if !strings.Contains(rosterLine, "2 retries") {
+		t.Errorf("drup-rector roster row lost its retry annotation: %q", rosterLine)
+	}
+}
+
+func TestRender_DrupValidatorProseMatchesFrontmatter(t *testing.T) {
+	for _, platform := range Platforms() {
+		t.Run(platform, func(t *testing.T) {
+			files, err := Render(platform, "/usr/local/bin/drup", nil)
+			if err != nil {
+				t.Fatalf("Render error: %v", err)
+			}
+			var content string
+			for path, c := range files {
+				if strings.Contains(path, "drup-validator") {
+					content = c
+					break
+				}
+			}
+			if content == "" {
+				t.Fatal("missing drup-validator agent file")
+			}
+			if strings.Contains(content, "Default model: haiku") {
+				t.Error("drup-validator prose still contradicts its non-cheap frontmatter default")
+			}
+		})
 	}
 }

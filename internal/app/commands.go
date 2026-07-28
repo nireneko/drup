@@ -603,16 +603,22 @@ func RunInstall() error {
 		return fmt.Errorf("get binary path: %w", err)
 	}
 
+	// Load state before rendering so any configured model_assignments apply
+	// on first install too, not only on later `drup sync` runs.
+	s, err := statepkg.Load()
+	if err != nil {
+		return fmt.Errorf("load state: %w", err)
+	}
+
 	// Render templates for each detected agent. A failure on one agent (for
 	// example a corrupt config file) must not block the remaining agents.
-	agentIDs, failures := installAgents(agents, binaryPath, "install")
+	agentIDs, failures := installAgents(agents, binaryPath, "install", s.ModelAssignments)
 	if len(agentIDs) == 0 {
 		return fmt.Errorf("install failed for every detected agent:\n  %s", strings.Join(failures, "\n  "))
 	}
 	reportInstallFailures(failures)
 
 	// Update state.
-	s, _ := statepkg.Load()
 	s.InstalledAgents = agentIDs
 	s.Version = Version
 	if err := statepkg.Save(s); err != nil {
@@ -642,7 +648,7 @@ func RunSync() error {
 
 	// Re-install to all previously installed agents.
 	agents := installer.DetectAgents()
-	synced, failures := installAgents(agents, binaryPath, "sync")
+	synced, failures := installAgents(agents, binaryPath, "sync", s.ModelAssignments)
 	if len(synced) == 0 {
 		return fmt.Errorf("sync failed for every detected agent:\n  %s", strings.Join(failures, "\n  "))
 	}
@@ -662,9 +668,9 @@ func RunSync() error {
 // installAgents renders and installs assets for each agent independently.
 // It returns the agents that succeeded and a message per agent that failed,
 // so one broken agent config cannot block the others.
-func installAgents(agents []installer.AgentAdapter, binaryPath, action string) (succeeded []string, failures []string) {
+func installAgents(agents []installer.AgentAdapter, binaryPath, action string, assignments map[string]map[string]statepkg.ModelPhaseAssignment) (succeeded []string, failures []string) {
 	for _, agent := range agents {
-		files, err := packaging.Render(agent.ID(), binaryPath)
+		files, err := packaging.Render(agent.ID(), binaryPath, assignments)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: render templates: %v", agent.ID(), err))
 			continue

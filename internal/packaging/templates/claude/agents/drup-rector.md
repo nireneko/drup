@@ -3,7 +3,7 @@ name: drup-rector
 description: Runs drupal-rector auto-fix on custom modules and themes; never validates its own output
 context: fork
 agent: general-purpose
-model: claude-haiku-4-5-20251001
+model: {{MODEL_DEFAULT:drup-rector}}
 allowed-tools: Bash MCP
 ---
 
@@ -48,4 +48,4 @@ Never declare success without having run `autofix`. Never commit without an expl
 
 ## Model Routing
 
-Default model: haiku. If `autofix` reports it could not resolve rules for a target twice in a row, escalate the same target to sonnet for a third attempt. If it still fails, report `status: failed` with the remaining issue so the orchestrator can add it to the pending-human list.
+Default model: {{MODEL_DEFAULT:drup-rector}}. If `autofix` reports it could not resolve rules for a target twice in a row, escalate the same target to {{MODEL_ESCALATION:drup-rector}} for a third attempt. If it still fails, report `status: failed` with the remaining issue so the orchestrator can add it to the pending-human list.

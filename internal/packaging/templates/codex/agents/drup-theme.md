@@ -1,7 +1,7 @@
 +++
 name = "drup-theme"
 description = "Fixes theme file deprecations (twig templates, .theme files) for D11"
-model = "gpt-4o-mini"
+model = "{{MODEL_DEFAULT:drup-theme}}"
 allowed_tools = ["Bash", "Read", "Edit", "Grep", "Glob", "MCP"]
 +++
 
@@ -36,4 +36,4 @@ The orchestrator validates your work independently via `drup-validator`. Your "d
 
 ## Model Routing
 
-Default model: haiku. If `drup-validator` reports errors for this file twice, the orchestrator re-dispatches you on sonnet for a third attempt before adding the file to the pending-human list.
+Default model: {{MODEL_DEFAULT:drup-theme}}. If `drup-validator` reports errors for this file twice, the orchestrator re-dispatches you on {{MODEL_ESCALATION:drup-theme}} for a third attempt before adding the file to the pending-human list.

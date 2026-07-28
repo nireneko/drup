@@ -24,12 +24,12 @@ Backup rules are mandatory: Stage 0 must succeed before any other stage; preserv
 
 | Agent | Model | Owns | Role |
 |-------|-------|------|------|
-| drup-preflight | haiku | `detect_env`, `drush_exec`, `composer_require`, `test-backup-create`, `test-backup-restore`, and manual `test-backup-delete` | Environment detection, dependency install, unsupported-environment terminal report |
-| drup-rector | haiku → sonnet (2 retries) | `autofix` | Deterministic auto-fix on custom modules/themes |
-| drup-contrib | haiku → sonnet (2 retries) | `contrib_check`, `contrib_upgrade_path`, `issue_patches`, `apply_patch`, `create_patch`, `patch_status`, `patch_rollback`, `patch_reconcile`, `core_upgrade_check`, `core_upgrade_apply` | Per-module contrib resolution + core version bump |
-| drup-custom | haiku → sonnet (2 retries) | file edits only | Per-file custom PHP refactor |
-| drup-theme | haiku → sonnet (2 retries) | file edits only | Per-file twig/theme refactor |
-| drup-validator | the session model, never the cheapest (see below) | `scan`, `validate`, `upgrade_scan`, `module_info`, `drupal_version_matrix`, `patch_status`, `custom_compat_fix` (dry run), `generate_report` | Authoritative gate confirmation + final report generation |
+| drup-preflight | {{MODEL_DEFAULT:drup-preflight}} | `detect_env`, `drush_exec`, `composer_require`, `test-backup-create`, `test-backup-restore`, and manual `test-backup-delete` | Environment detection, dependency install, unsupported-environment terminal report |
+| drup-rector | {{MODEL_DEFAULT:drup-rector}} → {{MODEL_ESCALATION:drup-rector}} (2 retries) | `autofix` | Deterministic auto-fix on custom modules/themes |
+| drup-contrib | {{MODEL_DEFAULT:drup-contrib}} → {{MODEL_ESCALATION:drup-contrib}} (2 retries) | `contrib_check`, `contrib_upgrade_path`, `issue_patches`, `apply_patch`, `create_patch`, `patch_status`, `patch_rollback`, `patch_reconcile`, `core_upgrade_check`, `core_upgrade_apply` | Per-module contrib resolution + core version bump |
+| drup-custom | {{MODEL_DEFAULT:drup-custom}} → {{MODEL_ESCALATION:drup-custom}} (2 retries) | file edits only | Per-file custom PHP refactor |
+| drup-theme | {{MODEL_DEFAULT:drup-theme}} → {{MODEL_ESCALATION:drup-theme}} (2 retries) | file edits only | Per-file twig/theme refactor |
+| drup-validator | {{MODEL_DEFAULT:drup-validator}} (never the cheapest — see below) | `scan`, `validate`, `upgrade_scan`, `module_info`, `drupal_version_matrix`, `patch_status`, `custom_compat_fix` (dry run), `generate_report` | Authoritative gate confirmation + final report generation |
 
 Every retry escalation follows the same rule: **a small fast model is the default for the fixer agents; after 2 failed attempts, re-dispatch the same sub-agent on a stronger model for one more try; if that also fails, add the item to the PENDING HUMAN LIST.**
 
@@ -171,7 +171,7 @@ For EACH file:
 1. Dispatch the matching agent — `drup-custom` for PHP/custom-module files, `drup-theme` for twig/theme files — with `{scope: "custom"|"theme", target: <file>}`.
 2. Dispatch `drup-validator` with `{scope: "custom"|"theme", target: <file>}` to confirm.
 3. **`evidence.total_errors == 0` for this file**: re-dispatch the same fixer agent with `commit_message` set to `fix(custom): resolve deprecation in <file>` or `fix(theme): update twig template <file> for D11` so it commits, then move to the next file.
-4. **`evidence.total_errors > 0`**: re-dispatch the same fixer agent with `prior_evidence` from the validator report (max 2 retries, then escalate model haiku → sonnet, then PENDING HUMAN LIST).
+4. **`evidence.total_errors > 0`**: re-dispatch the same fixer agent with `prior_evidence` from the validator report (max 2 retries, then escalate model, then PENDING HUMAN LIST).
 
 **One file = one commit**, issued by the fixer agent only after its dedicated validator gate passes.
 ### Stage 6: CORE UPGRADE — Drupal Core Version Bump
@@ -206,7 +206,7 @@ Read `drup-validator`'s `artifacts` for the generated `UPGRADE-REPORT.md` path a
 1. **EXTERNAL VALIDATION**: only `drup-validator` calls `scan`/`validate`/`upgrade_scan`. No other sub-agent, and never you, validates a sub-agent's own work.
 2. **NO SELF-APPROVAL**: a sub-agent's "done" declaration means nothing. Only a `drup-validator` report showing 0 errors for that scope counts, and `drup-validator` is never dispatched to confirm its own prior report.
 3. **RETRY WITH EVIDENCE**: on failure, re-dispatch the SAME sub-agent with the validator's evidence as `prior_evidence`.
-4. **MAX RETRIES**: 2 per scope on haiku, then 1 escalation attempt on sonnet. Then PENDING HUMAN LIST.
+4. **MAX RETRIES**: 2 per scope on the default model, then 1 escalation attempt on the escalation model. Then PENDING HUMAN LIST.
 5. **PHASE GATING**: no stage advances until every item in the current stage has a passing `drup-validator` report.
 6. **COMMIT ONLY AFTER GATE**: a commit happens only when you re-dispatch the fixer agent with a `commit_message`, and you only do that after `drup-validator` reports 0 errors for that exact scope/target.
 

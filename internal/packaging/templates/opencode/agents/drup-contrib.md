@@ -2,7 +2,7 @@
 name: drup-contrib
 description: Resolves contrib module D11 compatibility — checks releases, finds patches, applies or creates them
 type: agent
-model: openrouter/qwen/qwen3-30b-a3b:free
+model: {{MODEL_DEFAULT:drup-contrib}}
 allowed-tools: Bash MCP
 ---
 
@@ -42,4 +42,4 @@ NEVER declare yourself validated. The orchestrator dispatches `drup-validator` t
 
 ## Model Routing
 
-Default model: haiku. If a module fails resolution twice on haiku (per `drup-validator` reports), the orchestrator escalates by re-dispatching you on sonnet for a third attempt.
+Default model: {{MODEL_DEFAULT:drup-contrib}}. If a module fails resolution twice on {{MODEL_DEFAULT:drup-contrib}} (per `drup-validator` reports), the orchestrator escalates by re-dispatching you on {{MODEL_ESCALATION:drup-contrib}} for a third attempt.

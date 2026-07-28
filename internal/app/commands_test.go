@@ -1773,7 +1773,7 @@ func TestInstallAgents_IsolatesFailingAgent(t *testing.T) {
 		&installer.CodexAdapter{HomeDir: home},
 	}
 
-	succeeded, failures := installAgents(agents, filepath.Join(home, "bin", "drup"), "install")
+	succeeded, failures := installAgents(agents, filepath.Join(home, "bin", "drup"), "install", nil)
 
 	if len(succeeded) != 1 || succeeded[0] != "codex" {
 		t.Errorf("succeeded = %v, want [codex]", succeeded)
@@ -1783,6 +1783,109 @@ func TestInstallAgents_IsolatesFailingAgent(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, ".codex", "skills", "drup", "SKILL.md")); err != nil {
 		t.Errorf("codex assets not written: %v", err)
+	}
+}
+
+func TestInstallAgents_AppliesConfiguredModelAssignments(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	agents := []installer.AgentAdapter{
+		&installer.ClaudeAdapter{HomeDir: home},
+	}
+	assignments := map[string]map[string]statepkg.ModelPhaseAssignment{
+		"claude": {
+			"drup-rector": {Default: "claude-opus-4", Escalation: "claude-opus-4-max"},
+		},
+	}
+
+	succeeded, failures := installAgents(agents, filepath.Join(home, "bin", "drup"), "install", assignments)
+	if len(succeeded) != 1 {
+		t.Fatalf("succeeded = %v, failures = %v, want 1 success", succeeded, failures)
+	}
+
+	data, err := os.ReadFile(filepath.Join(home, ".claude", "agents", "drup-rector.md"))
+	if err != nil {
+		t.Fatalf("read installed agent: %v", err)
+	}
+	if !strings.Contains(string(data), "model: claude-opus-4\n") {
+		t.Errorf("installed drup-rector.md does not reflect the configured model:\n%s", data)
+	}
+
+	// An unconfigured agent must still resolve to the built-in default.
+	custom, err := os.ReadFile(filepath.Join(home, ".claude", "agents", "drup-custom.md"))
+	if err != nil {
+		t.Fatalf("read installed agent: %v", err)
+	}
+	if !strings.Contains(string(custom), "model: claude-haiku-4-5-20251001\n") {
+		t.Errorf("installed drup-custom.md should keep the built-in default:\n%s", custom)
+	}
+}
+
+func TestInstallAgents_UnknownAssignmentFailsOnlyThatPlatform(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	agents := []installer.AgentAdapter{
+		&installer.ClaudeAdapter{HomeDir: home},
+		&installer.CodexAdapter{HomeDir: home},
+	}
+	// An unknown agent key under "claude" must fail closed for claude only —
+	// codex has no such key and must still install successfully.
+	assignments := map[string]map[string]statepkg.ModelPhaseAssignment{
+		"claude": {"drup-not-a-real-agent": {Default: "claude-opus-4"}},
+	}
+
+	succeeded, failures := installAgents(agents, filepath.Join(home, "bin", "drup"), "install", assignments)
+	if len(succeeded) != 1 || succeeded[0] != "codex" {
+		t.Errorf("succeeded = %v, want [codex]", succeeded)
+	}
+	if len(failures) != 1 || !strings.Contains(failures[0], "claude") {
+		t.Errorf("failures = %v, want one claude failure", failures)
+	}
+}
+
+func TestInstallAgents_ReportsSyncFileResultsAlongsideFailures(t *testing.T) {
+	home := t.TempDir()
+	// A corrupt Claude MCP config must fail closed for claude, while codex
+	// still renders and its per-file SyncFileResult statuses must be captured
+	// and reported rather than silently dropped alongside the claude failure.
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{ "mcpServers": { broken`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	agents := []installer.AgentAdapter{
+		&installer.ClaudeAdapter{HomeDir: home},
+		&installer.CodexAdapter{HomeDir: home},
+	}
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	succeeded, failures := installAgents(agents, filepath.Join(home, "bin", "drup"), "sync", nil)
+
+	w.Close()
+	os.Stdout = oldStdout
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	if len(succeeded) != 1 || succeeded[0] != "codex" {
+		t.Fatalf("succeeded = %v, want [codex]", succeeded)
+	}
+	if len(failures) != 1 || !strings.Contains(failures[0], "claude") {
+		t.Fatalf("failures = %v, want one claude failure", failures)
+	}
+	if !strings.Contains(output, "Synced drup to codex") || !strings.Contains(output, "new:") {
+		t.Errorf("codex SyncFileResult statuses not reported, got: %s", output)
 	}
 }
 

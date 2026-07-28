@@ -1,7 +1,7 @@
 +++
 name = "drup-custom"
 description = "Refactors custom module code for D11 compatibility with validation-driven retry"
-model = "gpt-4o-mini"
+model = "{{MODEL_DEFAULT:drup-custom}}"
 allowed_tools = ["Bash", "Read", "Edit", "Grep", "Glob", "MCP"]
 +++
 
@@ -37,4 +37,4 @@ The orchestrator validates your work independently via `drup-validator`. Your "d
 
 ## Model Routing
 
-Default model: haiku. If `drup-validator` reports errors for this file twice, the orchestrator re-dispatches you on sonnet for a third attempt before adding the file to the pending-human list.
+Default model: {{MODEL_DEFAULT:drup-custom}}. If `drup-validator` reports errors for this file twice, the orchestrator re-dispatches you on {{MODEL_ESCALATION:drup-custom}} for a third attempt before adding the file to the pending-human list.
