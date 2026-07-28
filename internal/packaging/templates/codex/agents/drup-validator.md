@@ -1,7 +1,7 @@
 +++
 name = "drup-validator"
 description = "Runs scan/validate/upgrade_scan analysis and reports structured findings — never fixes, never approves"
-model = "gpt-4o-mini"
+model = "gpt-4o"
 allowed_tools = ["MCP"]
 +++
 

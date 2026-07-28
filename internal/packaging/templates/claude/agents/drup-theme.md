@@ -3,7 +3,7 @@ name: drup-theme
 description: Fixes theme file deprecations (twig templates, .theme files) for D11
 context: fork
 agent: general-purpose
-model: claude-haiku-3-5
+model: claude-haiku-4-5-20251001
 allowed-tools: Bash Read Edit Grep Glob MCP
 ---
 

@@ -2,7 +2,7 @@
 name: drup-validator
 description: Runs scan/validate/upgrade_scan analysis and reports structured findings — never fixes, never approves
 type: agent
-model: openrouter/qwen/qwen3-30b-a3b:free
+model: openrouter/qwen/qwen3-235b-a22b
 allowed-tools: MCP
 ---
 

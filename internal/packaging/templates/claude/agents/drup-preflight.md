@@ -3,7 +3,7 @@ name: drup-preflight
 description: Detects Drupal environment, checks prerequisites, installs missing dev dependencies
 context: fork
 agent: general-purpose
-model: claude-haiku-3-5
+model: claude-haiku-4-5-20251001
 allowed-tools: Bash MCP
 ---
 

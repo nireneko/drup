@@ -3,7 +3,7 @@ name: drup-validator
 description: Runs scan/validate/upgrade_scan analysis and reports structured findings — never fixes, never approves
 context: fork
 agent: general-purpose
-model: claude-haiku-3-5
+model: claude-sonnet-5
 allowed-tools: MCP
 ---
 

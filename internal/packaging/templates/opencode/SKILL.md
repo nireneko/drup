@@ -29,9 +29,11 @@ Backup rules are mandatory: Stage 0 must succeed before any other stage; preserv
 | drup-contrib | haiku → sonnet (2 retries) | `contrib_check`, `contrib_upgrade_path`, `issue_patches`, `apply_patch`, `create_patch`, `patch_status`, `patch_rollback`, `patch_reconcile`, `core_upgrade_check`, `core_upgrade_apply` | Per-module contrib resolution + core version bump |
 | drup-custom | haiku → sonnet (2 retries) | file edits only | Per-file custom PHP refactor |
 | drup-theme | haiku → sonnet (2 retries) | file edits only | Per-file twig/theme refactor |
-| drup-validator | haiku → sonnet (2 retries) | `scan`, `validate`, `upgrade_scan`, `module_info`, `drupal_version_matrix`, `patch_status`, `custom_compat_fix` (dry run), `generate_report` | Authoritative gate confirmation + final report generation |
+| drup-validator | the session model, never the cheapest (see below) | `scan`, `validate`, `upgrade_scan`, `module_info`, `drupal_version_matrix`, `patch_status`, `custom_compat_fix` (dry run), `generate_report` | Authoritative gate confirmation + final report generation |
 
-Every retry escalation follows the same rule: **haiku is the default model for every sub-agent; after 2 failed attempts on haiku, re-dispatch the same sub-agent on sonnet for one more try; if that also fails, add the item to the PENDING HUMAN LIST.**
+Every retry escalation follows the same rule: **a small fast model is the default for the fixer agents; after 2 failed attempts, re-dispatch the same sub-agent on a stronger model for one more try; if that also fails, add the item to the PENDING HUMAN LIST.**
+
+`drup-validator` is the exception and does not run on the cheap default. It is the gate: every decision the pipeline makes rests on its report, and it is the one agent that never writes code. Run on a small model it produced arithmetic that contradicted itself, claimed a package was missing that was installed, and repeatedly answered with prose instead of the report envelope — each of which cost a re-dispatch and another ten-minute scan. Cheap validation is the most expensive kind.
 
 ## Report Envelope (every sub-agent returns this)
 
