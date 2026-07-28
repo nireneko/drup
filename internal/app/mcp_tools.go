@@ -1440,10 +1440,11 @@ func realHandleContribAllowLenient(args json.RawMessage) (json.RawMessage, error
 
 func realHandleContribCompatPatch(args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		ProjectPath   string `json:"project_path"`
-		Module        string `json:"module_machine_name"`
-		TargetVersion string `json:"target_version,omitempty"`
-		DryRun        bool   `json:"dry_run,omitempty"`
+		ProjectPath     string `json:"project_path"`
+		Module          string `json:"module_machine_name"`
+		TargetVersion   string `json:"target_version,omitempty"`
+		DryRun          bool   `json:"dry_run,omitempty"`
+		DeclarationOnly bool   `json:"declaration_only,omitempty"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, err
@@ -1456,7 +1457,7 @@ func realHandleContribCompatPatch(args json.RawMessage) (json.RawMessage, error)
 		target = "11"
 	}
 
-	result, err := PatchContribForCore(params.ProjectPath, params.Module, target, params.DryRun)
+	result, err := PatchContribForCore(params.ProjectPath, params.Module, target, params.DryRun, params.DeclarationOnly)
 	if err != nil {
 		return nil, err
 	}

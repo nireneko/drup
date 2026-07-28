@@ -236,12 +236,13 @@ var toolRegistry = map[string]toolSchema{
 		Required: []string{"module_machine_name", "current_patch_url"},
 	},
 	"contrib_compat_patch": {
-		Description: "Make a contributed module installable on a newer Drupal major: widen its core_version_requirement, save the change as a patch in the project, register it in composer.json and add the package to the lenient allow list. Composer reads published metadata rather than patched files, so the patch alone is not enough",
+		Description: "Make a contributed module work on a newer Drupal major: run drupal-rector and the Drupal coding standards over it, widen its core_version_requirement, save the result as a patch in the project, register it in composer.json and add the package to the lenient allow list. Composer reads published metadata rather than patched files, so the patch alone is not enough",
 		Properties: map[string]jsonSchemaProperty{
 			"project_path":        {Type: "string", Description: "Absolute path to the Drupal project"},
 			"module_machine_name": {Type: "string", Description: "Contrib module or theme machine name"},
 			"target_version":      {Type: "string", Description: "Target Drupal major, e.g. 11 (default 11)"},
 			"dry_run":             {Type: "boolean", Description: "Report the change without writing it"},
+			"declaration_only":    {Type: "boolean", Description: "Only widen core_version_requirement, skipping rector and the coding standards pass"},
 		},
 		Required: []string{"project_path", "module_machine_name"},
 	},

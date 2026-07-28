@@ -27,7 +27,7 @@ func contribProject(t *testing.T, module, constraint string) string {
 func TestPatchContribForCore_PatchesRegistersAndAllows(t *testing.T) {
 	root := contribProject(t, "variationcache", "^9.5 || ^10")
 
-	result, err := PatchContribForCore(root, "variationcache", "11", false)
+	result, err := PatchContribForCore(root, "variationcache", "11", false, true)
 	if err != nil {
 		t.Fatalf("PatchContribForCore error: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestPatchContribForCore_PatchesRegistersAndAllows(t *testing.T) {
 func TestPatchContribForCore_SkipsModulesAlreadyCompatible(t *testing.T) {
 	root := contribProject(t, "token", "^10 || ^11")
 
-	result, err := PatchContribForCore(root, "token", "11", false)
+	result, err := PatchContribForCore(root, "token", "11", false, true)
 	if err != nil {
 		t.Fatalf("PatchContribForCore error: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestPatchContribForCore_DryRunWritesNothing(t *testing.T) {
 	infoPath := filepath.Join(root, "web", "modules", "contrib", "variationcache", "variationcache.info.yml")
 	before, _ := os.ReadFile(infoPath)
 
-	result, err := PatchContribForCore(root, "variationcache", "11", true)
+	result, err := PatchContribForCore(root, "variationcache", "11", true, true)
 	if err != nil {
 		t.Fatalf("PatchContribForCore error: %v", err)
 	}
@@ -106,7 +106,51 @@ func TestPatchContribForCore_DryRunWritesNothing(t *testing.T) {
 
 func TestPatchContribForCore_ReportsAMissingModule(t *testing.T) {
 	root := contribProject(t, "token", "^10")
-	if _, err := PatchContribForCore(root, "absent_module", "11", false); err == nil {
+	if _, err := PatchContribForCore(root, "absent_module", "11", false, true); err == nil {
 		t.Error("a module that is not installed was accepted")
+	}
+}
+
+// A widened declaration only claims compatibility. The patch has to carry the
+// code fixes that make the claim true, which is the same treatment the
+// project's own modules get.
+func TestPatchContribForCore_RunsRectorUnlessDeclarationOnly(t *testing.T) {
+	root := contribProject(t, "promotur_sso_application", "^9 || ^10")
+
+	origRun := drupexecRunWithEnv()
+	defer restoreRunWithEnv(origRun)
+	var ranRector, ranStandards bool
+	setRunWithEnv(func(dir string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+		switch {
+		case strings.Contains(cmd, "rector"):
+			ranRector = true
+		case strings.Contains(cmd, "phpcbf"):
+			ranStandards = true
+		}
+		return "", "", 0, nil
+	})
+
+	// rector needs a config and phpcbf needs to exist for the pass to run.
+	os.WriteFile(filepath.Join(root, "rector.php"), []byte("<?php"), 0o644)
+	os.MkdirAll(filepath.Join(root, "vendor", "bin"), 0o755)
+	os.WriteFile(filepath.Join(root, "vendor", "bin", "phpcbf"), []byte("#!/bin/sh"), 0o755)
+
+	if _, err := PatchContribForCore(root, "promotur_sso_application", "11", false, false); err != nil {
+		t.Fatalf("PatchContribForCore error: %v", err)
+	}
+	if !ranRector {
+		t.Error("rector was not run over the module")
+	}
+	if !ranStandards {
+		t.Error("the coding standards pass was not run over the module")
+	}
+
+	ranRector, ranStandards = false, false
+	root2 := contribProject(t, "other_module", "^9 || ^10")
+	if _, err := PatchContribForCore(root2, "other_module", "11", false, true); err != nil {
+		t.Fatalf("PatchContribForCore error: %v", err)
+	}
+	if ranRector || ranStandards {
+		t.Error("--declaration-only still ran the code passes")
 	}
 }
