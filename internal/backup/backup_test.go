@@ -139,6 +139,8 @@ func TestRestoreRequiresConfirmation(t *testing.T) {
 func TestArchive_SkipsRegenerableTrees(t *testing.T) {
 	project := t.TempDir()
 	for _, dir := range []string{
+		filepath.Join("web", "sites", "default", "files"),
+		".git",
 		filepath.Join("web", "core", "lib"),
 		filepath.Join("web", "modules", "custom", "mine"),
 		filepath.Join("web", "themes", "custom", "mine", "node_modules", "pkg"),
@@ -178,6 +180,8 @@ func TestArchive_SkipsRegenerableTrees(t *testing.T) {
 		filepath.Join("web", "core", "lib", "f.txt"),
 		filepath.Join("vendor", "drupal", "f.txt"),
 		filepath.Join("web", "themes", "custom", "mine", "node_modules", "pkg", "f.txt"),
+		filepath.Join("web", "sites", "default", "files", "f.txt"),
+		filepath.Join(".git", "f.txt"),
 	}
 	for _, p := range mustSkip {
 		if _, err := os.Stat(filepath.Join(out, p)); !os.IsNotExist(err) {
@@ -232,5 +236,49 @@ func TestVerifyDump(t *testing.T) {
 	}
 	if err := verifyDump(write("real.sql", "-- MySQL dump\nCREATE TABLE node;")); err != nil {
 		t.Errorf("a valid dump was rejected: %v", err)
+	}
+}
+
+// drush resolves a relative --result-file against the Drupal root, not the
+// working directory. Passing a bare filename dropped a full database dump
+// inside the web-served docroot and left drup looking for it one level up.
+func TestDumpTarget_ResolvesAgainstTheContainerProjectRoot(t *testing.T) {
+	originalRun := run
+	defer func() { run = originalRun }()
+	run = func(_ string, _ []string, _ string, args ...string) (string, string, int, error) {
+		return "/var/www/html/web\n", "", 0, nil
+	}
+
+	got, err := dumpTarget("/home/dev/site", []string{"ddev", "exec"}, ".drup-dump-1.sql")
+	if err != nil {
+		t.Fatalf("dumpTarget error: %v", err)
+	}
+	if got != "/var/www/html/.drup-dump-1.sql" {
+		t.Errorf("target = %q, want the container project root, not the docroot", got)
+	}
+	if strings.Contains(got, "/web/") {
+		t.Error("the dump would land inside the web-served docroot")
+	}
+}
+
+func TestDumpTarget_HostRunsUseTheProjectPath(t *testing.T) {
+	got, err := dumpTarget("/home/dev/site", nil, ".drup-dump-1.sql")
+	if err != nil {
+		t.Fatalf("dumpTarget error: %v", err)
+	}
+	if got != filepath.Join("/home/dev/site", ".drup-dump-1.sql") {
+		t.Errorf("target = %q, want the host project path", got)
+	}
+}
+
+func TestDumpTarget_FailsWhenTheRootCannotBeResolved(t *testing.T) {
+	originalRun := run
+	defer func() { run = originalRun }()
+	run = func(string, []string, string, ...string) (string, string, int, error) {
+		return "", "no bootstrap", 1, nil
+	}
+
+	if _, err := dumpTarget("/home/dev/site", []string{"ddev", "exec"}, "d.sql"); err == nil {
+		t.Error("an unresolvable Drupal root was accepted; the dump would go somewhere unknown")
 	}
 }

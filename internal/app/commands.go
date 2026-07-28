@@ -770,7 +770,7 @@ var readinessChecks = map[string]bool{
 // drupArtifacts are paths drup itself writes into a project. They must not
 // count against the working tree being clean, or taking a backup would block
 // the run that requested it.
-var drupArtifacts = []string{".drup/", "drup-report.json", "drup-report.md", "rector.php"}
+var drupArtifacts = []string{".drup/", ".drup-dump-", "drup-report.json", "drup-report.md", "rector.php"}
 
 // withoutDrupArtifacts filters drup's own files out of a git status listing.
 func withoutDrupArtifacts(files []string) []string {

@@ -89,6 +89,8 @@ func Run(args []string) error {
 			return fmt.Errorf("usage: drup test-backup-create <path>")
 		}
 		return RunTestBackupCreate(args[1])
+	case "test-backup-list":
+		return RunTestBackupList(args[1:])
 	case "test-backup-restore":
 		if len(args) < 3 || args[2] != "--confirm" {
 			return fmt.Errorf("usage: drup test-backup-restore <path> <backup-id> --confirm")
@@ -132,6 +134,7 @@ Commands:
   apply-patch <url> <p> Download and apply a patch to the project
 	upgrade-core <ver>    Upgrade Drupal core to target major version
 	 test-backup-create <p> Create a testing backup before mutations
+	 test-backup-list <p>   List testing backups for a project
 	 test-backup-restore <p> <id> --confirm Restore a testing backup
 	 test-backup-delete <p> <id> Delete a testing backup after success
   cleanup <path>        Post-validation cleanup (remove upgrade_status)
