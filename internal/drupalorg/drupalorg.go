@@ -847,6 +847,40 @@ func matchesConstraint(constraint string, drupalMajor int) bool {
 		return drupalMajor >= minMajor && drupalMajor < maxMajor
 	}
 
+	// Open-ended lower bound like ">=9.1", which drupal.org publishes for
+	// modules that never capped their compatibility. Reading it as "only 9"
+	// reported them as blockers for every later major.
+	if strings.HasPrefix(constraint, ">=") {
+		minMajor, err := parseMajor(strings.TrimSpace(strings.TrimPrefix(constraint, ">=")))
+		if err != nil {
+			return false
+		}
+		return drupalMajor >= minMajor
+	}
+	if strings.HasPrefix(constraint, ">") {
+		minMajor, err := parseMajor(strings.TrimSpace(strings.TrimPrefix(constraint, ">")))
+		if err != nil {
+			return false
+		}
+		return drupalMajor > minMajor
+	}
+
+	// An upper bound on its own, "<12".
+	if strings.HasPrefix(constraint, "<=") {
+		maxMajor, err := parseMajor(strings.TrimSpace(strings.TrimPrefix(constraint, "<=")))
+		if err != nil {
+			return false
+		}
+		return drupalMajor <= maxMajor
+	}
+	if strings.HasPrefix(constraint, "<") {
+		maxMajor, err := parseMajor(strings.TrimSpace(strings.TrimPrefix(constraint, "<")))
+		if err != nil {
+			return false
+		}
+		return drupalMajor < maxMajor
+	}
+
 	// Handle simple version like 11.0
 	major, _ := parseMajor(constraint)
 	return major == drupalMajor

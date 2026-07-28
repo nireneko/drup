@@ -1316,10 +1316,13 @@ func RunUpgradeCore(args []string) error {
 
 	targetVersion := ""
 	dryRun := false
+	allowDirty := false
 	for _, arg := range args {
 		switch {
 		case arg == "--dry-run":
 			dryRun = true
+		case arg == "--allow-dirty":
+			allowDirty = true
 		case strings.HasPrefix(arg, "-"):
 			continue
 		default:
@@ -1387,13 +1390,19 @@ func RunUpgradeCore(args []string) error {
 	}
 
 	// Check for clean working tree (unless dry-run).
-	if !dryRun {
+	if !dryRun && !allowDirty {
 		clean, dirtyFiles, err := isCleanFn(cwd)
 		if err != nil {
 			return fmt.Errorf("check git status: %w", err)
 		}
-		if !clean {
-			return fmt.Errorf("working tree is dirty; commit or stash changes first: %s", strings.Join(dirtyFiles, ", "))
+		// drup's own artifacts do not count: the earlier stages of the very
+		// pipeline that leads here write rector fixes, compatibility
+		// declarations and a backup directory, and refusing on those made the
+		// command unusable in the sequence it belongs to.
+		dirtyFiles = withoutDrupArtifacts(dirtyFiles)
+		if !clean && len(dirtyFiles) > 0 {
+			return fmt.Errorf("working tree has %d uncommitted changes; commit or stash them, or pass --allow-dirty to upgrade on top of them: %s",
+				len(dirtyFiles), summarizePaths(dirtyFiles, 8))
 		}
 	}
 

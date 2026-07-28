@@ -132,7 +132,7 @@ Commands:
   validate <path> [mod] Re-run scan and return error state (exit 1 if errors)
   compat-fix <path>     Declare Drupal 11 support in custom modules and themes
   apply-patch <url> <p> Download and apply a patch to the project
-	upgrade-core <ver>    Upgrade Drupal core to target major version
+	upgrade-core <ver> [--dry-run] [--allow-dirty]  Upgrade Drupal core to the target version
 	 test-backup-create <p> Create a testing backup before mutations
 	 test-backup-list <p>   List testing backups for a project
 	 test-backup-restore <p> <id> --confirm Restore a testing backup

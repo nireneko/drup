@@ -812,3 +812,31 @@ func TestCheckRelease_MarksUnknownProjects(t *testing.T) {
 		t.Error("unknown project reported as D11 compatible")
 	}
 }
+
+// drupal.org publishes ">=9.1" for modules that never capped compatibility.
+// Reading that as "only Drupal 9" reported them as upgrade blockers for every
+// later major, sending the pipeline hunting for patches that cannot exist.
+func TestConstraintMatchesDrupal_OpenEndedLowerBounds(t *testing.T) {
+	cases := []struct {
+		constraint string
+		major      int
+		want       bool
+	}{
+		{">=9.1", 11, true},
+		{">=9.3", 11, true},
+		{">=9.1", 8, false},
+		{">9", 11, true},
+		{">11", 11, false},
+		{"<12", 11, true},
+		{"<=10", 11, false},
+		{">=10 <12", 11, true},
+		{"^8 || ^9 || ^10", 11, false},
+		{"^10.3 || ^11", 11, true},
+	}
+
+	for _, c := range cases {
+		if got := constraintMatchesDrupal(c.constraint, c.major); got != c.want {
+			t.Errorf("constraintMatchesDrupal(%q, %d) = %v, want %v", c.constraint, c.major, got, c.want)
+		}
+	}
+}
