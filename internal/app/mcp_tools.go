@@ -73,6 +73,7 @@ func WireMCPTools(s *mcp.Server) {
 	s.RegisterTool("cleanup", realHandleCleanup)
 	s.RegisterTool("custom_compat_fix", realHandleCustomCompatFix)
 	s.RegisterTool("contrib_allow_lenient", realHandleContribAllowLenient)
+	s.RegisterTool("contrib_compat_patch", realHandleContribCompatPatch)
 	s.RegisterTool("test_backup_create", realHandleTestBackupCreate)
 	s.RegisterTool("test_backup_list", realHandleTestBackupList)
 	s.RegisterTool("test_backup_restore", realHandleTestBackupRestore)
@@ -1431,6 +1432,31 @@ func realHandleContribAllowLenient(args json.RawMessage) (json.RawMessage, error
 	}
 
 	result, err := AllowLenient(params.ProjectPath, params.Packages, params.DryRun)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(result)
+}
+
+func realHandleContribCompatPatch(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath   string `json:"project_path"`
+		Module        string `json:"module_machine_name"`
+		TargetVersion string `json:"target_version,omitempty"`
+		DryRun        bool   `json:"dry_run,omitempty"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if params.ProjectPath == "" || params.Module == "" {
+		return nil, fmt.Errorf("project_path and module_machine_name are required")
+	}
+	target := params.TargetVersion
+	if target == "" {
+		target = "11"
+	}
+
+	result, err := PatchContribForCore(params.ProjectPath, params.Module, target, params.DryRun)
 	if err != nil {
 		return nil, err
 	}

@@ -52,7 +52,21 @@ func defaultTools() map[string]ToolHandler {
 		"cleanup":               handleCleanup,
 		"custom_compat_fix":     handleCustomCompatFix,
 		"contrib_allow_lenient": handleContribAllowLenient,
+		"contrib_compat_patch":  handleContribCompatPatch,
 	}
+}
+
+func handleContribCompatPatch(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		Module string `json:"module_machine_name"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+
+	// Placeholder — the real handler writes and registers the patch.
+	result := map[string]interface{}{"module": params.Module, "registered_in_composer": false}
+	return json.Marshal(result)
 }
 
 func handleContribAllowLenient(args json.RawMessage) (json.RawMessage, error) {

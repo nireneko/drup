@@ -77,6 +77,8 @@ func Run(args []string) error {
 		return RunValidate(args[1:])
 	case "apply-patch":
 		return RunApplyPatch(args[1:])
+	case "contrib-patch":
+		return RunContribPatch(args[1:])
 	case "allow-lenient":
 		return RunAllowLenient(args[1:])
 	case "compat-fix":
@@ -133,6 +135,7 @@ Commands:
   preflight [path] [--allow-dirty]  Check project readiness for upgrade automation
   validate <path> [mod] Re-run scan and return error state (exit 1 if errors)
   compat-fix <path>     Declare Drupal 11 support in custom modules and themes
+  contrib-patch <path> <mod>     Patch a contrib module for the target core and register it
   allow-lenient <path> <pkg>...  Let a patched contrib module install against the new core
   apply-patch <url> <p> Download and apply a patch to the project
 	upgrade-core <ver> [--dry-run] [--allow-dirty]  Upgrade Drupal core to the target version
