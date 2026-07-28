@@ -1,6 +1,8 @@
 package exec
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -78,7 +80,7 @@ func TestRunWithEnv_PrefixPrepended(t *testing.T) {
 		return &mockRunner{stdout: "ok\n", stderr: "", exitCode: 0}
 	}
 
-	stdout, _, exitCode, err := RunWithEnv([]string{"ddev"}, "composer", "require", "drupal/token")
+	stdout, _, exitCode, err := RunWithEnv("", []string{"ddev"}, "composer", "require", "drupal/token")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -114,7 +116,7 @@ func TestRunWithEnv_EmptyPrefix(t *testing.T) {
 		return &mockRunner{stdout: "direct\n", stderr: "", exitCode: 0}
 	}
 
-	stdout, _, exitCode, err := RunWithEnv(nil, "git", "status")
+	stdout, _, exitCode, err := RunWithEnv("", nil, "git", "status")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -144,7 +146,7 @@ func TestRunWithEnv_MultiTokenPrefix(t *testing.T) {
 		return &mockRunner{stdout: "", stderr: "", exitCode: 0}
 	}
 
-	_, _, _, err := RunWithEnv([]string{"docker", "compose", "exec", "php"}, "drush", "status")
+	_, _, _, err := RunWithEnv("", []string{"docker", "compose", "exec", "php"}, "drush", "status")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -221,5 +223,28 @@ func TestKillChildren_StopsRunningCommand(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("command survived KillChildren")
+	}
+}
+
+// drup is usually driven by an MCP server whose working directory is wherever
+// the agent started it. Container CLIs resolve the project from the current
+// directory, so the project path has to be explicit.
+func TestRunWithEnvInDir_RunsFromTheGivenDirectory(t *testing.T) {
+	dir := t.TempDir()
+
+	stdout, _, exitCode, err := RunWithEnv(dir, nil, "pwd")
+	if err != nil || exitCode != 0 {
+		t.Fatalf("RunWithEnvInDir error: %v (exit %d)", err, exitCode)
+	}
+	got := strings.TrimSpace(stdout)
+	resolved, _ := filepath.EvalSymlinks(dir)
+	if got != dir && got != resolved {
+		t.Errorf("working directory = %q, want %q", got, dir)
+	}
+}
+
+func TestRunWithEnvInDir_EmptyDirFallsBackToInheritedCwd(t *testing.T) {
+	if _, _, exitCode, err := RunWithEnv("", nil, "true"); err != nil || exitCode != 0 {
+		t.Errorf("empty dir should behave like RunWithEnv: %v (exit %d)", err, exitCode)
 	}
 }

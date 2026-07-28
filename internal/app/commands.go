@@ -120,7 +120,10 @@ func cliRun(projectPath string, cmd string, args ...string) (string, string, int
 	if err != nil {
 		return "", "", -1, fmt.Errorf("detect environment: %w", err)
 	}
-	return drupexec.RunWithEnv(detection.CommandPrefix, cmd, args...)
+	// Run from the project so container CLIs can resolve it. Without this the
+	// MCP server, whose working directory is wherever the agent started it,
+	// fails every ddev and lando call.
+	return drupexec.RunWithEnv(projectPath, detection.CommandPrefix, cmd, args...)
 }
 
 // isContainerized reports whether commands for projectPath run inside a
@@ -764,6 +767,35 @@ var readinessChecks = map[string]bool{
 	"core_module_compat":       true,
 }
 
+// drupArtifacts are paths drup itself writes into a project. They must not
+// count against the working tree being clean, or taking a backup would block
+// the run that requested it.
+var drupArtifacts = []string{".drup/", "drup-report.json", "drup-report.md", "rector.php"}
+
+// withoutDrupArtifacts filters drup's own files out of a git status listing.
+func withoutDrupArtifacts(files []string) []string {
+	kept := make([]string, 0, len(files))
+	for _, f := range files {
+		name := strings.TrimSpace(f)
+		// git status --porcelain lines start with a two-character status.
+		if len(name) > 3 && (name[2] == ' ' || name[1] == ' ') {
+			name = strings.TrimSpace(name[2:])
+		}
+		name = strings.Trim(name, `"`)
+		drupOwned := false
+		for _, artifact := range drupArtifacts {
+			if name == artifact || strings.HasPrefix(name, artifact) {
+				drupOwned = true
+				break
+			}
+		}
+		if !drupOwned {
+			kept = append(kept, f)
+		}
+	}
+	return kept
+}
+
 // PreflightResult holds the outcome of each preflight check.
 type PreflightResult struct {
 	Check    string `json:"check"`
@@ -794,10 +826,31 @@ func categorize(results []PreflightResult) (environmentFailures, readinessFailur
 }
 
 // RunPreflight checks project readiness for upgrade automation.
-func RunPreflight() error {
-	cwd, err := os.Getwd()
+// The project path is explicit: preflight installs dev dependencies with
+// composer, and inferring the target from the shell's working directory once
+// left a vendor tree in an unrelated repository.
+func RunPreflight(args []string) error {
+	cwd := ""
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			return fmt.Errorf("unknown option %q — usage: drup preflight [path]", arg)
+		}
+		cwd = arg
+	}
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			return fmt.Errorf("get working directory: %w", err)
+		}
+	}
+	abs, err := filepath.Abs(cwd)
 	if err != nil {
-		return fmt.Errorf("get working directory: %w", err)
+		return fmt.Errorf("resolve %s: %w", cwd, err)
+	}
+	cwd = abs
+	if _, err := os.Stat(filepath.Join(cwd, "composer.json")); err != nil {
+		return fmt.Errorf("not a Drupal project: no composer.json in %s", cwd)
 	}
 
 	var results []PreflightResult
@@ -820,8 +873,14 @@ func RunPreflight() error {
 		allPass = false
 	}
 
-	// 2. Check git clean.
+	// 2. Check git clean, ignoring drup's own artifacts. The pipeline takes a
+	// backup into .drup/ before it starts, which used to make its own next
+	// check fail.
 	clean, files, err := gitops.IsClean(cwd)
+	if err == nil {
+		files = withoutDrupArtifacts(files)
+		clean = len(files) == 0
+	}
 	if err != nil {
 		results = append(results, PreflightResult{
 			Check:   "git_clean",

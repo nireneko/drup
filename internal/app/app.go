@@ -17,6 +17,16 @@ func Run(args []string) error {
 		return nil
 	}
 
+	// A --help anywhere in the arguments prints usage instead of running.
+	// "drup preflight --help" used to execute the command, and "drup report
+	// --help" passed --help through as a path.
+	for _, arg := range args[1:] {
+		if arg == "--help" || arg == "-h" || arg == "help" {
+			printUsage()
+			return nil
+		}
+	}
+
 	switch args[0] {
 	case "help", "--help", "-h":
 		printUsage()
@@ -62,7 +72,7 @@ func Run(args []string) error {
 	case "upgrade":
 		return RunUpgrade()
 	case "preflight":
-		return RunPreflight()
+		return RunPreflight(args[1:])
 	case "validate":
 		return RunValidate(args[1:])
 	case "apply-patch":
@@ -116,7 +126,7 @@ Commands:
   uninstall             Remove drup from all installed agents
   sync                  Re-apply agent assets
   upgrade               Self-update binary
-  preflight             Check project readiness for upgrade automation
+  preflight [path]      Check project readiness for upgrade automation
   validate <path> [mod] Re-run scan and return error state (exit 1 if errors)
   compat-fix <path>     Declare Drupal 11 support in custom modules and themes
   apply-patch <url> <p> Download and apply a patch to the project

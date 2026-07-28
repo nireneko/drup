@@ -582,7 +582,7 @@ func realHandleComposerRequire(args json.RawMessage) (json.RawMessage, error) {
 	if params.NoUpdate {
 		dryArgs = append(dryArgs, "--no-update")
 	}
-	_, dryStderr, dryExit, err := drupexec.RunWithEnv(detection.CommandPrefix, "composer", dryArgs...)
+	_, dryStderr, dryExit, err := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "composer", dryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("exec composer dry-run: %w", err)
 	}
@@ -605,7 +605,7 @@ func realHandleComposerRequire(args json.RawMessage) (json.RawMessage, error) {
 	if params.NoUpdate {
 		realArgs = append(realArgs, "--no-update")
 	}
-	stdout, stderr, exitCode, err := drupexec.RunWithEnv(detection.CommandPrefix, "composer", realArgs...)
+	stdout, stderr, exitCode, err := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "composer", realArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("exec composer require: %w", err)
 	}
@@ -701,7 +701,7 @@ func realHandleDrushExec(args json.RawMessage) (json.RawMessage, error) {
 		cmdArgs = append(cmdArgs, "--format="+params.Format)
 	}
 
-	stdout, stderr, exitCode, err := drupexec.RunWithEnv(detection.CommandPrefix, "drush", cmdArgs...)
+	stdout, stderr, exitCode, err := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", cmdArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("exec drush: %w", err)
 	}
@@ -799,7 +799,7 @@ func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 	// Check if upgrade_status is enabled.
 	upgradeStatusEnabled := false
 	pmListArgs := []string{"pm:list", "--status=enabled", "--format=json"}
-	pmStdout, _, pmExit, _ := drupexec.RunWithEnv(detection.CommandPrefix, "drush", append(pmListArgs, "--root="+params.ProjectPath)...)
+	pmStdout, _, pmExit, _ := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", append(pmListArgs, "--root="+params.ProjectPath)...)
 	if pmExit == 0 {
 		var pmData map[string]interface{}
 		if json.Unmarshal([]byte(pmStdout), &pmData) == nil {
@@ -813,10 +813,10 @@ func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 	if !upgradeStatusEnabled {
 		// Delete conflicting update.settings config before enabling.
 		cdArgs := []string{"config:delete", "update.settings", "--root=" + params.ProjectPath}
-		_, _, _, _ = drupexec.RunWithEnv(detection.CommandPrefix, "drush", cdArgs...)
+		_, _, _, _ = drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", cdArgs...)
 
 		enArgs := []string{"en", "upgrade_status", "-y", "--root=" + params.ProjectPath}
-		_, enStderr, enExit, enErr := drupexec.RunWithEnv(detection.CommandPrefix, "drush", enArgs...)
+		_, enStderr, enExit, enErr := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", enArgs...)
 		if enErr != nil {
 			return nil, fmt.Errorf("enable upgrade_status: %w", enErr)
 		}
@@ -826,7 +826,7 @@ func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 		// Drush caches its command list, so upgrade_status:checkstyle stays
 		// undefined until the cache is rebuilt.
 		crArgs := []string{"cr", "--root=" + params.ProjectPath}
-		_, _, _, _ = drupexec.RunWithEnv(detection.CommandPrefix, "drush", crArgs...)
+		_, _, _, _ = drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", crArgs...)
 		upgradeStatusEnabled = true
 	}
 
@@ -837,7 +837,7 @@ func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 		analyzeTarget = params.Module
 	}
 	analyzeArgs := []string{"upgrade_status:analyze", analyzeTarget, "--format=checkstyle", "--root=" + params.ProjectPath}
-	analyzeStdout, analyzeStderr, analyzeExit, analyzeErr := drupexec.RunWithEnv(detection.CommandPrefix, "drush", analyzeArgs...)
+	analyzeStdout, analyzeStderr, analyzeExit, analyzeErr := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", analyzeArgs...)
 	if analyzeErr != nil {
 		return nil, drushExecError("drush", analyzeArgs, -1, analyzeErr.Error(), "")
 	}
@@ -1266,7 +1266,7 @@ func realHandlePatchRollback(args json.RawMessage) (json.RawMessage, error) {
 
 	// Step 3: composer update for the package.
 	detection, _ := defaultEnvDetector.Detect(params.ProjectPath, false)
-	_, compStderr, compExit, _ := drupexec.RunWithEnv(detection.CommandPrefix, "composer", "update", params.ComposerPackage)
+	_, compStderr, compExit, _ := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "composer", "update", params.ComposerPackage)
 
 	result := map[string]interface{}{
 		"success":               true,

@@ -27,7 +27,7 @@ func TestRunCleanup_ValidatePass_RunsCleanup(t *testing.T) {
 
 	origRunWithEnv := drupexec.RunWithEnv
 	origRun := drupexec.Run
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		switch cmd {
 		case "drush":
 			drushCalls = append(drushCalls, strings.Join(args, " "))
@@ -114,7 +114,7 @@ func TestRunCleanup_ValidateFailed_Skips(t *testing.T) {
 
 	drushCalled := false
 	origRunWithEnv := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			drushCalled = true
 		}
@@ -159,7 +159,7 @@ func TestRunCleanup_AlreadyRemoved_Idempotent(t *testing.T) {
 
 	drushUninstallCalled := false
 	origRunWithEnv := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			for _, a := range args {
 				if a == "pm:uninstall" {
@@ -208,7 +208,7 @@ func TestRunCleanup_DrushFailure_Halts(t *testing.T) {
 	composerRemoveCalled := false
 	origRunWithEnv := drupexec.RunWithEnv
 	origRun := drupexec.Run
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" {
 			return "", "drush pm:uninstall failed", 1, nil
 		}

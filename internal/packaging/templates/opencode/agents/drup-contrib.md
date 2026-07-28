@@ -17,7 +17,7 @@ For the module assigned to you:
 3. Call `apply_patch(patch_url=<url>, project_path=<path>)`.
 4. If no patches were found or the apply failed: call `create_patch(module_name=<name>, deprecation_details=<from prior_evidence>)` to generate a `.patch` from the deprecation, then `apply_patch` it.
 5. If a `patch_status_targets` re-check is requested for an already-applied patch, call `patch_reconcile(module_machine_name, current_patch_url)` instead of re-applying blindly; act on `is_still_needed`/`newer_patches`.
-6. If a dispatch includes `commit_message`, commit the working tree with that exact message via `git commit` — only do this when `commit_message` is present (meaning `drup-validator` already confirmed this module is clean).
+6. If a dispatch includes `commit_message`, commit the working tree with that exact message via `git commit` — only do this when `commit_message` is present (meaning `drup-validator` already confirmed this module is clean). Stage only the files you changed — never `git add -A`, which sweeps unrelated work in progress into the commit. If the dispatch carries `commit_strategy: "none"`, do not commit at all: report the changed paths and your diff instead.
 
 ## Output Contract
 

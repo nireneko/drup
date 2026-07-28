@@ -59,6 +59,16 @@ type commandRunner interface {
 	Output() (stdout, stderr string, exitCode int, err error)
 }
 
+// execCommandInDir builds a runner whose working directory is dir. Container
+// CLIs resolve the project from the current directory, so a command issued
+// from anywhere else fails or, worse, acts on the wrong project.
+var execCommandInDir = func(dir, cmd string, args ...string) commandRunner {
+	c := exec.Command(cmd, args...)
+	c.Dir = dir
+	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return &realCmd{cmd: c}
+}
+
 // execCommand creates a commandRunner. Package-level var for test overrides.
 var execCommand = func(cmd string, args ...string) commandRunner {
 	c := exec.Command(cmd, args...)
@@ -104,20 +114,24 @@ var Run = func(cmd string, args ...string) (stdout, stderr string, exitCode int,
 	return execCommand(cmd, args...).Output()
 }
 
-// RunWithEnv prepends prefix tokens to cmd.
-// Example: RunWithEnv([]string{"ddev"}, "composer", "require", "pkg")
-// executes: ddev composer require pkg
-// Empty prefix falls through to the same path as Run().
+// RunWithEnv prepends prefix tokens to cmd and runs it from dir.
+// Example: RunWithEnv("/srv/site", []string{"ddev", "exec"}, "composer", "require", "pkg")
+// executes: ddev exec composer require pkg, with /srv/site as the working
+// directory. The directory is explicit because container CLIs resolve the
+// project from it, and drup is usually driven by an MCP server whose own
+// working directory has nothing to do with the project. An empty dir inherits
+// the process working directory.
 // Package-level var for test overrides.
-var RunWithEnv = func(prefix []string, cmd string, args ...string) (stdout, stderr string, exitCode int, err error) {
-	if len(prefix) == 0 {
-		return execCommand(cmd, args...).Output()
-	}
+var RunWithEnv = func(dir string, prefix []string, cmd string, args ...string) (stdout, stderr string, exitCode int, err error) {
 	fullArgs := make([]string, 0, len(prefix)+1+len(args))
 	fullArgs = append(fullArgs, prefix...)
 	fullArgs = append(fullArgs, cmd)
 	fullArgs = append(fullArgs, args...)
-	return execCommand(fullArgs[0], fullArgs[1:]...).Output()
+	name, rest := fullArgs[0], fullArgs[1:]
+	if dir == "" {
+		return execCommand(name, rest...).Output()
+	}
+	return execCommandInDir(dir, name, rest...).Output()
 }
 
 // RunWithEnvInput executes a command with stdin without invoking a shell.

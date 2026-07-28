@@ -3,6 +3,7 @@ package backup
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"crypto/rand"
 	"crypto/sha256"
@@ -39,6 +40,8 @@ func NewManager(project string) *Manager {
 	return &Manager{Root: filepath.Join(project, ".drup", "backups")}
 }
 
+// run executes a command from the project directory. Container CLIs resolve
+// the project from there, so the directory is part of the call, not ambient.
 var run = drupexec.RunWithEnv
 var runInput = drupexec.RunWithEnvInput
 var detectEnv = func(path string) (*envdetect.Detection, error) { return envdetect.NewDetector().Detect(path, false) }
@@ -78,17 +81,22 @@ func (m *Manager) Create(project string) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
-	dump, err := os.CreateTemp("", "drup-backup-*.sql")
-	if err != nil {
-		return Manifest{}, err
-	}
-	dumpPath := dump.Name()
-	dump.Close()
+	// Dump inside the project. A host temp path is invisible to a drush
+	// running in a container: it writes the dump to that path inside the
+	// container and the host file stays empty.
+	dumpName := ".drup-dump-" + id + ".sql"
+	dumpPath := filepath.Join(project, dumpName)
 	defer os.Remove(dumpPath)
-	cmd := []string{"sql:dump", "--result-file=" + dumpPath, "--root=" + project}
-	_, stderr, code, runErr := run(detection.CommandPrefix, "drush", cmd...)
+	cmd := []string{"sql:dump", "--result-file=" + dumpName}
+	_, stderr, code, runErr := run(project, detection.CommandPrefix, "drush", cmd...)
 	if runErr != nil || code != 0 {
 		return Manifest{}, fmt.Errorf("database dump failure: %s", commandError(runErr, stderr, code))
+	}
+	// drush reports success even when mysqldump refuses (missing PROCESS
+	// privilege, for one), so the only trustworthy signal is the file itself.
+	// A backup that silently contains nothing is worse than no backup.
+	if err = verifyDump(dumpPath); err != nil {
+		return Manifest{}, fmt.Errorf("database dump failure: %w (drush said: %s)", err, strings.TrimSpace(stderr))
 	}
 
 	filesPath := filepath.Join(dir, "files.tar.gz")
@@ -258,6 +266,30 @@ func isRegenerableDir(root, path, name string) bool {
 	parts := strings.Split(filepath.ToSlash(rel), "/")
 	// <docroot>/core — one level deep at most.
 	return len(parts) <= 2
+}
+
+// verifyDump rejects an empty or obviously truncated SQL dump.
+func verifyDump(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("no dump was written to %s", path)
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("the dump at %s is empty", path)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("read dump: %w", err)
+	}
+	defer f.Close()
+	head := make([]byte, 512)
+	n, _ := f.Read(head)
+	if !bytes.Contains(head[:n], []byte("--")) && !bytes.Contains(head[:n], []byte("CREATE")) &&
+		!bytes.Contains(head[:n], []byte("INSERT")) && !bytes.Contains(head[:n], []byte("/*")) {
+		return fmt.Errorf("the dump at %s does not look like SQL", path)
+	}
+	return nil
 }
 
 func archive(root, dest, excluded string) error {

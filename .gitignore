@@ -38,3 +38,9 @@ dist/
 # Engram local runtime state
 .engram/engram.db
 .engram/cloud.json
+
+# PHP artifacts at the repository root. drup is a Go project; these only
+# appear when a command runs composer in the wrong working directory.
+/composer.json
+/composer.lock
+/vendor/

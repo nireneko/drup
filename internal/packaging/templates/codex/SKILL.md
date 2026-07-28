@@ -55,6 +55,46 @@ Every retry escalation follows the same rule: **haiku is the default model for e
 
 Give each sub-agent ONLY the target module/file plus its own error context — never the whole project. This is context isolation, not withholding information: a sub-agent processing module X never sees module Y's data.
 
+## Stage -1: AGREE THE PLAN — Before Any Work
+
+The pipeline mutates a codebase and, by default, commits as it goes. Never start
+that without the user's word on how. Ask once, in one message, and wait:
+
+1. **Commit strategy.** `per-fix` (default — one commit per validated fix, the
+   safest to review and revert), `single` (all work in one commit at the end),
+   or `none` (leave every change uncommitted for the user to inspect). When the
+   user says no commits, no stage commits anything, ever — the fixer agents are
+   dispatched without `commit_message` and you say so in the final report.
+2. **Scope.** Everything, or only some of: rector, compatibility declarations,
+   contrib, custom code, themes, the core version bump. The core bump changes
+   `composer.json` and runs an update that can leave a site unbootable, so it is
+   opt-in and never assumed.
+3. **Uncommitted work.** If the tree is dirty, say exactly what is in it and ask
+   whether to stash, commit it first, or proceed and mix. Never decide alone.
+
+Then state the plan back in three or four lines — stages you will run, roughly
+how long it takes, what gets written — and start only after the user agrees.
+If the user already stated a preference in their request, honour it and confirm
+in one line instead of asking again.
+
+Record the answers in the run state and pass `commit_strategy` in every dispatch.
+A sub-agent that receives `commit_strategy: "none"` reports its diff and commits
+nothing.
+
+## Keeping the run short
+
+A full-site scan takes 8 to 10 minutes; a scoped one takes seconds. The
+difference decides whether a run is minutes or hours.
+
+- Validate a single module or file with `drup validate <path> <module>`, not a
+  full scan. Measured on a real project: 7.5 s scoped versus 437 s full.
+- Run exactly one full scan per phase boundary — after rector and at the end.
+  Never one per module: on a 60-module project that is over seven hours.
+- Reuse the evidence you already hold. The final report must be built from the
+  stage reports, not from a fresh scan.
+- Before entering any loop, multiply the per-item cost by the item count and
+  tell the user the estimate. If it exceeds thirty minutes, ask before starting.
+
 ## Pipeline (9 Stages, Sequential)
 
 ### Stage 0: SAFETY BACKUP — Before Any Work
@@ -142,7 +182,7 @@ Updates composer.json constraints, runs `composer require`, `drush updb`, and ve
 
 ### Stage 8: REPORT
 
-Dispatch `drup-validator` with `{scope: "global"}` and every accumulated report from Stages 1–6 as `prior_evidence`, instructing it to call `generate_report`. The report must include:
+Dispatch `drup-validator` with `{scope: "global"}` and every accumulated report from Stages 1–6 as `prior_evidence`, instructing it to call `generate_report` with `include_scan_data: false` — the stage reports already hold the measurements, and a fresh full scan adds ten minutes to tell you what you know. The report must include:
 1. Summary: total modules checked, patches applied, custom/theme files fixed, errors remaining.
 2. Per module: action taken (update/patch/create), version/URL, validation result.
 3. Per custom/theme file: deprecation fixed, validation result.
@@ -168,7 +208,7 @@ Read `drup-validator`'s `artifacts` for the generated `UPGRADE-REPORT.md` path a
 Dispatch `drup-preflight` with `{scope: "backup", project_path, action: "finalize", backup_id}` after the report or any terminal error.
 
 - Successful run and final validation has zero errors: retain the backup and report its `backup_id` and path to the developer. Do not delete it automatically.
-- Any failed stage, unresolved validation error, or unsuccessful report: run `drup test-backup-restore <project-path> <backup-id> --confirm` and verify success.
+- Any failed stage or unsuccessful report: report what failed, name the backup, and **ask the user before restoring**. Never restore on your own initiative. A restore discards every commit the run produced, and most remaining findings are advisory rows the pipeline was never able to clear — treating those as a failure would throw away good work to satisfy a number that cannot reach zero. Restore only on the user's word: `drup test-backup-restore <project-path> <backup-id> --confirm`.
 - Delete a retained backup only as an explicit manual operation requested by the developer: `drup test-backup-delete <project-path> <backup-id>`.
 - If restoration fails, report both failures and retain the backup ID and path. If the user stops the run before a final result, retain the backup.
 

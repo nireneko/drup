@@ -32,7 +32,7 @@ func TestPipeline_StageOrdering(t *testing.T) {
 		commandOrder = append(commandOrder, cmd+" "+strings.Join(args, " "))
 		return "", "", 0, nil
 	}
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		full := cmd
 		if len(args) > 0 {
 			full = cmd + " " + args[0]
@@ -58,7 +58,7 @@ func TestPipeline_StageOrdering(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	// Run pipeline stages in order.
-	_ = app.RunPreflight()
+	_ = app.RunPreflight(nil)
 	_ = app.RunScan(dir)
 	_ = app.RunValidate([]string{dir})
 
@@ -88,7 +88,7 @@ func TestPipeline_CleanupSkippedOnValidateFailure(t *testing.T) {
 
 	cleanupRanDrush := false
 	origRunWithEnv := drupexec.RunWithEnv
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" && len(args) > 0 && args[0] == "pm:uninstall" {
 			cleanupRanDrush = true
 		}
@@ -115,7 +115,7 @@ func TestPipeline_CleanupRunsOnValidatePass(t *testing.T) {
 	drushUninstallCalled := false
 	origRunWithEnv := drupexec.RunWithEnv
 	origRun := drupexec.Run
-	drupexec.RunWithEnv = func(prefix []string, cmd string, args ...string) (string, string, int, error) {
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
 		if cmd == "drush" && len(args) > 0 && args[0] == "pm:uninstall" {
 			drushUninstallCalled = true
 		}

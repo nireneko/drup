@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nireneko/drup/internal/envdetect"
@@ -41,10 +42,16 @@ func TestManagerCreateRestoreListDelete(t *testing.T) {
 	originalRun, originalInput, originalDetect := run, runInput, detectEnv
 	defer func() { run, runInput, detectEnv = originalRun, originalInput, originalDetect }()
 	detectEnv = func(string) (*envdetect.Detection, error) { return &envdetect.Detection{}, nil }
-	run = func(_ []string, _ string, args ...string) (string, string, int, error) {
+	run = func(dir string, _ []string, _ string, args ...string) (string, string, int, error) {
 		for _, arg := range args {
 			if len(arg) > len("--result-file=") && arg[:len("--result-file=")] == "--result-file=" {
-				if err := os.WriteFile(arg[len("--result-file="):], []byte("database"), 0o600); err != nil {
+				// drush resolves a relative --result-file against its working
+				// directory, exactly as the real command does.
+				target := arg[len("--result-file="):]
+				if !filepath.IsAbs(target) {
+					target = filepath.Join(dir, target)
+				}
+				if err := os.WriteFile(target, []byte("-- database dump\nCREATE TABLE x;\n"), 0o600); err != nil {
 					return "", "", -1, err
 				}
 			}
@@ -176,5 +183,54 @@ func TestArchive_SkipsRegenerableTrees(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(out, p)); !os.IsNotExist(err) {
 			t.Errorf("%s should not be archived", p)
 		}
+	}
+}
+
+// drush prints "[success] Database dump saved" even when mysqldump refused —
+// a missing PROCESS privilege, for instance. Trusting that message produced a
+// 23-byte backup, recorded a checksum of it, and left the run with no
+// database rollback point at all.
+func TestCreate_RejectsAnEmptyDatabaseDump(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "composer.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	originalRun, originalDetect := run, detectEnv
+	defer func() { run, detectEnv = originalRun, originalDetect }()
+	detectEnv = func(string) (*envdetect.Detection, error) { return &envdetect.Detection{}, nil }
+	// Report success without writing anything, exactly as drush does.
+	run = func(string, []string, string, ...string) (string, string, int, error) {
+		return "[success] Database dump saved", "", 0, nil
+	}
+
+	if _, err := NewManager(project).Create(project); err == nil {
+		t.Fatal("an empty dump was accepted as a valid backup")
+	} else if !strings.Contains(err.Error(), "database dump failure") {
+		t.Errorf("error = %v, want a database dump failure", err)
+	}
+}
+
+func TestVerifyDump(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	if err := verifyDump(filepath.Join(dir, "absent.sql")); err == nil {
+		t.Error("a missing dump was accepted")
+	}
+	if err := verifyDump(write("empty.sql", "")); err == nil {
+		t.Error("an empty dump was accepted")
+	}
+	if err := verifyDump(write("html.sql", "<html>error page</html>")); err == nil {
+		t.Error("a non-SQL payload was accepted")
+	}
+	if err := verifyDump(write("real.sql", "-- MySQL dump\nCREATE TABLE node;")); err != nil {
+		t.Errorf("a valid dump was rejected: %v", err)
 	}
 }
