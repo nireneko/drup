@@ -1913,3 +1913,33 @@ func TestWithoutDrupArtifacts(t *testing.T) {
 		}
 	}
 }
+
+// A bare count could not be reconciled against git status: the check said
+// three changes where the tree showed four, and nobody could tell which three.
+func TestSummarizePaths_NamesTheFiles(t *testing.T) {
+	files := []string{" M composer.json", " M web/sites/default/settings.php", "?? notes.md"}
+
+	got := summarizePaths(files, 8)
+
+	for _, want := range []string{"composer.json", "web/sites/default/settings.php", "notes.md"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary %q is missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, " M ") || strings.Contains(got, "??") {
+		t.Errorf("summary leaks porcelain status codes: %q", got)
+	}
+}
+
+func TestSummarizePaths_TruncatesLongLists(t *testing.T) {
+	files := make([]string, 20)
+	for i := range files {
+		files[i] = fmt.Sprintf(" M file%d.php", i)
+	}
+
+	got := summarizePaths(files, 3)
+
+	if !strings.Contains(got, "and 17 more") {
+		t.Errorf("summary %q should say how many were omitted", got)
+	}
+}

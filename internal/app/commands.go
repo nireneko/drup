@@ -796,6 +796,23 @@ func withoutDrupArtifacts(files []string) []string {
 	return kept
 }
 
+// summarizePaths renders git status entries as a readable list, truncated so a
+// large diff does not bury the rest of the report.
+func summarizePaths(files []string, max int) string {
+	names := make([]string, 0, len(files))
+	for _, f := range files {
+		name := strings.TrimSpace(f)
+		if len(name) > 3 && (name[2] == ' ' || name[1] == ' ') {
+			name = strings.TrimSpace(name[2:])
+		}
+		names = append(names, strings.Trim(name, `"`))
+	}
+	if len(names) <= max {
+		return strings.Join(names, ", ")
+	}
+	return strings.Join(names[:max], ", ") + fmt.Sprintf(" and %d more", len(names)-max)
+}
+
 // PreflightResult holds the outcome of each preflight check.
 type PreflightResult struct {
 	Check    string `json:"check"`
@@ -889,10 +906,13 @@ func RunPreflight(args []string) error {
 		})
 		allPass = false
 	} else if !clean {
+		// Name the files. A bare count could not be reconciled against git
+		// status, which left a reader unable to tell what the check objected
+		// to or whether drup had counted its own artifacts.
 		results = append(results, PreflightResult{
 			Check:   "git_clean",
 			Pass:    false,
-			Message: fmt.Sprintf("Working tree has %d uncommitted changes", len(files)),
+			Message: fmt.Sprintf("Working tree has %d uncommitted changes: %s", len(files), summarizePaths(files, 8)),
 		})
 		allPass = false
 	} else {
