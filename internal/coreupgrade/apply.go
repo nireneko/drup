@@ -46,7 +46,13 @@ func ValidateProjectPath(projectPath string) error {
 //   - dryRun=false: requires a clean git working tree, creates a checkpoint
 //     commit BEFORE mutating composer.json (so Rollback can restore the prior
 //     state), then writes the new constraint and returns the checkpoint SHA.
-func Apply(projectPath, targetVersion string, dryRun bool) (*ApplyResult, error) {
+//
+// Apply rewrites the core requirement and runs the update. allowDirty lets it
+// proceed over uncommitted work: the checkpoint commit it takes first captures
+// that state, which is exactly what a rollback needs. Without it the command
+// was unusable at the end of a pipeline whose earlier stages leave changes
+// behind by design.
+func Apply(projectPath, targetVersion string, dryRun, allowDirty bool) (*ApplyResult, error) {
 	if err := ValidateProjectPath(projectPath); err != nil {
 		return nil, err
 	}
@@ -78,15 +84,18 @@ func Apply(projectPath, targetVersion string, dryRun bool) (*ApplyResult, error)
 		return &ApplyResult{Success: true, Report: diff}, nil
 	}
 
-	clean, dirtyFiles, err := gitops.IsClean(projectPath)
-	if err != nil {
-		return nil, fmt.Errorf("check git status: %w", err)
-	}
-	if !clean {
-		return &ApplyResult{
-			Success: false,
-			Report:  fmt.Sprintf("working tree is dirty; commit or stash changes first: %s", strings.Join(dirtyFiles, ", ")),
-		}, nil
+	if !allowDirty {
+		clean, dirtyFiles, err := gitops.IsClean(projectPath)
+		if err != nil {
+			return nil, fmt.Errorf("check git status: %w", err)
+		}
+		if !clean {
+			return &ApplyResult{
+				Success: false,
+				Report: fmt.Sprintf("working tree has %d uncommitted changes; commit or stash them, or pass --allow-dirty to fold them into the checkpoint: %s",
+					len(dirtyFiles), strings.Join(dirtyFiles, ", ")),
+			}, nil
+		}
 	}
 
 	checkpointSHA, err := createCheckpoint(projectPath, fmt.Sprintf("checkpoint: before core upgrade to %s", targetVersion))

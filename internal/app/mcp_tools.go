@@ -1664,6 +1664,7 @@ func realHandleCoreUpgradeApply(args json.RawMessage) (json.RawMessage, error) {
 		ProjectPath   string `json:"project_path"`
 		TargetVersion string `json:"target_version"`
 		DryRun        bool   `json:"dry_run"`
+		AllowDirty    bool   `json:"allow_dirty,omitempty"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, err
@@ -1675,7 +1676,7 @@ func realHandleCoreUpgradeApply(args json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("target_version is required")
 	}
 
-	result, err := coreupgrade.Apply(params.ProjectPath, params.TargetVersion, params.DryRun)
+	result, err := coreupgrade.Apply(params.ProjectPath, params.TargetVersion, params.DryRun, params.AllowDirty)
 	if err != nil {
 		return nil, err
 	}

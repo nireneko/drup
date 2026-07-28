@@ -1407,7 +1407,7 @@ func RunUpgradeCore(args []string) error {
 	}
 
 	// Call coreupgrade.Apply for the composer.json mutation.
-	applyResult, err := coreupgrade.Apply(cwd, targetVersion, dryRun)
+	applyResult, err := coreupgrade.Apply(cwd, targetVersion, dryRun, allowDirty)
 	if err != nil {
 		return fmt.Errorf("core upgrade apply: %w", err)
 	}
