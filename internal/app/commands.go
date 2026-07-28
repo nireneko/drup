@@ -815,6 +815,32 @@ func summarizePaths(files []string, max int) string {
 	return strings.Join(names[:max], ", ") + fmt.Sprintf(" and %d more", len(names)-max)
 }
 
+// hasComposerPackage reports whether composer.json requires a package in
+// either section.
+func hasComposerPackage(composerData []byte, pkg string) bool {
+	var parsed struct {
+		Require    map[string]string `json:"require"`
+		RequireDev map[string]string `json:"require-dev"`
+	}
+	if err := json.Unmarshal(composerData, &parsed); err != nil {
+		return false
+	}
+	if _, ok := parsed.Require[pkg]; ok {
+		return true
+	}
+	_, ok := parsed.RequireDev[pkg]
+	return ok
+}
+
+// restoreComposerJSON puts back the pre-upgrade file after a failed
+// resolution, so the project is never left with constraints its lock cannot
+// satisfy.
+func restoreComposerJSON(composerPath, backupPath string) {
+	if data, err := os.ReadFile(backupPath); err == nil {
+		_ = os.WriteFile(composerPath, data, 0o644)
+	}
+}
+
 // PreflightResult holds the outcome of each preflight check.
 type PreflightResult struct {
 	Check    string `json:"check"`
@@ -1380,13 +1406,22 @@ func RunUpgradeCore(args []string) error {
 	}
 
 	// Check if already at target.
+	// A matching constraint is not an upgrade. After a failed resolution the
+	// constraint sits at the target while the lock and the installed code stay
+	// on the old major, and reading only the constraint reported that state as
+	// a success.
 	if currentConstraint == targetConstraint {
-		result.AlreadyAtTarget = true
-		result.Success = true
-		data, _ := json.MarshalIndent(result, "", "  ")
-		fmt.Println("already at target version")
-		fmt.Println(string(data))
-		return nil
+		installed := detectDrupalVersion(cwd)
+		installedMajor := majorOf(installed)
+		if installedMajor != "" && installedMajor == majorOf(targetVersion) {
+			result.AlreadyAtTarget = true
+			result.Success = true
+			data, _ := json.MarshalIndent(result, "", "  ")
+			fmt.Println("already at target version")
+			fmt.Println(string(data))
+			return nil
+		}
+		fmt.Printf("composer.json already requires %s but the installed core is %s — resolving\n", targetConstraint, installed)
 	}
 
 	// Check for clean working tree (unless dry-run).
@@ -1444,11 +1479,20 @@ func RunUpgradeCore(args []string) error {
 	}
 
 	// Run composer require with -W and --no-update.
+	// Every core package moves together. Leaving drupal/core-dev on the old
+	// major made composer reject the whole set: it is required by the same
+	// project and pins the previous core.
 	composerArgs := []string{
 		"require",
 		fmt.Sprintf("drupal/core-recommended:%s", targetConstraint),
 		fmt.Sprintf("drupal/core-composer-scaffold:%s", targetConstraint),
 		fmt.Sprintf("drupal/core-project-message:%s", targetConstraint),
+		"-W",
+		"--no-update",
+	}
+	devArgs := []string{
+		"require", "--dev",
+		fmt.Sprintf("drupal/core-dev:%s", targetConstraint),
 		"-W",
 		"--no-update",
 	}
@@ -1461,13 +1505,29 @@ func RunUpgradeCore(args []string) error {
 		return fmt.Errorf("composer require failed (exit %d): %s", exitCode, stderr)
 	}
 
+	// core-dev only when the project actually uses it.
+	if hasComposerPackage(composerData, "drupal/core-dev") {
+		_, stderr, exitCode, err = cliRun(cwd, "composer", devArgs...)
+		if err != nil {
+			return fmt.Errorf("composer require --dev failed: %w", err)
+		}
+		if exitCode != 0 {
+			return fmt.Errorf("composer require drupal/core-dev failed (exit %d): %s", exitCode, stderr)
+		}
+	}
+
 	// Run composer update -W for full dependency resolution.
 	_, stderr, exitCode, err = cliRun(cwd, "composer", "update", "-W")
 	if err != nil {
+		restoreComposerJSON(composerPath, backupPath)
 		return fmt.Errorf("composer update failed: %w", err)
 	}
 	if exitCode != 0 {
-		return fmt.Errorf("composer update failed (exit %d): %s", exitCode, stderr)
+		// Leaving composer.json on the new constraint with an unchanged lock
+		// is a half-upgraded state that the next run then read as "already at
+		// target" and reported as success.
+		restoreComposerJSON(composerPath, backupPath)
+		return fmt.Errorf("composer update failed (exit %d), composer.json restored: %s", exitCode, stderr)
 	}
 
 	// Run drush updb.

@@ -1954,3 +1954,35 @@ func TestRunPreflight_AllowDirtyIsAccepted(t *testing.T) {
 		t.Errorf("--allow-dirty was rejected as an unknown option: %v", err)
 	}
 }
+
+// After a failed resolution the constraint sits at the target while the lock
+// and the installed code stay on the old major. Reading only the constraint
+// reported that half-upgraded state as a completed upgrade.
+func TestHasComposerPackage(t *testing.T) {
+	data := []byte(`{"require":{"drupal/core-recommended":"^10"},"require-dev":{"drupal/core-dev":"^10"}}`)
+
+	if !hasComposerPackage(data, "drupal/core-dev") {
+		t.Error("a require-dev package was not found")
+	}
+	if !hasComposerPackage(data, "drupal/core-recommended") {
+		t.Error("a require package was not found")
+	}
+	if hasComposerPackage(data, "drupal/absent") {
+		t.Error("an absent package was reported as present")
+	}
+}
+
+func TestRestoreComposerJSON(t *testing.T) {
+	dir := t.TempDir()
+	composerPath := filepath.Join(dir, "composer.json")
+	backupPath := composerPath + ".bak"
+	os.WriteFile(backupPath, []byte(`{"require":{"drupal/core-recommended":"10.5.10"}}`), 0o644)
+	os.WriteFile(composerPath, []byte(`{"require":{"drupal/core-recommended":"^11.0"}}`), 0o644)
+
+	restoreComposerJSON(composerPath, backupPath)
+
+	got, _ := os.ReadFile(composerPath)
+	if !strings.Contains(string(got), "10.5.10") {
+		t.Errorf("composer.json was not restored: %s", got)
+	}
+}
