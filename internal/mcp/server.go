@@ -235,6 +235,15 @@ var toolRegistry = map[string]toolSchema{
 		},
 		Required: []string{"module_machine_name", "current_patch_url"},
 	},
+	"contrib_allow_lenient": {
+		Description: "Let a patched contrib module install against a newer core. Composer resolves against a package's released metadata, never its patched files, so a module whose D11 patch already widened its .info.yml is still rejected. Adds the named packages to composer's drupal-lenient allow list, installing the plugin if needed",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+			"packages":     {Type: "array", Description: "Composer package names, e.g. drupal/switch_page_theme"},
+			"dry_run":      {Type: "boolean", Description: "Report the change without writing it"},
+		},
+		Required: []string{"project_path", "packages"},
+	},
 	"custom_compat_fix": {
 		Description: "Declare support for a target Drupal major in the project's own modules, themes and profiles by widening core_version_requirement. Contrib is never edited in place",
 		Properties: map[string]jsonSchemaProperty{

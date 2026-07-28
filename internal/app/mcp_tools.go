@@ -72,6 +72,7 @@ func WireMCPTools(s *mcp.Server) {
 	s.RegisterTool("patch_reconcile", realHandlePatchReconcile)
 	s.RegisterTool("cleanup", realHandleCleanup)
 	s.RegisterTool("custom_compat_fix", realHandleCustomCompatFix)
+	s.RegisterTool("contrib_allow_lenient", realHandleContribAllowLenient)
 	s.RegisterTool("test_backup_create", realHandleTestBackupCreate)
 	s.RegisterTool("test_backup_list", realHandleTestBackupList)
 	s.RegisterTool("test_backup_restore", realHandleTestBackupRestore)
@@ -1410,6 +1411,26 @@ func realHandleCustomCompatFix(args json.RawMessage) (json.RawMessage, error) {
 	}
 
 	result, err := BumpCustomCoreCompat(params.ProjectPath, target, params.DryRun)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(result)
+}
+
+func realHandleContribAllowLenient(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath string   `json:"project_path"`
+		Packages    []string `json:"packages"`
+		DryRun      bool     `json:"dry_run,omitempty"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if params.ProjectPath == "" {
+		return nil, fmt.Errorf("project_path is required")
+	}
+
+	result, err := AllowLenient(params.ProjectPath, params.Packages, params.DryRun)
 	if err != nil {
 		return nil, err
 	}

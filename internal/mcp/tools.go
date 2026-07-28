@@ -49,9 +49,27 @@ func defaultTools() map[string]ToolHandler {
 		"core_upgrade_apply": handleCoreUpgradeApply,
 		"patch_reconcile":    handlePatchReconcile,
 		// Post-pipeline utility.
-		"cleanup":           handleCleanup,
-		"custom_compat_fix": handleCustomCompatFix,
+		"cleanup":               handleCleanup,
+		"custom_compat_fix":     handleCustomCompatFix,
+		"contrib_allow_lenient": handleContribAllowLenient,
 	}
+}
+
+func handleContribAllowLenient(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath string   `json:"project_path"`
+		Packages    []string `json:"packages"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+
+	// Placeholder — the real handler edits composer.json.
+	result := map[string]interface{}{
+		"project_path": params.ProjectPath,
+		"allowed_list": params.Packages,
+	}
+	return json.Marshal(result)
 }
 
 func handleCustomCompatFix(args json.RawMessage) (json.RawMessage, error) {
