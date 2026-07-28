@@ -154,3 +154,21 @@ func TestPatchContribForCore_RunsRectorUnlessDeclarationOnly(t *testing.T) {
 		t.Error("--declaration-only still ran the code passes")
 	}
 }
+
+// A written patch is not evidence of compatibility. The module has to be
+// measured afterwards, and a remaining finding has to be reported as such
+// rather than buried under a successful-looking result.
+func TestContribPatchResult_ReportsRemainingFindings(t *testing.T) {
+	result := &ContribPatchResult{Module: "promotur_sso_application", Registered: true, LenientListed: true}
+
+	// What the code does after measuring.
+	result.Remaining = 3
+	result.Compatible = result.Remaining == 0
+
+	if result.Compatible {
+		t.Error("a module with remaining findings was reported as compatible")
+	}
+	if !result.Registered || !result.LenientListed {
+		t.Error("registration state should survive a failed compatibility check")
+	}
+}

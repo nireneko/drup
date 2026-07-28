@@ -26,8 +26,13 @@ type ContribPatchResult struct {
 	ChangedFiles  []string `json:"changed_files"`
 	Registered    bool     `json:"registered_in_composer"`
 	LenientListed bool     `json:"listed_as_lenient"`
-	DryRun        bool     `json:"dry_run"`
-	Note          string   `json:"note,omitempty"`
+	// Remaining is what upgrade_status still reports for the module after the
+	// patch. A patch is not evidence of compatibility; this is.
+	Remaining      int      `json:"remaining_findings"`
+	RemainingItems []string `json:"remaining_items,omitempty"`
+	Compatible     bool     `json:"compatible"`
+	DryRun         bool     `json:"dry_run"`
+	Note           string   `json:"note,omitempty"`
 }
 
 // PatchContribForCore makes a contributed module installable on a newer Drupal
@@ -163,7 +168,37 @@ func PatchContribForCore(projectPath, module, targetVersion string, dryRun, decl
 	}
 	result.LenientListed = true
 
+	// Measure. Widening a declaration and running rector says nothing about
+	// whether the module still calls removed APIs, and reporting a written
+	// patch as a finished job is how a module gets declared compatible while
+	// upgrade_status still has findings against it.
+	remaining, items, err := moduleFindings(projectPath, module)
+	if err != nil {
+		result.Note = fmt.Sprintf("patch written, but the module could not be validated: %v", err)
+		return result, nil
+	}
+	result.Remaining = remaining
+	result.RemainingItems = items
+	result.Compatible = remaining == 0
+	if remaining > 0 {
+		result.Note = fmt.Sprintf("patch written, but upgrade_status still reports %d finding(s) for %s — the module is not compatible yet", remaining, module)
+	}
+
 	return result, nil
+}
+
+// moduleFindings asks upgrade_status what it still reports for one module.
+func moduleFindings(projectPath, module string) (int, []string, error) {
+	_, filtered, err := DoValidate(projectPath, module)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	items := make([]string, 0, len(filtered))
+	for _, e := range filtered {
+		items = append(items, fmt.Sprintf("%s:%d %s", filepath.Base(e.File), e.Line, e.Message))
+	}
+	return len(filtered), items, nil
 }
 
 // rectorModule runs drupal-rector over one module, through the environment
