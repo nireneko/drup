@@ -1413,7 +1413,9 @@ func RunUpgradeCore(args []string) error {
 	if currentConstraint == targetConstraint {
 		installed := detectDrupalVersion(cwd)
 		installedMajor := majorOf(installed)
-		if installedMajor != "" && installedMajor == majorOf(targetVersion) {
+		// With no lock there is nothing installed to contradict the
+		// constraint; only a readable mismatch means the upgrade is unfinished.
+		if installedMajor == "" || installedMajor == majorOf(targetVersion) {
 			result.AlreadyAtTarget = true
 			result.Success = true
 			data, _ := json.MarshalIndent(result, "", "  ")

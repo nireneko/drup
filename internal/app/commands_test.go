@@ -1986,3 +1986,30 @@ func TestRestoreComposerJSON(t *testing.T) {
 		t.Errorf("composer.json was not restored: %s", got)
 	}
 }
+
+// A failed resolution leaves the constraint at the target and the lock on the
+// old major. That is an unfinished upgrade, not a completed one.
+func TestRunUpgradeCore_ConstraintAtTargetButOldCoreInstalled(t *testing.T) {
+	dir := t.TempDir()
+	origGetwd, origIsClean := getwdFn, isCleanFn
+	getwdFn = func() (string, error) { return dir, nil }
+	isCleanFn = func(string) (bool, []string, error) { return true, nil, nil }
+	defer func() { getwdFn, isCleanFn = origGetwd, origIsClean }()
+
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/core-recommended":"^11.0"}}`), 0o644)
+	// The lock still holds the previous major, exactly as after a failed update.
+	os.WriteFile(filepath.Join(dir, "composer.lock"), []byte(`{"packages":[{"name":"drupal/core","version":"10.5.10"}]}`), 0o644)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	err := RunUpgradeCore([]string{"11.4.4", "--allow-dirty"})
+	w.Close()
+	os.Stdout = oldStdout
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+
+	if err == nil && strings.Contains(buf.String(), `"already_at_target": true`) {
+		t.Error("a half-upgraded project was reported as already at target")
+	}
+}
