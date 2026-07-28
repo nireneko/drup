@@ -49,7 +49,7 @@ func TestApply_DryRunReturnsPreviewOnly(t *testing.T) {
 	runGit(t, dir, "add", ".")
 	runGit(t, dir, "commit", "-m", "initial")
 
-	result, err := Apply(dir, "11.0.9", true, false)
+	result, err := Apply(dir, "11.0.9", true, false, false)
 	if err != nil {
 		t.Fatalf("Apply error: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestApply_RejectsDirtyTree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := Apply(dir, "11.0.9", false, false)
+	result, err := Apply(dir, "11.0.9", false, false, false)
 	if err != nil {
 		t.Fatalf("Apply error: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestApply_ChecksClean_CreatesCheckpoint_AndMutates(t *testing.T) {
 	runGit(t, dir, "add", ".")
 	runGit(t, dir, "commit", "-m", "initial")
 
-	result, err := Apply(dir, "11.0.9", false, false)
+	result, err := Apply(dir, "11.0.9", false, false, false)
 	if err != nil {
 		t.Fatalf("Apply error: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestApply_ChecksClean_CreatesCheckpoint_AndMutates(t *testing.T) {
 }
 
 func TestApply_PathTraversalRejected(t *testing.T) {
-	_, err := Apply("/tmp/../../etc", "11.0.9", true, false)
+	_, err := Apply("/tmp/../../etc", "11.0.9", true, false, false)
 	if err == nil {
 		t.Fatal("expected error for path traversal, got nil")
 	}
@@ -146,7 +146,7 @@ func TestApply_PathTraversalRejected(t *testing.T) {
 }
 
 func TestApply_RelativePathRejected(t *testing.T) {
-	_, err := Apply("relative/path", "11.0.9", true, false)
+	_, err := Apply("relative/path", "11.0.9", true, false, false)
 	if err == nil {
 		t.Fatal("expected error for relative path, got nil")
 	}
@@ -161,7 +161,7 @@ func TestApply_NoChangeReported(t *testing.T) {
 	runGit(t, dir, "add", ".")
 	runGit(t, dir, "commit", "-m", "initial")
 
-	result, err := Apply(dir, "11.0.9", false, false)
+	result, err := Apply(dir, "11.0.9", false, false, false)
 	if err != nil {
 		t.Fatalf("Apply error: %v", err)
 	}

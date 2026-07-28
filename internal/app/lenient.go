@@ -16,6 +16,34 @@ import (
 // files, so without this the patch can never be installed.
 const lenientPlugin = "mglaman/composer-drupal-lenient"
 
+// lenientPluginInstalled reports whether the plugin is actually on disk.
+// Declared-but-absent is the state composer leaves when allow-plugins blocks
+// the install, and an allow list without the plugin behind it changes nothing.
+func lenientPluginInstalled(projectPath string) bool {
+	if info, err := os.Stat(filepath.Join(projectPath, "vendor", filepath.FromSlash(lenientPlugin))); err == nil && info.IsDir() {
+		return true
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectPath, "vendor", "composer", "installed.json"))
+	if err != nil {
+		return false
+	}
+	var installed struct {
+		Packages []struct {
+			Name string `json:"name"`
+		} `json:"packages"`
+	}
+	if err := json.Unmarshal(data, &installed); err != nil {
+		return false
+	}
+	for _, pkg := range installed.Packages {
+		if pkg.Name == lenientPlugin {
+			return true
+		}
+	}
+	return false
+}
+
 // LenientResult is the JSON output of the lenient pass.
 type LenientResult struct {
 	ProjectPath   string   `json:"project_path"`
@@ -46,9 +74,13 @@ func AllowLenient(projectPath string, packages []string, dryRun bool) (*LenientR
 	}
 
 	result := &LenientResult{
-		ProjectPath:   projectPath,
-		DryRun:        dryRun,
-		PluginPresent: hasComposerPackage(data, lenientPlugin),
+		ProjectPath: projectPath,
+		DryRun:      dryRun,
+		// Presence means installed, not declared. composer.json can name the
+		// plugin while vendor/ has nothing, which is what a require that got
+		// blocked by allow-plugins leaves behind — and an allow list without
+		// the plugin on disk does nothing at all.
+		PluginPresent: lenientPluginInstalled(projectPath),
 		Added:         []string{},
 	}
 
@@ -95,19 +127,25 @@ func AllowLenient(projectPath string, packages []string, dryRun bool) (*LenientR
 	// The plugin has to be installed before composer will honour the list, and
 	// composer must be told to trust it.
 	if !result.PluginPresent {
-		if _, stderr, exitCode, err := cliRun(projectPath, "composer", "require", "--dev", lenientPlugin, "-W"); err != nil {
-			return nil, fmt.Errorf("install %s: %w", lenientPlugin, err)
-		} else if exitCode != 0 {
-			return nil, fmt.Errorf("install %s failed (exit %d): %s", lenientPlugin, exitCode, stderr)
-		}
-		result.PluginAdded = true
-
+		// Authorize first. composer refuses to install an unlisted plugin, and
+		// it writes composer.json and the lock before that refusal, leaving a
+		// package declared but absent.
 		if _, stderr, exitCode, err := cliRun(projectPath, "composer", "config", "--no-plugins",
 			"allow-plugins."+lenientPlugin, "true"); err != nil {
 			return nil, fmt.Errorf("allow %s: %w", lenientPlugin, err)
 		} else if exitCode != 0 {
 			return nil, fmt.Errorf("allow %s failed (exit %d): %s", lenientPlugin, exitCode, stderr)
 		}
+
+		if _, stderr, exitCode, err := cliRun(projectPath, "composer", "require", "--dev", lenientPlugin, "-W"); err != nil {
+			return nil, fmt.Errorf("install %s: %w", lenientPlugin, err)
+		} else if exitCode != 0 {
+			return nil, fmt.Errorf("install %s failed (exit %d): %s", lenientPlugin, exitCode, stderr)
+		}
+		if !lenientPluginInstalled(projectPath) {
+			return nil, fmt.Errorf("%s is declared in composer.json but not present in vendor/; the allow list would have no effect", lenientPlugin)
+		}
+		result.PluginAdded = true
 
 		// composer require rewrote the file; work from the new content.
 		if data, err = os.ReadFile(composerPath); err != nil {

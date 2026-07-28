@@ -16,7 +16,7 @@ func TestRollback_RoundTrip_RestoresComposerJSON(t *testing.T) {
 	runGit(t, dir, "add", ".")
 	runGit(t, dir, "commit", "-m", "initial")
 
-	applyResult, err := Apply(dir, "11.0.9", false, false)
+	applyResult, err := Apply(dir, "11.0.9", false, false, false)
 	if err != nil {
 		t.Fatalf("Apply error: %v", err)
 	}

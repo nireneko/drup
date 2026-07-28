@@ -841,6 +841,17 @@ func restoreComposerJSON(composerPath, backupPath string) {
 	}
 }
 
+// corePlugins are the composer plugins a Drupal core upgrade needs authorized.
+// Resolution succeeds without them and the install then fails, which reads as
+// a mysterious late failure rather than a missing permission.
+var corePlugins = []string{
+	"symfony/runtime",
+	"drupal/core-composer-scaffold",
+	"drupal/core-project-message",
+	"composer/installers",
+	"cweagans/composer-patches",
+}
+
 // PreflightResult holds the outcome of each preflight check.
 type PreflightResult struct {
 	Check    string `json:"check"`
@@ -1406,6 +1417,7 @@ func RunUpgradeCore(args []string) error {
 	}
 
 	// Check if already at target.
+	forceResolve := false
 	// A matching constraint is not an upgrade. After a failed resolution the
 	// constraint sits at the target while the lock and the installed code stay
 	// on the old major, and reading only the constraint reported that state as
@@ -1424,6 +1436,7 @@ func RunUpgradeCore(args []string) error {
 			return nil
 		}
 		fmt.Printf("composer.json already requires %s but the installed core is %s — resolving\n", targetConstraint, installed)
+		forceResolve = true
 	}
 
 	// Check for clean working tree (unless dry-run).
@@ -1444,7 +1457,7 @@ func RunUpgradeCore(args []string) error {
 	}
 
 	// Call coreupgrade.Apply for the composer.json mutation.
-	applyResult, err := coreupgrade.Apply(cwd, targetVersion, dryRun, allowDirty)
+	applyResult, err := coreupgrade.Apply(cwd, targetVersion, dryRun, allowDirty, forceResolve)
 	if err != nil {
 		return fmt.Errorf("core upgrade apply: %w", err)
 	}
@@ -1470,6 +1483,18 @@ func RunUpgradeCore(args []string) error {
 	// Create backup (kept on failure for rollback, removed on success).
 	backupPath := composerPath + ".bak"
 	os.WriteFile(backupPath, composerData, 0o644)
+
+	// Authorize the composer plugins the new major pulls in. Drupal 11 brings
+	// Symfony 7, whose symfony/runtime is a plugin: resolution succeeds and
+	// then the install dies on an unauthorized plugin, which every 10 to 11
+	// upgrade would hit.
+	for _, plugin := range corePlugins {
+		if _, stderr, exitCode, err := cliRun(cwd, "composer", "config", "--no-plugins", "allow-plugins."+plugin, "true"); err != nil {
+			return fmt.Errorf("allow %s: %w", plugin, err)
+		} else if exitCode != 0 {
+			return fmt.Errorf("allow %s failed (exit %d): %s", plugin, exitCode, stderr)
+		}
+	}
 
 	// Disable advisory blocking before require.
 	_, stderr, exitCode, err := cliRun(cwd, "composer", "config", "policy.advisories.block", "false")

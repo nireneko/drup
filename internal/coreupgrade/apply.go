@@ -52,7 +52,7 @@ func ValidateProjectPath(projectPath string) error {
 // that state, which is exactly what a rollback needs. Without it the command
 // was unusable at the end of a pipeline whose earlier stages leave changes
 // behind by design.
-func Apply(projectPath, targetVersion string, dryRun, allowDirty bool) (*ApplyResult, error) {
+func Apply(projectPath, targetVersion string, dryRun, allowDirty, force bool) (*ApplyResult, error) {
 	if err := ValidateProjectPath(projectPath); err != nil {
 		return nil, err
 	}
@@ -76,8 +76,14 @@ func Apply(projectPath, targetVersion string, dryRun, allowDirty bool) (*ApplyRe
 	if err != nil {
 		return nil, err
 	}
-	if !changed {
+	if !changed && !force {
 		return &ApplyResult{Success: false, Report: "no drupal/core requirement change needed; already at target constraint or no drupal/core requirement present"}, nil
+	}
+	if !changed {
+		// The constraint is already at the target while the installed code is
+		// not: what a killed or failed run leaves behind. There is nothing to
+		// rewrite, but the resolution still has to happen, so carry on.
+		diff = "constraint already at target; resolving the installed version"
 	}
 
 	if dryRun {

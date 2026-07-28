@@ -13,6 +13,7 @@ func contribProject(t *testing.T, module, constraint string) string {
 	root := t.TempDir()
 	os.WriteFile(filepath.Join(root, "composer.json"),
 		[]byte(`{"extra":{"drupal-scaffold":{"locations":{"web-root":"web/"}}},"require-dev":{"mglaman/composer-drupal-lenient":"^1.0"}}`), 0o644)
+	os.MkdirAll(filepath.Join(root, "vendor", "mglaman", "composer-drupal-lenient"), 0o755)
 	dir := filepath.Join(root, "web", "modules", "contrib", module)
 	os.MkdirAll(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, module+".info.yml"),

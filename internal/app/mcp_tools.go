@@ -1723,7 +1723,7 @@ func realHandleCoreUpgradeApply(args json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("target_version is required")
 	}
 
-	result, err := coreupgrade.Apply(params.ProjectPath, params.TargetVersion, params.DryRun, params.AllowDirty)
+	result, err := coreupgrade.Apply(params.ProjectPath, params.TargetVersion, params.DryRun, params.AllowDirty, false)
 	if err != nil {
 		return nil, err
 	}
