@@ -89,10 +89,9 @@ func TestServer_HandleRequest_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestServer_HandleRequest_ModuleReleaseInfoInvalidParamsReturns32603(t *testing.T) {
-	// Mirrors the real internal/app handler's validation style: invalid input
-	// is reported as a Go error, which handleToolCall surfaces as -32603
-	// (internal error), never as a pre-handler -32602 (invalid params).
+func TestServer_HandleRequest_ModuleReleaseInfoInvalidParamsReturnsEnvelopeFail(t *testing.T) {
+	// Handler errors are now wrapped in {status:"fail"} envelopes, NOT
+	// JSON-RPC errors. This test verifies the new behavior.
 	req := JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      42,
@@ -118,11 +117,21 @@ func TestServer_HandleRequest_ModuleReleaseInfoInvalidParamsReturns32603(t *test
 		t.Fatalf("invalid response JSON: %v", err)
 	}
 
-	if resp.Error == nil {
-		t.Fatal("expected error for invalid module_release_info params, got nil")
+	// Should NOT be a JSON-RPC error.
+	if resp.Error != nil {
+		t.Fatalf("handler error should be envelope fail, not JSON-RPC error: %v", resp.Error)
 	}
-	if resp.Error.Code != -32603 {
-		t.Errorf("error code = %d, want -32603", resp.Error.Code)
+
+	// Should be an envelope with status:"fail".
+	var envelope Envelope
+	if err := json.Unmarshal(resp.Result, &envelope); err != nil {
+		t.Fatalf("invalid envelope: %v", err)
+	}
+	if envelope.Status != "fail" {
+		t.Errorf("status = %q, want %q", envelope.Status, "fail")
+	}
+	if !strings.Contains(envelope.Summary, "invalid module machine name") {
+		t.Errorf("summary = %q, want it to contain the error message", envelope.Summary)
 	}
 }
 
@@ -463,5 +472,190 @@ func TestServer_ToolCount(t *testing.T) {
 	server.RegisterTool("extra_tool_2", dummy)
 	if got := server.ToolCount(); got != 27 {
 		t.Errorf("after adding 2 tools, ToolCount() = %d, want 27", got)
+	}
+}
+
+// --- REQ-2: Envelope wrapper tests ---
+
+func TestHandleToolCall_EnvelopeWrap_Success(t *testing.T) {
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+	server.RegisterTool("test_tool", func(args json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"foo":"bar"}`), nil
+	})
+
+	req := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"test_tool","arguments":{}}`),
+	}
+	if err := server.handleRequest(req); err != nil {
+		t.Fatalf("handleRequest error: %v", err)
+	}
+
+	var resp JSONRPCResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response JSON: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("unexpected JSON-RPC error: %v", resp.Error)
+	}
+
+	var envelope Envelope
+	if err := json.Unmarshal(resp.Result, &envelope); err != nil {
+		t.Fatalf("invalid envelope: %v", err)
+	}
+	if envelope.Status != "pass" {
+		t.Errorf("status = %q, want %q", envelope.Status, "pass")
+	}
+	if envelope.Summary == "" {
+		t.Error("summary is empty")
+	}
+	// Verify payload is preserved.
+	var payload map[string]interface{}
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		t.Fatalf("invalid payload: %v", err)
+	}
+	if payload["foo"] != "bar" {
+		t.Errorf("payload.foo = %v, want %q", payload["foo"], "bar")
+	}
+}
+
+func TestHandleToolCall_EnvelopeWrap_Error(t *testing.T) {
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+	server.RegisterTool("test_tool", func(args json.RawMessage) (json.RawMessage, error) {
+		return nil, fmt.Errorf("test error message")
+	})
+
+	req := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"test_tool","arguments":{}}`),
+	}
+	if err := server.handleRequest(req); err != nil {
+		t.Fatalf("handleRequest error: %v", err)
+	}
+
+	var resp JSONRPCResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response JSON: %v", err)
+	}
+	// Tool errors should NOT be JSON-RPC errors.
+	if resp.Error != nil {
+		t.Fatalf("tool error should not be a JSON-RPC error, got: %v", resp.Error)
+	}
+
+	var envelope Envelope
+	if err := json.Unmarshal(resp.Result, &envelope); err != nil {
+		t.Fatalf("invalid envelope: %v", err)
+	}
+	if envelope.Status != "fail" {
+		t.Errorf("status = %q, want %q", envelope.Status, "fail")
+	}
+	if envelope.Summary != "test error message" {
+		t.Errorf("summary = %q, want %q", envelope.Summary, "test error message")
+	}
+}
+
+func TestHandleToolCall_PayloadIntact(t *testing.T) {
+	complexPayload := `{"total_errors":3,"errors":{"contrib":[{"file":"a.module","line":1,"message":"dep"}]},"modules":[{"name":"ctools","errors":2}]}`
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+	server.RegisterTool("scan", func(args json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(complexPayload), nil
+	})
+
+	req := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"scan","arguments":{}}`),
+	}
+	if err := server.handleRequest(req); err != nil {
+		t.Fatalf("handleRequest error: %v", err)
+	}
+
+	var resp JSONRPCResponse
+	json.Unmarshal(buf.Bytes(), &resp)
+
+	var envelope Envelope
+	json.Unmarshal(resp.Result, &envelope)
+
+	// Verify payload is byte-for-byte identical.
+	if string(envelope.Payload) != complexPayload {
+		t.Errorf("payload mismatch:\ngot:  %s\nwant: %s", string(envelope.Payload), complexPayload)
+	}
+}
+
+func TestDeriveSummary_TotalErrors(t *testing.T) {
+	payload := json.RawMessage(`{"total_errors":3}`)
+	got := deriveSummary("scan", payload)
+	if !strings.Contains(got, "3") {
+		t.Errorf("deriveSummary with total_errors = %q, want it to contain '3'", got)
+	}
+}
+
+func TestDeriveSummary_Success(t *testing.T) {
+	payload := json.RawMessage(`{"success":true}`)
+	got := deriveSummary("drush_exec", payload)
+	if !strings.Contains(got, "succeeded") {
+		t.Errorf("deriveSummary with success:true = %q, want it to contain 'succeeded'", got)
+	}
+}
+
+func TestDeriveSummary_Fallback(t *testing.T) {
+	payload := json.RawMessage(`{"custom":"data"}`)
+	got := deriveSummary("unknown_tool", payload)
+	want := "Tool unknown_tool completed"
+	if got != want {
+		t.Errorf("deriveSummary fallback = %q, want %q", got, want)
+	}
+}
+
+func TestHandleToolCall_ProtocolErrors_StillJSONRPC(t *testing.T) {
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+
+	// Unknown tool → JSON-RPC error -32601.
+	req := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"nonexistent_tool","arguments":{}}`),
+	}
+	buf.Reset()
+	if err := server.handleRequest(req); err != nil {
+		t.Fatalf("handleRequest error: %v", err)
+	}
+	var resp JSONRPCResponse
+	json.Unmarshal(buf.Bytes(), &resp)
+	if resp.Error == nil {
+		t.Fatal("expected JSON-RPC error for unknown tool, got nil")
+	}
+	if resp.Error.Code != -32601 {
+		t.Errorf("error code = %d, want -32601", resp.Error.Code)
+	}
+
+	// Malformed params → JSON-RPC error -32602.
+	buf.Reset()
+	req2 := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      2,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{invalid json`),
+	}
+	if err := server.handleRequest(req2); err != nil {
+		t.Fatalf("handleRequest error: %v", err)
+	}
+	var resp2 JSONRPCResponse
+	json.Unmarshal(buf.Bytes(), &resp2)
+	if resp2.Error == nil {
+		t.Fatal("expected JSON-RPC error for malformed params, got nil")
+	}
+	if resp2.Error.Code != -32602 {
+		t.Errorf("error code = %d, want -32602", resp2.Error.Code)
 	}
 }

@@ -433,11 +433,65 @@ func (s *Server) handleToolCall(id interface{}, params json.RawMessage) error {
 	}
 
 	result, err := handler(p.Arguments)
-	if err != nil {
-		return s.sendError(id, -32603, err.Error())
+
+	// Wrap ALL tool outcomes (success and error) in a uniform envelope.
+	// Tool errors become {status:"fail"} in the result channel, NOT JSON-RPC errors.
+	envelope := wrapInEnvelope(p.Name, result, err)
+	envelopeJSON, marshalErr := json.Marshal(envelope)
+	if marshalErr != nil {
+		// Envelope marshal failure is a server bug, not a tool failure.
+		return s.sendError(id, -32603, fmt.Sprintf("envelope marshal: %v", marshalErr))
+	}
+	return s.sendResult(id, envelopeJSON)
+}
+
+// Envelope wraps every MCP tool response with a uniform status signal.
+type Envelope struct {
+	Status  string          `json:"status"`            // "pass" | "fail"
+	Summary string          `json:"summary"`           // human-readable one-liner
+	Payload json.RawMessage `json:"payload,omitempty"` // tool-specific response (only on pass)
+}
+
+// wrapInEnvelope builds an Envelope from a handler outcome.
+func wrapInEnvelope(toolName string, result json.RawMessage, handlerErr error) Envelope {
+	if handlerErr != nil {
+		return Envelope{
+			Status:  "fail",
+			Summary: handlerErr.Error(),
+		}
+	}
+	return Envelope{
+		Status:  "pass",
+		Summary: deriveSummary(toolName, result),
+		Payload: result,
+	}
+}
+
+// deriveSummary extracts a one-line summary from the tool payload.
+func deriveSummary(toolName string, payload json.RawMessage) string {
+	var fields map[string]interface{}
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		return fmt.Sprintf("Tool %s completed", toolName)
 	}
 
-	return s.sendResult(id, result)
+	// Check for total_errors (scan-like tools).
+	if te, ok := fields["total_errors"]; ok {
+		return fmt.Sprintf("Scan complete: %v errors", te)
+	}
+	// Check for success boolean (drush_exec, composer_require, etc.).
+	if s, ok := fields["success"]; ok {
+		if b, ok := s.(bool); ok && b {
+			return fmt.Sprintf("Tool %s succeeded", toolName)
+		}
+		return fmt.Sprintf("Tool %s failed", toolName)
+	}
+	// Check for summary string (some tools already provide one).
+	if sum, ok := fields["summary"]; ok {
+		if str, ok := sum.(string); ok {
+			return str
+		}
+	}
+	return fmt.Sprintf("Tool %s completed", toolName)
 }
 
 func (s *Server) sendResult(id interface{}, result json.RawMessage) error {
