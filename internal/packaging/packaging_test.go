@@ -564,3 +564,31 @@ func TestRender_DrupValidatorProseMatchesFrontmatter(t *testing.T) {
 		})
 	}
 }
+
+// --- REQ-5: Sub-agent templates must reference result.payload ---
+
+func TestSubAgentTemplates_ContainPayloadReference(t *testing.T) {
+	agents := []string{"drup-preflight", "drup-rector", "drup-contrib", "drup-custom", "drup-theme", "drup-validator"}
+	for _, platform := range Platforms() {
+		t.Run(platform, func(t *testing.T) {
+			files, err := Render(platform, "/usr/local/bin/drup", nil)
+			if err != nil {
+				t.Fatalf("Render error: %v", err)
+			}
+			for _, agent := range agents {
+				path := "agents/" + agent + ".md"
+				if platform == "codex" {
+					path = "agents/" + agent + ".toml"
+				}
+				content, ok := files[path]
+				if !ok {
+					t.Errorf("missing %s", path)
+					continue
+				}
+				if !strings.Contains(content, "result.payload") {
+					t.Errorf("%s does not reference result.payload — sub-agents must read tool responses from the envelope payload", path)
+				}
+			}
+		})
+	}
+}
