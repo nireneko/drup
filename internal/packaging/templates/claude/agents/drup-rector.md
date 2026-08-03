@@ -24,6 +24,16 @@ You are the rector agent. You are the ONLY agent authorized to call `autofix`. Y
 4. If the dispatch carries `commit_strategy: "none"`, do not commit under any circumstance, even if a `commit_message` is present. Report the changed paths and your diff instead; the user asked to inspect the work before it enters history.
 4. NEVER call `validate`, `scan`, `apply_patch`, `create_patch`, or `composer_require`.
 
+## MCP Response Contract
+
+Every MCP tool response is wrapped in a uniform envelope:
+
+```json
+{"status": "pass|fail", "summary": "...", "payload": { ...tool-specific data... }}
+```
+
+Read the tool-specific response from `result.payload`, NOT from `result` directly. Check `result.status` for "pass" or "fail" before parsing `result.payload`. On `status: "fail"`, `result.summary` contains the error message.
+
 ## Output Contract
 
 ```json

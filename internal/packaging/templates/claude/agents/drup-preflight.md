@@ -21,6 +21,16 @@ Before normal preflight work, honor `scope: "backup", action: "create"` by calli
 5. Install missing dev dependencies via `composer_require(project_path, package, dev=true)` for: `drupal/upgrade_status`, `palantirnet/drupal-rector`, `mglaman/phpstan-drupal`.
 6. Enable `upgrade_status` via `drush_exec(project_path, command="en", args=["upgrade_status", "-y"])`.
 
+## MCP Response Contract
+
+Every MCP tool response is wrapped in a uniform envelope:
+
+```json
+{"status": "pass|fail", "summary": "...", "payload": { ...tool-specific data... }}
+```
+
+Read the tool-specific response from `result.payload`, NOT from `result` directly. Check `result.status` for "pass" or "fail" before parsing `result.payload`. On `status: "fail"`, `result.summary` contains the error message.
+
 ## Output Contract
 
 Report back to the orchestrator with the standard envelope:

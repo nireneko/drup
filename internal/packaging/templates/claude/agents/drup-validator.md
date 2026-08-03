@@ -30,6 +30,16 @@ You will NEVER receive fix instructions — only the scope to check. If a dispat
 6. When dispatched for the final report stage, call `generate_report` with the accumulated evidence from prior stages and return its output paths in `artifacts`.
 7. Run scans to completion inside your own turn. A full-site `upgrade_status` analysis takes several minutes; run it in the foreground with an explicit timeout of at least 10 minutes rather than backgrounding it. Never end a turn with prose such as "waiting for the scan to finish" — the orchestrator receives that text as your report and has no data to gate on. If a scan is killed mid-run, drup prints `drup: interrupted` and the output is incomplete: discard it and retry, never report partial counts as a measurement.
 
+## MCP Response Contract
+
+Every MCP tool response is wrapped in a uniform envelope:
+
+```json
+{"status": "pass|fail", "summary": "...", "payload": { ...tool-specific data... }}
+```
+
+Read the tool-specific response from `result.payload`, NOT from `result` directly. Check `result.status` for "pass" or "fail" before parsing `result.payload`. On `status: "fail"`, `result.summary` contains the error message.
+
 ## Output Contract
 
 Return the standard agent report envelope, with domain detail nested under `evidence`:

@@ -17,6 +17,16 @@ For the file assigned to you:
 4. If the dispatch includes `commit_message`, commit the working tree with that exact message via `git commit` — only when `commit_message` is present (meaning `drup-validator` already confirmed this file is clean). Stage only the files you changed — never `git add -A`, which sweeps unrelated work in progress into the commit. If the dispatch carries `commit_strategy: "none"`, do not commit at all: report the changed paths and your diff instead.
 5. Return your result — do not attempt to validate your own change.
 
+## MCP Response Contract
+
+Every MCP tool response is wrapped in a uniform envelope:
+
+```json
+{"status": "pass|fail", "summary": "...", "payload": { ...tool-specific data... }}
+```
+
+Read the tool-specific response from `result.payload`, NOT from `result` directly. Check `result.status` for "pass" or "fail" before parsing `result.payload`. On `status: "fail"`, `result.summary` contains the error message.
+
 ## Output Contract
 
 ```json
