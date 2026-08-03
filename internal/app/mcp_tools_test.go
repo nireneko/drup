@@ -592,6 +592,9 @@ func TestPatchReconcile_ReturnsResult(t *testing.T) {
 // --- Phase 1: RED tests for --all flag in MCP tools ---
 
 func TestRealHandleScan_PassesAllFlag(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/upgrade_status":"^4.0"}}`), 0o644)
+
 	origDetector := defaultEnvDetector
 	defaultEnvDetector = &mockEnvDetector{}
 	defer func() { defaultEnvDetector = origDetector }()
@@ -607,7 +610,7 @@ func TestRealHandleScan_PassesAllFlag(t *testing.T) {
 	}
 	defer func() { drupexec.RunWithEnv = origRun }()
 
-	args := json.RawMessage(`{"project_path":"/tmp/test-project"}`)
+	args := json.RawMessage(fmt.Sprintf(`{"project_path":%q}`, dir))
 	_, err := realHandleScan(args)
 	if err != nil {
 		t.Fatalf("realHandleScan error: %v", err)
@@ -668,6 +671,9 @@ func TestRealHandleAutofix_RemainingErrors(t *testing.T) {
 }
 
 func TestRealHandleScan_PlainText(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/upgrade_status":"^4.0"}}`), 0o644)
+
 	origDetector := defaultEnvDetector
 	defaultEnvDetector = &mockEnvDetector{}
 	defer func() { defaultEnvDetector = origDetector }()
@@ -681,7 +687,7 @@ func TestRealHandleScan_PlainText(t *testing.T) {
 	}
 	defer func() { drupexec.RunWithEnv = origRun }()
 
-	args := json.RawMessage(`{"project_path":"/tmp/test-project"}`)
+	args := json.RawMessage(fmt.Sprintf(`{"project_path":%q}`, dir))
 	result, err := realHandleScan(args)
 	if err != nil {
 		t.Fatalf("realHandleScan error: %v", err)
@@ -1145,5 +1151,149 @@ func TestCopyTree_CopiesNestedFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dst, "src", "Plugin", "Block.php")); err != nil {
 		t.Errorf("nested file not copied: %v", err)
+	}
+}
+
+// --- REQ-1: ensureUpgradeStatusEnabled tests ---
+
+func TestEnsureUpgradeStatusEnabled_AlreadyEnabled(t *testing.T) {
+	dir := t.TempDir()
+	// composer.json with upgrade_status installed.
+	composerJSON := `{"require": {"drupal/upgrade_status": "^4.0"}}`
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(composerJSON), 0o644)
+
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
+	drushEnCalled := false
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+		// pm:list returns upgrade_status as enabled.
+		if cmd == "drush" && len(args) > 0 && args[0] == "pm:list" {
+			return `{"upgrade_status": {"name": "upgrade_status"}}`, "", 0, nil
+		}
+		if cmd == "drush" && len(args) > 0 && args[0] == "en" {
+			drushEnCalled = true
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRun }()
+
+	err := ensureUpgradeStatusEnabled(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if drushEnCalled {
+		t.Error("drush en should NOT be called when upgrade_status is already enabled")
+	}
+}
+
+func TestEnsureUpgradeStatusEnabled_AutoEnables(t *testing.T) {
+	dir := t.TempDir()
+	composerJSON := `{"require": {"drupal/upgrade_status": "^4.0"}}`
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(composerJSON), 0o644)
+
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
+	var calls []string
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" && len(args) > 0 {
+			calls = append(calls, args[0])
+		}
+		// pm:list returns empty (not enabled).
+		if cmd == "drush" && len(args) > 0 && args[0] == "pm:list" {
+			return `{}`, "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRun }()
+
+	err := ensureUpgradeStatusEnabled(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should have called: pm:list, config:delete, en, cr.
+	expectedCalls := []string{"pm:list", "config:delete", "en", "cr"}
+	if len(calls) < len(expectedCalls) {
+		t.Fatalf("expected at least %d drush calls, got %d: %v", len(expectedCalls), len(calls), calls)
+	}
+	for i, expected := range expectedCalls {
+		if calls[i] != expected {
+			t.Errorf("call[%d] = %q, want %q; all calls: %v", i, calls[i], expected, calls)
+		}
+	}
+}
+
+func TestEnsureUpgradeStatusEnabled_NotInstalled(t *testing.T) {
+	dir := t.TempDir()
+	// composer.json WITHOUT upgrade_status.
+	composerJSON := `{"require": {"drupal/core": "^10.0"}}`
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(composerJSON), 0o644)
+
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	err := ensureUpgradeStatusEnabled(dir)
+	if err == nil {
+		t.Fatal("expected error when upgrade_status is not in composer.json, got nil")
+	}
+	if !strings.Contains(err.Error(), "not installed") {
+		t.Errorf("error should mention 'not installed', got: %v", err)
+	}
+}
+
+func TestRealHandleScan_AutoEnablesUpgradeStatus(t *testing.T) {
+	dir := t.TempDir()
+	composerJSON := `{"require": {"drupal/upgrade_status": "^4.0"}}`
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(composerJSON), 0o644)
+
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
+	var calls []string
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" && len(args) > 0 {
+			calls = append(calls, args[0])
+		}
+		// pm:list returns empty (not enabled).
+		if cmd == "drush" && len(args) > 0 && args[0] == "pm:list" {
+			return `{}`, "", 0, nil
+		}
+		// upgrade_status:analyze returns empty checkstyle.
+		if cmd == "drush" && len(args) > 0 && args[0] == "upgrade_status:analyze" {
+			return `<?xml version="1.0" encoding="UTF-8"?><checkstyle></checkstyle>`, "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRun }()
+
+	args := json.RawMessage(fmt.Sprintf(`{"project_path": %q}`, dir))
+	_, err := realHandleScan(args)
+	if err != nil {
+		t.Fatalf("realHandleScan error: %v", err)
+	}
+	// Verify auto-enable sequence was called before analyze.
+	foundEnable := false
+	foundAnalyze := false
+	for _, c := range calls {
+		if c == "en" {
+			foundEnable = true
+		}
+		if c == "upgrade_status:analyze" {
+			foundAnalyze = true
+		}
+	}
+	if !foundEnable {
+		t.Error("realHandleScan did not call drush en (auto-enable)")
+	}
+	if !foundAnalyze {
+		t.Error("realHandleScan did not call upgrade_status:analyze")
 	}
 }

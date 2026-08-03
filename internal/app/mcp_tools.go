@@ -157,6 +157,11 @@ func realHandleScan(args json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 
+	// Ensure upgrade_status is enabled before running the scan.
+	if err := ensureUpgradeStatusEnabled(params.ProjectPath); err != nil {
+		return nil, err
+	}
+
 	stdout, stderr, exitCode, err := cliRun(params.ProjectPath, "drush", "upgrade_status:analyze", "--all", "--format=checkstyle", "--root="+params.ProjectPath)
 	if err != nil {
 		return nil, drushExecError("drush", []string{"upgrade_status:analyze", "--all", "--format=checkstyle", "--root=" + params.ProjectPath}, -1, err.Error(), "")
@@ -821,39 +826,11 @@ func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 		}
 	}
 
-	// Check if upgrade_status is enabled.
-	upgradeStatusEnabled := false
-	pmListArgs := []string{"pm:list", "--status=enabled", "--format=json"}
-	pmStdout, _, pmExit, _ := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", append(pmListArgs, "--root="+params.ProjectPath)...)
-	if pmExit == 0 {
-		var pmData map[string]interface{}
-		if json.Unmarshal([]byte(pmStdout), &pmData) == nil {
-			if _, ok := pmData["upgrade_status"]; ok {
-				upgradeStatusEnabled = true
-			}
-		}
+	// Ensure upgrade_status is enabled (shared helper).
+	if err := ensureUpgradeStatusEnabled(params.ProjectPath); err != nil {
+		return nil, err
 	}
-
-	// Enable if needed.
-	if !upgradeStatusEnabled {
-		// Delete conflicting update.settings config before enabling.
-		cdArgs := []string{"config:delete", "update.settings", "--root=" + params.ProjectPath}
-		_, _, _, _ = drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", cdArgs...)
-
-		enArgs := []string{"en", "upgrade_status", "-y", "--root=" + params.ProjectPath}
-		_, enStderr, enExit, enErr := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", enArgs...)
-		if enErr != nil {
-			return nil, fmt.Errorf("enable upgrade_status: %w", enErr)
-		}
-		if enExit != 0 {
-			return nil, fmt.Errorf("enable upgrade_status failed (exit %d): %s", enExit, enStderr)
-		}
-		// Drush caches its command list, so upgrade_status:checkstyle stays
-		// undefined until the cache is rebuilt.
-		crArgs := []string{"cr", "--root=" + params.ProjectPath}
-		_, _, _, _ = drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", crArgs...)
-		upgradeStatusEnabled = true
-	}
+	upgradeStatusEnabled := true
 
 	// Run analysis. "--all" is a flag; passing a bare "all" makes
 	// upgrade_status look for a project by that name and report nothing.
@@ -925,6 +902,59 @@ func hasPackage(composerJSON map[string]interface{}, pkg string) bool {
 		}
 	}
 	return false
+}
+
+// ensureUpgradeStatusEnabled checks if upgrade_status is enabled and enables it
+// if present in composer.json but not enabled. Returns an error if the module
+// is not installed or if enabling fails.
+func ensureUpgradeStatusEnabled(projectPath string) error {
+	detection, err := defaultEnvDetector.Detect(projectPath, false)
+	if err != nil {
+		return err
+	}
+
+	// 1. Check composer.json for upgrade_status.
+	composerPath := filepath.Join(projectPath, "composer.json")
+	composerData, err := os.ReadFile(composerPath)
+	if err != nil {
+		return fmt.Errorf("read composer.json: %w", err)
+	}
+	var composerJSON map[string]interface{}
+	if err := json.Unmarshal(composerData, &composerJSON); err != nil {
+		return fmt.Errorf("parse composer.json: %w", err)
+	}
+	if !hasPackage(composerJSON, "drupal/upgrade_status") {
+		return fmt.Errorf("upgrade_status is not installed; run composer require drupal/upgrade_status first")
+	}
+
+	// 2. Check pm:list --status=enabled.
+	pmListArgs := []string{"pm:list", "--status=enabled", "--format=json", "--root=" + projectPath}
+	pmStdout, _, pmExit, _ := drupexec.RunWithEnv(projectPath, detection.CommandPrefix, "drush", pmListArgs...)
+	if pmExit == 0 {
+		var pmData map[string]interface{}
+		if json.Unmarshal([]byte(pmStdout), &pmData) == nil {
+			if _, ok := pmData["upgrade_status"]; ok {
+				return nil // already enabled
+			}
+		}
+	}
+
+	// 3. Auto-enable sequence: config:delete → drush en → drush cr.
+	cdArgs := []string{"config:delete", "update.settings", "--root=" + projectPath}
+	_, _, _, _ = drupexec.RunWithEnv(projectPath, detection.CommandPrefix, "drush", cdArgs...)
+
+	enArgs := []string{"en", "upgrade_status", "-y", "--root=" + projectPath}
+	_, enStderr, enExit, enErr := drupexec.RunWithEnv(projectPath, detection.CommandPrefix, "drush", enArgs...)
+	if enErr != nil {
+		return fmt.Errorf("enable upgrade_status: %w", enErr)
+	}
+	if enExit != 0 {
+		return fmt.Errorf("enable upgrade_status failed (exit %d): %s", enExit, enStderr)
+	}
+
+	crArgs := []string{"cr", "--root=" + projectPath}
+	_, _, _, _ = drupexec.RunWithEnv(projectPath, detection.CommandPrefix, "drush", crArgs...)
+	return nil
 }
 
 func realHandlePatchStatus(args json.RawMessage) (json.RawMessage, error) {
