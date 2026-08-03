@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
+	"time"
 )
 
 // JSONRPCRequest is a JSON-RPC 2.0 request.
@@ -421,6 +423,55 @@ func (s *Server) handleListTools(id interface{}) error {
 	return s.sendResult(id, result)
 }
 
+// retryBaseDelay is the base delay for exponential backoff in retryLoop.
+// Tests override this to 1ms to avoid slow test runs.
+var retryBaseDelay = 1 * time.Second
+
+// isTransientError reports whether err is a transient transport error
+// that should be retried (timeout, connection refused, etc.).
+func isTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, pattern := range []string{
+		"context deadline exceeded",
+		"connection refused",
+		"i/o timeout",
+		"broken pipe",
+		"no such host",
+	} {
+		if strings.Contains(msg, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// retryLoop calls handler with exponential backoff on transient errors.
+// Max 3 attempts (2 retries). Non-transient errors fail immediately.
+func (s *Server) retryLoop(toolName string, handler ToolHandler, args json.RawMessage) (json.RawMessage, error) {
+	const maxAttempts = 3
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		result, err := handler(args)
+		if err == nil {
+			return result, nil
+		}
+		if !isTransientError(err) {
+			return nil, err // non-transient: fail immediately
+		}
+		lastErr = err
+		if attempt < maxAttempts {
+			delay := retryBaseDelay * time.Duration(1<<(attempt-1))
+			time.Sleep(delay)
+		}
+	}
+	// All attempts exhausted.
+	return nil, fmt.Errorf("%v (after %d attempts)", lastErr, maxAttempts)
+}
+
 func (s *Server) handleToolCall(id interface{}, params json.RawMessage) error {
 	var p ToolCallParams
 	if err := json.Unmarshal(params, &p); err != nil {
@@ -432,7 +483,8 @@ func (s *Server) handleToolCall(id interface{}, params json.RawMessage) error {
 		return s.sendError(id, -32601, fmt.Sprintf("Tool not found: %s", p.Name))
 	}
 
-	result, err := handler(p.Arguments)
+	// Retry loop wraps the handler call for transient errors.
+	result, err := s.retryLoop(p.Name, handler, p.Arguments)
 
 	// Wrap ALL tool outcomes (success and error) in a uniform envelope.
 	// Tool errors become {status:"fail"} in the result channel, NOT JSON-RPC errors.

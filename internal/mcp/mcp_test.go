@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestServer_HandleRequest_Scan(t *testing.T) {
@@ -657,5 +658,159 @@ func TestHandleToolCall_ProtocolErrors_StillJSONRPC(t *testing.T) {
 	}
 	if resp2.Error.Code != -32602 {
 		t.Errorf("error code = %d, want -32602", resp2.Error.Code)
+	}
+}
+
+// --- REQ-3: Selective retry tests ---
+
+func TestIsTransientError(t *testing.T) {
+	tests := []struct {
+		err  error
+		want bool
+	}{
+		{fmt.Errorf("context deadline exceeded"), true},
+		{fmt.Errorf("connection refused"), true},
+		{fmt.Errorf("i/o timeout"), true},
+		{fmt.Errorf("broken pipe"), true},
+		{fmt.Errorf("no such host"), true},
+		{fmt.Errorf("command not found"), false},
+		{fmt.Errorf("exit status 1"), false},
+		{fmt.Errorf("no commands defined"), false},
+		{nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%v", tt.err), func(t *testing.T) {
+			got := isTransientError(tt.err)
+			if got != tt.want {
+				t.Errorf("isTransientError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRetryLoop_TransientThenSuccess(t *testing.T) {
+	// Override retryBaseDelay to speed up the test.
+	origDelay := retryBaseDelay
+	retryBaseDelay = 1 * time.Millisecond
+	defer func() { retryBaseDelay = origDelay }()
+
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+
+	callCount := 0
+	server.RegisterTool("flaky_tool", func(args json.RawMessage) (json.RawMessage, error) {
+		callCount++
+		if callCount < 3 {
+			return nil, fmt.Errorf("context deadline exceeded")
+		}
+		return json.RawMessage(`{"result":"ok"}`), nil
+	})
+
+	req := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"flaky_tool","arguments":{}}`),
+	}
+	if err := server.handleRequest(req); err != nil {
+		t.Fatalf("handleRequest error: %v", err)
+	}
+
+	var resp JSONRPCResponse
+	json.Unmarshal(buf.Bytes(), &resp)
+	if resp.Error != nil {
+		t.Fatalf("unexpected JSON-RPC error: %v", resp.Error)
+	}
+
+	var envelope Envelope
+	json.Unmarshal(resp.Result, &envelope)
+	if envelope.Status != "pass" {
+		t.Errorf("status = %q, want %q", envelope.Status, "pass")
+	}
+	if callCount != 3 {
+		t.Errorf("handler called %d times, want 3", callCount)
+	}
+}
+
+func TestRetryLoop_NoRetryOnRealError(t *testing.T) {
+	origDelay := retryBaseDelay
+	retryBaseDelay = 1 * time.Millisecond
+	defer func() { retryBaseDelay = origDelay }()
+
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+
+	callCount := 0
+	server.RegisterTool("broken_tool", func(args json.RawMessage) (json.RawMessage, error) {
+		callCount++
+		return nil, fmt.Errorf("command not found")
+	})
+
+	req := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"broken_tool","arguments":{}}`),
+	}
+	if err := server.handleRequest(req); err != nil {
+		t.Fatalf("handleRequest error: %v", err)
+	}
+
+	var resp JSONRPCResponse
+	json.Unmarshal(buf.Bytes(), &resp)
+	if resp.Error != nil {
+		t.Fatalf("unexpected JSON-RPC error: %v", resp.Error)
+	}
+
+	var envelope Envelope
+	json.Unmarshal(resp.Result, &envelope)
+	if envelope.Status != "fail" {
+		t.Errorf("status = %q, want %q", envelope.Status, "fail")
+	}
+	if callCount != 1 {
+		t.Errorf("handler called %d times, want 1 (no retry on real error)", callCount)
+	}
+}
+
+func TestRetryLoop_Exhausted(t *testing.T) {
+	origDelay := retryBaseDelay
+	retryBaseDelay = 1 * time.Millisecond
+	defer func() { retryBaseDelay = origDelay }()
+
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+
+	callCount := 0
+	server.RegisterTool("always_timeout", func(args json.RawMessage) (json.RawMessage, error) {
+		callCount++
+		return nil, fmt.Errorf("i/o timeout")
+	})
+
+	req := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"always_timeout","arguments":{}}`),
+	}
+	if err := server.handleRequest(req); err != nil {
+		t.Fatalf("handleRequest error: %v", err)
+	}
+
+	var resp JSONRPCResponse
+	json.Unmarshal(buf.Bytes(), &resp)
+	if resp.Error != nil {
+		t.Fatalf("unexpected JSON-RPC error: %v", resp.Error)
+	}
+
+	var envelope Envelope
+	json.Unmarshal(resp.Result, &envelope)
+	if envelope.Status != "fail" {
+		t.Errorf("status = %q, want %q", envelope.Status, "fail")
+	}
+	if !strings.Contains(envelope.Summary, "after 3 attempts") {
+		t.Errorf("summary = %q, want it to contain 'after 3 attempts'", envelope.Summary)
+	}
+	if callCount != 3 {
+		t.Errorf("handler called %d times, want 3", callCount)
 	}
 }
