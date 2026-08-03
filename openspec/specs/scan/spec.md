@@ -160,3 +160,33 @@ The system SHALL invoke `drush upgrade_status:analyze` with the `--all` flag. Th
 - GIVEN `web/modules/custom/mymodule/` exists but `web/themes/custom/` is empty
 - WHEN `drup scan` runs
 - THEN the system SHALL proceed with full scan (custom code is present)
+
+### Requirement: realHandleScan Auto-Enables upgrade_status
+
+The `realHandleScan` handler SHALL check `pm:list --status=enabled` for `upgrade_status` before running `upgrade_status:analyze`. If not enabled, it SHALL run `config:delete update.settings` (to clear any pre-existing config conflict), then `drush en upgrade_status -y`, then `drush cr`, then proceed with the scan. If `upgrade_status` is not in `composer.json`, the tool SHALL fail with a clear error and SHALL NOT silently install it. The `realHandleUpgradeScan` handler SHALL share the same `ensureUpgradeStatusEnabled` helper for DRY compliance.
+
+| Req | Strength | Behavior |
+|-----|----------|----------|
+| Pre-scan enable check | MUST | Check `pm:list --status=enabled` for `upgrade_status` before `upgrade_status:analyze` |
+| Auto-enable sequence | MUST | `config:delete update.settings` → `drush en upgrade_status -y` → `drush cr` |
+| Missing from composer.json | MUST | Fail with clear error; do NOT silently install |
+| Already enabled | MUST | Skip auto-enable, run `upgrade_status:analyze` directly |
+
+#### Scenario: Auto-enable when installed but disabled (happy path)
+
+- GIVEN a project where `upgrade_status` is in `composer.json` and filesystem but NOT in `pm:list --status=enabled`
+- WHEN `drup_scan` is invoked
+- THEN the system SHALL run the auto-enable sequence and complete `upgrade_status:analyze` without "no commands defined" error
+- AND the response SHALL contain the scan results
+
+#### Scenario: Already enabled — skip auto-enable
+
+- GIVEN a project where `upgrade_status` is already enabled
+- WHEN `drup_scan` is invoked
+- THEN the system SHALL run `upgrade_status:analyze` directly without re-running enable steps
+
+#### Scenario: Not in composer.json — clear error
+
+- GIVEN a project where `upgrade_status` is NOT in `composer.json`
+- WHEN `drup_scan` is invoked
+- THEN the system SHALL return `{"status":"fail","summary":"upgrade_status is not installed; run composer require drupal/upgrade_status first"}` and SHALL NOT attempt installation

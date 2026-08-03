@@ -153,3 +153,21 @@ Each platform `SKILL.md` roster table row for a config-driven agent MUST render 
 - GIVEN `claude.drup-rector` is overridden to `{default:"claude-opus-4", escalation:"claude-opus-4"}`
 - WHEN `drup sync` writes `claude/SKILL.md`
 - THEN the `drup-rector` roster row SHALL read `claude-opus-4 (2 retries)` and not the built-in literal
+
+### Requirement: MCP Tool Response Envelope (Dispatch Contract)
+
+The orchestrator SKILL.md SHALL contain a "Dispatch Contract" section that explicitly states: sub-agents always read from `result.payload`. The section SHALL document the uniform envelope structure (`{"status":"pass|fail","summary":"...","payload":{...}}`) and the MCP protocol extension (tool errors returned as `{"status":"fail"}` in the result channel, NOT as JSON-RPC errors).
+
+| Req | Strength | Behavior |
+|-----|----------|----------|
+| Dispatch Contract section | MUST | SKILL.md contains section stating sub-agents read from `result.payload` |
+| Protocol extension documented | MUST | Section documents errors as `{"status":"fail"}` in result channel, not JSON-RPC errors |
+| Sub-agent failure handling | MUST | On `status: "fail"`, sub-agents report back to orchestrator; do NOT retry via bash |
+
+#### Scenario: Orchestrator SKILL.md contains Dispatch Contract
+
+- GIVEN the orchestrator SKILL.md
+- WHEN a manual review checks it
+- THEN it SHALL contain a "Dispatch Contract" section (or "MCP Tool Response Envelope" section)
+- AND the section SHALL explicitly state sub-agents read from `result.payload`
+- AND the section SHALL document the MCP protocol extension

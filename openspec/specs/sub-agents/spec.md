@@ -96,3 +96,26 @@ The system SHALL route sub-agents to a model tier resolved from `ModelAssignment
 - GIVEN `ModelAssignments["claude"]["drup-custom"] = {Default: "claude-opus-4", Escalation: "claude-opus-4"}`
 - WHEN the orchestrator selects a model for drup-custom
 - THEN the system SHALL use `claude-opus-4` instead of the built-in default
+
+### Requirement: MCP Response Envelope Parsing
+
+Each sub-agent template (`drup-preflight`, `drup-rector`, `drup-contrib`, `drup-custom`, `drup-theme`, `drup-validator`) SHALL read the tool-specific response from `result.payload` instead of `result` directly. Each template SHALL contain an "MCP Response Contract" section documenting the uniform envelope structure and the `result.payload` reading convention.
+
+| Req | Strength | Behavior |
+|-----|----------|----------|
+| Sub-agent template update | MUST | Each of the 6 templates reads `result.payload` instead of `result` |
+| Protocol extension documented | MUST | Templates document the MCP protocol extension (errors as `{"status":"fail"}` in result, not JSON-RPC errors) |
+| Role definitions unchanged | MUST NOT | Do NOT change sub-agent role definitions, tool grants, or envelope contracts (other than `result.payload` reading) |
+
+#### Scenario: Each sub-agent template reads `result.payload`
+
+- GIVEN the 6 sub-agent templates (`drup-preflight`, `drup-rector`, `drup-contrib`, `drup-custom`, `drup-theme`, `drup-validator`)
+- WHEN a manual review checks each template
+- THEN each template SHALL contain the text `result.payload` in its response-handling instructions
+
+#### Scenario: Sub-agent parses envelope correctly
+
+- GIVEN a sub-agent receives an MCP tool response `{"status":"pass","summary":"...","payload":{"total_errors":0}}`
+- WHEN the sub-agent parses the response
+- THEN the sub-agent SHALL read `result.payload.total_errors` (not `result.total_errors`)
+- AND the sub-agent SHALL correctly extract `total_errors == 0`

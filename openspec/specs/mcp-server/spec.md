@@ -417,3 +417,96 @@ The system SHALL wrap all drush execution failures with structured error context
 
 - GIVEN drush exit 0 but unparseable output
 - THEN error SHALL include command and truncated stdout (500 chars)
+
+### Requirement: Uniform Response Envelope
+
+The system SHALL wrap every MCP tool response (success or error) in a uniform envelope: `{"status":"pass|fail","summary":"...","payload":{...}}`. The wrapper lives in `handleToolCall` (one location); per-handler code is NOT modified. The original tool-specific payload is preserved intact inside `envelope.payload`.
+
+**MCP protocol extension (deliberate)**: Errors are sent as `{"status":"fail","summary":"..."}` in the result channel, NOT as JSON-RPC errors. This is a deliberate extension of the MCP protocol for this server. Rationale: the retrospective's core complaint was that errors were invisible. JSON-RPC errors are transport-level signals that some MCP clients swallow silently. A `{"status":"fail"}` in the result channel is always visible to the orchestrator model.
+
+| Req | Strength | Behavior |
+|-----|----------|----------|
+| Envelope wrap (success) | MUST | `{"status":"pass","summary":"...","payload":{original}}` |
+| Envelope wrap (error) | MUST | `{"status":"fail","summary":"<error message>"}` in result channel |
+| Error transport | MUST NOT | Do NOT send errors as JSON-RPC errors; send as `{"status":"fail"}` in result |
+| Payload preservation | MUST | Original tool payload byte-for-byte inside `envelope.payload` |
+| Single wrapper location | MUST | Wrapper in `handleToolCall` only; per-handler code unchanged |
+| `deriveSummary` helper | SHOULD | Best-effort summary: extract `summary`/`success`/`total_errors` fields if present, else generic "Tool {name} completed" |
+
+#### Scenario: Success envelope wrap
+
+- GIVEN a handler returns `{"foo":"bar"}` (no error)
+- WHEN `handleToolCall` processes the response
+- THEN the client SHALL receive `{"status":"pass","summary":"...","payload":{"foo":"bar"}}`
+- AND `payload.foo` SHALL equal `"bar"`
+
+#### Scenario: Error envelope — NOT a JSON-RPC error
+
+- GIVEN a handler returns `(nil, error("command not found: xyz"))`
+- WHEN `handleToolCall` processes the response
+- THEN the client SHALL receive `{"status":"fail","summary":"command not found: xyz"}` in the result channel
+- AND the response SHALL NOT be a JSON-RPC error (no `error` field at JSON-RPC level)
+- AND the JSON-RPC `id` SHALL match the request `id`
+
+#### Scenario: Payload preservation — complex object
+
+- GIVEN a handler returns a complex `scan.ScanResult` with nested `errors.contrib`, `errors.custom`, `errors.theme` arrays
+- WHEN `handleToolCall` wraps the response
+- THEN `envelope.payload` SHALL contain the full `scan.ScanResult` byte-for-byte
+
+### Requirement: Selective Retry for Transient Errors
+
+The system SHALL wrap `handler(p.Arguments)` with retry logic for transient errors only. The system SHALL retry on transport/timeout errors, never on logic errors (exit code ≠ 0, "command not found", etc.). Max 2 retries (3 total attempts) with 1s base exponential backoff. Each retry SHALL be recorded via `metrics.Collector.RecordRetry()`.
+
+| Req | Strength | Behavior |
+|-----|----------|----------|
+| Retry on transient errors | MUST | Retry on: "context deadline exceeded", "connection refused", "i/o timeout", "broken pipe", "timeout" |
+| No retry on logic errors | MUST NOT | Do NOT retry on: "exit status", "command not found", "no commands defined", "already exists", "does not exist" |
+| Max retries | MUST | 2 retries (3 total attempts) |
+| Backoff | MUST | 1s base exponential backoff (1s, 2s) |
+| Metrics recording | MUST | Record each retry via `metrics.Collector.RecordRetry()` |
+| Retry exhausted | MUST | Return `{"status":"fail","summary":"... after 3 attempts ..."}` |
+
+#### Scenario: Retry on transient error — succeeds after 2 failures
+
+- GIVEN a handler fails with "context deadline exceeded" on attempts 1 and 2, succeeds on attempt 3
+- WHEN `handleToolCall` processes the call
+- THEN the response SHALL be `{"status":"pass",...}`
+- AND `metrics.Collector` SHALL show 2 retries recorded
+
+#### Scenario: No retry on real error
+
+- GIVEN a handler fails with "command not found: xyz"
+- WHEN `handleToolCall` processes the call
+- THEN the response SHALL be `{"status":"fail","summary":"command not found: xyz"}` immediately
+- AND `metrics.Collector` SHALL show 0 retries recorded
+- AND the handler SHALL be invoked exactly once
+
+#### Scenario: Retry exhausted
+
+- GIVEN a handler fails with "context deadline exceeded" on all 3 attempts
+- WHEN `handleToolCall` processes the call
+- THEN the response SHALL be `{"status":"fail","summary":"... after 3 attempts ..."}`
+- AND `metrics.Collector` SHALL show 2 retries recorded
+
+### Requirement: Tool Count Assertion
+
+The test `TestWireMCPTools_AllToolsRegistered` SHALL assert the exact count of registered MCP tools (currently 29) and list missing/extra tools on failure for debuggability.
+
+| Req | Strength | Behavior |
+|-----|----------|----------|
+| Assert tool count | MUST | Assert `len(server.tools) == 29` (or expose `ToolCount() int` if `tools` is unexported) |
+| Diagnostic on failure | MUST | List missing/extra tools if count is wrong |
+
+#### Scenario: All 29 tools registered — test passes
+
+- GIVEN all 29 MCP tools are registered
+- WHEN `TestWireMCPTools_AllToolsRegistered` runs
+- THEN the test SHALL pass
+
+#### Scenario: Tool accidentally unregistered — test fails with diagnostic
+
+- GIVEN 27 tools registered (one missing)
+- WHEN `TestWireMCPTools_AllToolsRegistered` runs
+- THEN the test SHALL fail
+- AND the failure message SHALL list the missing tool name(s)
