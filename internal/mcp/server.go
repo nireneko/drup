@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 )
 
 // JSONRPCRequest is a JSON-RPC 2.0 request.
@@ -316,6 +317,21 @@ func NewServer(out io.Writer, version string) *Server {
 		tools:   defaultTools(),
 		version: version,
 	}
+}
+
+// ToolCount returns the number of registered tool handlers.
+func (s *Server) ToolCount() int {
+	return len(s.tools)
+}
+
+// ToolNames returns the sorted list of registered tool names.
+func (s *Server) ToolNames() []string {
+	names := make([]string, 0, len(s.tools))
+	for name := range s.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // RegisterTool overrides or adds a tool handler by name.

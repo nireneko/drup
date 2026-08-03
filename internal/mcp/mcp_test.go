@@ -446,3 +446,22 @@ func TestServer_ListTools_ProjectPathAwareToolsAdvertiseIt(t *testing.T) {
 		}
 	}
 }
+
+func TestServer_ToolCount(t *testing.T) {
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+	// defaultTools() returns 25 tools.
+	if got := server.ToolCount(); got != 25 {
+		t.Errorf("default ToolCount() = %d, want 25", got)
+	}
+
+	// Register 2 more tools.
+	dummy := func(args json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{}`), nil
+	}
+	server.RegisterTool("extra_tool_1", dummy)
+	server.RegisterTool("extra_tool_2", dummy)
+	if got := server.ToolCount(); got != 27 {
+		t.Errorf("after adding 2 tools, ToolCount() = %d, want 27", got)
+	}
+}

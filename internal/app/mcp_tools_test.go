@@ -32,16 +32,17 @@ func TestWireMCPTools_AllToolsRegistered(t *testing.T) {
 	server := mcp.NewServer(&buf, "test")
 	WireMCPTools(server)
 
-	// Verify all 20 tools are registered by calling tools/list.
-	req := mcp.JSONRPCRequest{
-		JSONRPC: "2.0",
-		ID:      1,
-		Method:  "tools/list",
+	expected := 29
+	actual := server.ToolCount()
+	if actual != expected {
+		t.Errorf("expected %d tools, got %d", expected, actual)
 	}
-	// Use the server's handleRequest via reflection isn't needed — just check the tool map.
-	// We verify by calling the list handler indirectly.
-	_ = req
-	t.Log("WireMCPTools registered all tools")
+
+	// Diagnostic: list registered tools on failure.
+	if actual != expected {
+		names := server.ToolNames()
+		t.Logf("registered tools (%d): %s", len(names), strings.Join(names, ", "))
+	}
 }
 
 func TestRealHandleContribCheck_InvalidJSON(t *testing.T) {
