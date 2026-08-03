@@ -299,6 +299,14 @@ var toolRegistry = map[string]toolSchema{
 		},
 		Required: []string{"project_path", "backup_id"},
 	},
+	"module_release_info": {
+		Description: "Get maintenance status and curated release list for a contrib module",
+		Properties: map[string]jsonSchemaProperty{
+			"module_machine_name": {Type: "string", Description: "Module machine name"},
+			"core_version":        {Type: "string", Description: "Drupal core major to filter by, e.g. 11"},
+		},
+		Required: []string{"module_machine_name"},
+	},
 }
 
 // NewServer creates a new MCP server writing to out.

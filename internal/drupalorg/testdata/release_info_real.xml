@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<project>
+  <name>pathauto</name>
+  <type>module</type>
+  <title>Pathauto</title>
+  <terms>
+    <term>
+      <name>Maintenance status</name>
+      <value>Actively maintained</value>
+    </term>
+  </terms>
+  <releases>
+    <release>
+      <name>pathauto 1.13.0</name>
+      <version>1.13.0</version>
+      <tag>1.13.0</tag>
+      <status>published</status>
+      <date>1719800000</date>
+      <core_compatibility>^10.2 || ^11</core_compatibility>
+      <security covered="1"></security>
+      <terms>
+        <term>
+          <name>Release type</name>
+          <value>Bug fixes</value>
+        </term>
+      </terms>
+    </release>
+    <release>
+      <name>pathauto 1.12.0</name>
+      <version>1.12.0</version>
+      <tag>1.12.0</tag>
+      <status>published</status>
+      <date>1700000000</date>
+      <core_compatibility>^10.2 || ^11</core_compatibility>
+      <security covered="0"></security>
+      <terms>
+        <term>
+          <name>Release type</name>
+          <value>Insecure</value>
+        </term>
+        <term>
+          <name>Release type</name>
+          <value>Bug fixes</value>
+        </term>
+      </terms>
+    </release>
+    <release>
+      <name>pathauto 1.11.0</name>
+      <version>1.11.0</version>
+      <tag>1.11.0</tag>
+      <status>unpublished</status>
+      <date>1650000000</date>
+      <core_compatibility>^9 || ^10</core_compatibility>
+      <security covered="0"></security>
+      <terms>
+        <term>
+          <name>Release type</name>
+          <value>New features</value>
+        </term>
+      </terms>
+    </release>
+  </releases>
+</project>

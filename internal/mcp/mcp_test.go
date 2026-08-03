@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -88,6 +89,43 @@ func TestServer_HandleRequest_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestServer_HandleRequest_ModuleReleaseInfoInvalidParamsReturns32603(t *testing.T) {
+	// Mirrors the real internal/app handler's validation style: invalid input
+	// is reported as a Go error, which handleToolCall surfaces as -32603
+	// (internal error), never as a pre-handler -32602 (invalid params).
+	req := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      42,
+		Method:  "tools/call",
+		Params: json.RawMessage(`{
+			"name": "module_release_info",
+			"arguments": {"module_machine_name": "Bad-Name"}
+		}`),
+	}
+
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+	server.RegisterTool("module_release_info", func(args json.RawMessage) (json.RawMessage, error) {
+		return nil, fmt.Errorf("invalid module machine name: Bad-Name")
+	})
+
+	if err := server.handleRequest(req); err != nil {
+		t.Fatalf("handleRequest error: %v", err)
+	}
+
+	var resp JSONRPCResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response JSON: %v", err)
+	}
+
+	if resp.Error == nil {
+		t.Fatal("expected error for invalid module_release_info params, got nil")
+	}
+	if resp.Error.Code != -32603 {
+		t.Errorf("error code = %d, want -32603", resp.Error.Code)
+	}
+}
+
 func TestServer_ListTools(t *testing.T) {
 	req := JSONRPCRequest{
 		JSONRPC: "2.0",
@@ -120,8 +158,8 @@ func TestServer_ListTools(t *testing.T) {
 	if !ok {
 		t.Fatal("missing tools array in result")
 	}
-	if len(tools) != 24 {
-		t.Errorf("len(tools) = %d, want 24", len(tools))
+	if len(tools) != 25 {
+		t.Errorf("len(tools) = %d, want 25", len(tools))
 	}
 }
 
@@ -353,10 +391,10 @@ var runtimeBackupNames = []string{
 }
 
 // TestServer_PostWireUpCountIs28 asserts that after the production-style
-// registration of the 4 backup tools, tools/list reports 25 tools (the 21
+// registration of the 4 backup tools, tools/list reports 29 tools (the 25
 // default stubs + 4 reverse-asymmetric backup tools). This locks the runtime
 // count that docs/mcp-tools.md §1 advertises.
-func TestServer_PostWireUpCountIs28(t *testing.T) {
+func TestServer_PostWireUpCountIs29(t *testing.T) {
 	req := JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      1,
@@ -389,8 +427,8 @@ func TestServer_PostWireUpCountIs28(t *testing.T) {
 	if !ok {
 		t.Fatal("missing tools array in result")
 	}
-	if len(tools) != 28 {
-		t.Errorf("post-wire-up tool count = %d, want 28 (24 default + 4 backup)", len(tools))
+	if len(tools) != 29 {
+		t.Errorf("post-wire-up tool count = %d, want 29 (25 default + 4 backup)", len(tools))
 	}
 }
 

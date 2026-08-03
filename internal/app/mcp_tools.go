@@ -78,6 +78,7 @@ func WireMCPTools(s *mcp.Server) {
 	s.RegisterTool("test_backup_list", realHandleTestBackupList)
 	s.RegisterTool("test_backup_restore", realHandleTestBackupRestore)
 	s.RegisterTool("test_backup_delete", realHandleTestBackupDelete)
+	s.RegisterTool("module_release_info", realHandleModuleReleaseInfo)
 }
 
 func backupParams(args json.RawMessage) (string, error) {
@@ -749,6 +750,28 @@ func realHandleContribUpgradePath(args json.RawMessage) (json.RawMessage, error)
 		return nil, err
 	}
 	return json.Marshal(rec)
+}
+
+func realHandleModuleReleaseInfo(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		Module      string `json:"module_machine_name"`
+		CoreVersion string `json:"core_version,omitempty"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if !moduleNamePattern.MatchString(params.Module) {
+		return nil, fmt.Errorf("invalid module machine name: %s", params.Module)
+	}
+	if params.CoreVersion != "" && drupalorg.MajorFromVersion(params.CoreVersion) == 0 {
+		return nil, fmt.Errorf("invalid core_version: %s", params.CoreVersion)
+	}
+
+	result, err := drupalorg.ModuleReleaseInfo(params.Module, params.CoreVersion)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(result)
 }
 
 func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {

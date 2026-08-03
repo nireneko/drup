@@ -53,7 +53,31 @@ func defaultTools() map[string]ToolHandler {
 		"custom_compat_fix":     handleCustomCompatFix,
 		"contrib_allow_lenient": handleContribAllowLenient,
 		"contrib_compat_patch":  handleContribCompatPatch,
+		"module_release_info":   handleModuleReleaseInfo,
 	}
+}
+
+func handleModuleReleaseInfo(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		Module      string `json:"module_machine_name"`
+		CoreVersion string `json:"core_version"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+
+	// Placeholder — the real handler calls drupalorg.ModuleReleaseInfo.
+	result := map[string]interface{}{
+		"status":              "not_found",
+		"module":              params.Module,
+		"found":               false,
+		"maintenance_status":  "unknown",
+		"core_version_filter": params.CoreVersion,
+		"message":             "",
+		"suggestion":          "",
+		"releases":            []interface{}{},
+	}
+	return json.Marshal(result)
 }
 
 func handleContribCompatPatch(args json.RawMessage) (json.RawMessage, error) {

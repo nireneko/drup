@@ -1,8 +1,8 @@
 # drup MCP Tools — Agent Reference
 
-This document is an **agent-facing reference** for the 25 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
+This document is an **agent-facing reference** for the 26 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
 
-**Tooling totals at runtime:** 20 categorized tools in `defaultTools()` (see §5) + the `cleanup` post-pipeline utility (§5.21) + `custom_compat_fix` (§5.22) + 4 backup tools (§6) = **26 total**.
+**Tooling totals at runtime:** 20 categorized tools in `defaultTools()` (see §5) + the `cleanup` post-pipeline utility (§5.21) + `custom_compat_fix` (§5.22) + `module_release_info` (§5.23) + 4 backup tools (§6) = **27 total**.
 
 For tool **schemas** (JSON Schema, required fields, types) call `tools/list` — do not hardcode them here. For tool **internals** (Go package, test coverage) read `internal/app/mcp_tools.go`.
 
@@ -318,6 +318,16 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 - **Side-effects**: rewrites `.info.yml` files under `modules/custom`, `themes/custom` and `profiles/custom`. The existing constraint is kept and the target major appended, so an extension does not silently lose the versions it already declared. The file's quoting style is preserved.
 - **Never touches contrib**: composer owns `modules/contrib`, so an in-place edit there is discarded on the next `composer install`. Use `create_patch` and `apply_patch` for contrib.
 - **Red flag**: an extension reported under `needs_attention` has no `core_version_requirement` at all — it still uses the removed `core:` key, and where to insert the replacement is a judgement call left to a human.
+
+### 5.23 `module_release_info`
+
+- **Purpose**: Curated release list and maintenance status for a contrib module — combines project-level `maintenance_status` with per-release derived fields (`insecure`, `security_covered`) from the release-history feed. Complements `contrib_check` (has-D11-branch?) and `contrib_upgrade_path` (which version to install?) with the full curated picture.
+- **Returns**: `{ status, module, found, maintenance_status, core_version_filter, message, suggestion, releases: [{version, tag, core_compatibility, release_type: [...], insecure, security_covered, date}, ...] }`
+- **Prerequisites**: none beyond `module_machine_name`. `core_version` is optional (e.g. `"11"`).
+- **Side-effects**: none.
+- **Always-on gate**: `releases[]` is always restricted to `status == "published"` — retracted/unpublished releases never appear, whether or not `core_version` is supplied. `core_version` only narrows further.
+- **Error signals**: unknown module → `status: "not_found"` (NOT a JSON-RPC error, same convention as `contrib_check`); invalid `module_machine_name` or an unparseable `core_version` → JSON-RPC error before the Drupal.org call.
+- **Red flag**: assuming an empty `releases[]` always means "unknown module" — check `status`; `no_releases_found` means the project exists but has nothing published (or nothing matching the filter).
 
 ---
 

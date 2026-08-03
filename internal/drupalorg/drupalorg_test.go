@@ -840,3 +840,268 @@ func TestConstraintMatchesDrupal_OpenEndedLowerBounds(t *testing.T) {
 		}
 	}
 }
+
+// --- Module Release Info: curateReleases unit tests ---
+
+func TestCurateReleases(t *testing.T) {
+	tests := []struct {
+		name        string
+		rh          *releaseHistoryFull
+		coreVersion string
+		wantMaint   string
+		wantCount   int
+		checkFirst  func(t *testing.T, d ReleaseDetail)
+	}{
+		{
+			name: "insecure derivation",
+			rh: &releaseHistoryFull{
+				Terms: []term{{Name: "Maintenance status", Value: "Actively maintained"}},
+				Releases: []releaseFull{
+					{
+						Version:    "1.0.0",
+						Status:     "published",
+						CoreCompat: "^11",
+						Terms:      []term{{Name: "Release type", Value: "Insecure"}},
+					},
+				},
+			},
+			wantMaint: "Actively maintained",
+			wantCount: 1,
+			checkFirst: func(t *testing.T, d ReleaseDetail) {
+				if !d.Insecure {
+					t.Error("expected insecure=true")
+				}
+				if len(d.ReleaseType) != 1 || d.ReleaseType[0] != "Insecure" {
+					t.Errorf("ReleaseType = %v, want [Insecure]", d.ReleaseType)
+				}
+			},
+		},
+		{
+			name: "unrecognized release type term passes through without error",
+			rh: &releaseHistoryFull{
+				Releases: []releaseFull{
+					{
+						Version: "1.0.0",
+						Status:  "published",
+						Terms:   []term{{Name: "Release type", Value: "Something New"}},
+					},
+				},
+			},
+			wantMaint: "unknown",
+			wantCount: 1,
+			checkFirst: func(t *testing.T, d ReleaseDetail) {
+				if d.Insecure {
+					t.Error("expected insecure=false for an unrecognized term value")
+				}
+				if len(d.ReleaseType) != 1 || d.ReleaseType[0] != "Something New" {
+					t.Errorf("ReleaseType = %v, want [Something New]", d.ReleaseType)
+				}
+			},
+		},
+		{
+			name: "published-only gate excludes unpublished release",
+			rh: &releaseHistoryFull{
+				Releases: []releaseFull{
+					{Version: "2.0.0", Status: "unpublished", CoreCompat: "^11"},
+					{Version: "1.0.0", Status: "published", CoreCompat: "^11"},
+				},
+			},
+			wantMaint: "unknown",
+			wantCount: 1,
+			checkFirst: func(t *testing.T, d ReleaseDetail) {
+				if d.Version != "1.0.0" {
+					t.Errorf("Version = %q, want the published release only", d.Version)
+				}
+			},
+		},
+		{
+			name: "maintenance status defaults to unknown when absent",
+			rh: &releaseHistoryFull{
+				Releases: []releaseFull{{Version: "1.0.0", Status: "published"}},
+			},
+			wantMaint: "unknown",
+			wantCount: 1,
+		},
+		{
+			name: "empty core_compatibility dropped only under an active filter",
+			rh: &releaseHistoryFull{
+				Releases: []releaseFull{{Version: "1.0.0", Status: "published", CoreCompat: ""}},
+			},
+			coreVersion: "11",
+			wantMaint:   "unknown",
+			wantCount:   0,
+		},
+		{
+			name: "empty core_compatibility kept when unfiltered",
+			rh: &releaseHistoryFull{
+				Releases: []releaseFull{{Version: "1.0.0", Status: "published", CoreCompat: ""}},
+			},
+			wantMaint: "unknown",
+			wantCount: 1,
+		},
+		{
+			name: "unsupported project still lists releases normally",
+			rh: &releaseHistoryFull{
+				Terms: []term{{Name: "Maintenance status", Value: "Unsupported"}},
+				Releases: []releaseFull{
+					{Version: "1.0.0", Status: "published", CoreCompat: "^11"},
+					{Version: "2.0.0", Status: "unpublished", CoreCompat: "^11"},
+				},
+			},
+			wantMaint: "Unsupported",
+			wantCount: 1,
+			checkFirst: func(t *testing.T, d ReleaseDetail) {
+				if d.Version != "1.0.0" {
+					t.Errorf("Version = %q, want the published release only, same gate as any other project", d.Version)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := curateReleases(tt.rh, tt.coreVersion)
+			if result.MaintenanceStatus != tt.wantMaint {
+				t.Errorf("MaintenanceStatus = %q, want %q", result.MaintenanceStatus, tt.wantMaint)
+			}
+			if len(result.Releases) != tt.wantCount {
+				t.Fatalf("len(Releases) = %d, want %d", len(result.Releases), tt.wantCount)
+			}
+			if tt.checkFirst != nil && len(result.Releases) > 0 {
+				tt.checkFirst(t, result.Releases[0])
+			}
+		})
+	}
+}
+
+// --- Module Release Info: ModuleReleaseInfo integration tests ---
+
+func TestModuleReleaseInfo_MaintenanceAndFilter(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(testdataDir(t), "release_info_real.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	restore := SetHTTPClientForTest(srv.Client())
+	defer restore()
+	origURL := releaseHistoryVersionURL
+	releaseHistoryVersionURL = srv.URL + "/release-history/%s/%s"
+	defer func() { releaseHistoryVersionURL = origURL }()
+
+	// Unfiltered: every published release, excluding the unpublished one.
+	result, err := ModuleReleaseInfo("pathauto", "")
+	if err != nil {
+		t.Fatalf("ModuleReleaseInfo error: %v", err)
+	}
+	if !result.Found {
+		t.Error("expected found=true")
+	}
+	if result.Status != "releases_found" {
+		t.Errorf("Status = %q, want %q", result.Status, "releases_found")
+	}
+	if result.MaintenanceStatus != "Actively maintained" {
+		t.Errorf("MaintenanceStatus = %q, want %q", result.MaintenanceStatus, "Actively maintained")
+	}
+	if len(result.Releases) != 2 {
+		t.Fatalf("len(Releases) = %d, want 2 (published only, excluding the unpublished release)", len(result.Releases))
+	}
+
+	// Filtered to major 11: both published releases carry "^10.2 || ^11", so
+	// the filter narrows nothing further beyond the always-on published gate.
+	filtered, err := ModuleReleaseInfo("pathauto", "11")
+	if err != nil {
+		t.Fatalf("ModuleReleaseInfo error: %v", err)
+	}
+	if len(filtered.Releases) != 2 {
+		t.Errorf("len(Releases) with filter 11 = %d, want 2", len(filtered.Releases))
+	}
+	if filtered.CoreVersionFilter != "11" {
+		t.Errorf("CoreVersionFilter = %q, want %q", filtered.CoreVersionFilter, "11")
+	}
+
+	// Filtered to a major none of the published releases satisfy.
+	none, err := ModuleReleaseInfo("pathauto", "9")
+	if err != nil {
+		t.Fatalf("ModuleReleaseInfo error: %v", err)
+	}
+	if none.Status != "no_releases_found" {
+		t.Errorf("Status = %q, want %q", none.Status, "no_releases_found")
+	}
+	if !none.Found {
+		t.Error("expected found=true even with zero matching releases")
+	}
+}
+
+func TestModuleReleaseInfo_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/xml")
+		fmt.Fprint(w, `<?xml version="1.0" encoding="utf-8"?><error>No release history was found for the requested project.</error>`)
+	}))
+	defer srv.Close()
+
+	restore := SetHTTPClientForTest(srv.Client())
+	defer restore()
+	origURL := releaseHistoryVersionURL
+	releaseHistoryVersionURL = srv.URL + "/release-history/%s/%s"
+	defer func() { releaseHistoryVersionURL = origURL }()
+
+	result, err := ModuleReleaseInfo("nonexistent_module", "")
+	if err != nil {
+		t.Fatalf("ModuleReleaseInfo error: %v", err)
+	}
+	if result.Found {
+		t.Error("unknown project reported as found on drupal.org")
+	}
+	if result.Status != "not_found" {
+		t.Errorf("Status = %q, want %q", result.Status, "not_found")
+	}
+	if len(result.Releases) != 0 {
+		t.Errorf("expected empty releases for not_found, got %d", len(result.Releases))
+	}
+}
+
+func TestModuleReleaseInfo_ZeroReleases(t *testing.T) {
+	xmlData := `<?xml version="1.0" encoding="utf-8"?>
+<project>
+  <name>emptymod</name>
+  <terms>
+    <term><name>Maintenance status</name><value>Actively maintained</value></term>
+  </terms>
+  <releases></releases>
+</project>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write([]byte(xmlData))
+	}))
+	defer srv.Close()
+
+	restore := SetHTTPClientForTest(srv.Client())
+	defer restore()
+	origURL := releaseHistoryVersionURL
+	releaseHistoryVersionURL = srv.URL + "/release-history/%s/%s"
+	defer func() { releaseHistoryVersionURL = origURL }()
+
+	result, err := ModuleReleaseInfo("emptymod", "")
+	if err != nil {
+		t.Fatalf("ModuleReleaseInfo error: %v", err)
+	}
+	if !result.Found {
+		t.Error("expected found=true for a zero-release published project")
+	}
+	if result.Status != "no_releases_found" {
+		t.Errorf("Status = %q, want %q", result.Status, "no_releases_found")
+	}
+	if len(result.Releases) != 0 {
+		t.Errorf("expected empty releases, got %d", len(result.Releases))
+	}
+	if result.MaintenanceStatus != "Actively maintained" {
+		t.Errorf("MaintenanceStatus = %q, want %q", result.MaintenanceStatus, "Actively maintained")
+	}
+}

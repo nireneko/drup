@@ -361,6 +361,20 @@ func TestContribUpgradePath_InvalidName(t *testing.T) {
 	}
 }
 
+func TestModuleReleaseInfo_InvalidName(t *testing.T) {
+	_, err := realHandleModuleReleaseInfo(json.RawMessage(`{"module_machine_name":"123bad"}`))
+	if err == nil {
+		t.Error("expected error for invalid module name, got nil")
+	}
+}
+
+func TestModuleReleaseInfo_InvalidCoreVersion(t *testing.T) {
+	_, err := realHandleModuleReleaseInfo(json.RawMessage(`{"module_machine_name":"token","core_version":"abc"}`))
+	if err == nil {
+		t.Error("expected error for invalid core_version, got nil")
+	}
+}
+
 func TestGenerateReport_InvalidJSON(t *testing.T) {
 	_, err := realHandleGenerateReport(json.RawMessage(`{invalid`))
 	if err == nil {

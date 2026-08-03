@@ -532,19 +532,31 @@ type UpgradeRecommendation struct {
 
 // releaseHistoryFull includes status and date for upgrade path parsing.
 type releaseHistoryFull struct {
-	XMLName  xml.Name      `xml:"project"`
-	Name     string        `xml:"name"`
+	XMLName xml.Name `xml:"project"`
+	Name    string   `xml:"name"`
+	// Terms holds the project-level <terms> (e.g. Maintenance status). Go's
+	// "terms>term" path binds only to this struct's own direct child node, so
+	// this does not interfere with releaseFull.Terms below.
+	Terms    []term        `xml:"terms>term"`
 	Releases []releaseFull `xml:"releases>release"`
 }
 
 type releaseFull struct {
-	Name        string `xml:"name"`
-	Version     string `xml:"version"`
-	Tag         string `xml:"tag"`
-	Status      string `xml:"status"`
-	ReleaseDate string `xml:"date"`
-	CoreCompat  string `xml:"core_compatibility"`
-	Terms       []term `xml:"terms>term"`
+	Name        string          `xml:"name"`
+	Version     string          `xml:"version"`
+	Tag         string          `xml:"tag"`
+	Status      string          `xml:"status"`
+	ReleaseDate string          `xml:"date"`
+	CoreCompat  string          `xml:"core_compatibility"`
+	Terms       []term          `xml:"terms>term"`
+	Security    releaseSecurity `xml:"security"`
+}
+
+// releaseSecurity captures the feed's per-release <security covered="1">
+// element used to derive ReleaseDetail.SecurityCovered.
+type releaseSecurity struct {
+	Covered string `xml:"covered,attr"`
+	Text    string `xml:",chardata"`
 }
 
 // releaseHistoryVersionURL is the template for version-specific release-history lookups.
@@ -608,9 +620,138 @@ func FetchReleaseHistory(module, drupalVersion string) (*releaseHistoryFull, err
 	return &rh, nil
 }
 
-// majorFromVersion extracts the leading major number from "11", "11.1" or
-// "11.x". Returns 0 when there is none.
-func majorFromVersion(version string) int {
+// ReleaseInfoResult is the curated response for ModuleReleaseInfo. It always
+// includes status, message, and suggestion — never a bare empty array — so
+// an unknown module and a maintained-but-releaseless project are
+// distinguishable.
+type ReleaseInfoResult struct {
+	Status            string          `json:"status"` // releases_found | no_releases_found | not_found
+	Module            string          `json:"module"`
+	Found             bool            `json:"found"`
+	MaintenanceStatus string          `json:"maintenance_status"` // "unknown" when absent
+	CoreVersionFilter string          `json:"core_version_filter,omitempty"`
+	Message           string          `json:"message"`
+	Suggestion        string          `json:"suggestion"`
+	Releases          []ReleaseDetail `json:"releases"`
+}
+
+// ReleaseDetail is one curated, published release entry.
+type ReleaseDetail struct {
+	Version           string   `json:"version"`
+	Tag               string   `json:"tag"`
+	CoreCompatibility string   `json:"core_compatibility"`
+	ReleaseType       []string `json:"release_type"` // verbatim feed terms
+	Insecure          bool     `json:"insecure"`     // Go-derived
+	SecurityCovered   bool     `json:"security_covered"`
+	Date              string   `json:"date"` // raw feed value (Unix epoch string), as UpgradePath already exposes it
+}
+
+// curateReleases builds a ReleaseInfoResult from a fetched release-history
+// document. Every release is gated on status == "published" unconditionally;
+// when coreVersion is non-empty, the release's core_compatibility must also
+// satisfy it via constraintMatchesDrupal. Never returns nil.
+func curateReleases(rh *releaseHistoryFull, coreVersion string) *ReleaseInfoResult {
+	result := &ReleaseInfoResult{
+		MaintenanceStatus: "unknown",
+		CoreVersionFilter: coreVersion,
+		Releases:          []ReleaseDetail{},
+	}
+
+	for _, t := range rh.Terms {
+		if t.Name == "Maintenance status" {
+			result.MaintenanceStatus = t.Value
+			break
+		}
+	}
+
+	var filterMajor int
+	if coreVersion != "" {
+		filterMajor = MajorFromVersion(coreVersion)
+	}
+
+	for _, rel := range rh.Releases {
+		// Unconditional gate: retracted/unpublished releases never appear,
+		// independent of any filter.
+		if rel.Status != "published" {
+			continue
+		}
+		if coreVersion != "" {
+			// An explicit compatibility assertion is required once a filter is
+			// requested; an empty core_compatibility cannot satisfy it.
+			if rel.CoreCompat == "" || !constraintMatchesDrupal(rel.CoreCompat, filterMajor) {
+				continue
+			}
+		}
+
+		detail := ReleaseDetail{
+			Version:           rel.Version,
+			Tag:               rel.Tag,
+			CoreCompatibility: rel.CoreCompat,
+			ReleaseType:       []string{},
+			Date:              rel.ReleaseDate,
+			SecurityCovered:   rel.Security.Covered == "1",
+		}
+		for _, t := range rel.Terms {
+			if t.Name != "Release type" {
+				continue
+			}
+			// Fail open: every value is copied verbatim, recognized or not.
+			detail.ReleaseType = append(detail.ReleaseType, t.Value)
+			if strings.TrimSpace(t.Value) == "Insecure" {
+				detail.Insecure = true
+			}
+		}
+		result.Releases = append(result.Releases, detail)
+	}
+
+	return result
+}
+
+// ModuleReleaseInfo returns curated release info for a module: maintenance
+// status plus every published release, optionally filtered to those whose
+// core_compatibility satisfies coreVersion (empty string = unfiltered). It
+// distinguishes three cases: unknown module (not_found), known module with
+// no matching releases (no_releases_found), and matches (releases_found).
+// Real transport/parse failures are returned as a Go error rather than
+// folded into a status string.
+func ModuleReleaseInfo(module, coreVersion string) (*ReleaseInfoResult, error) {
+	rh, err := FetchReleaseHistory(module, coreVersion)
+	if err != nil {
+		return nil, err
+	}
+	if rh == nil {
+		return &ReleaseInfoResult{
+			Status:            "not_found",
+			Module:            module,
+			Found:             false,
+			MaintenanceStatus: "unknown",
+			CoreVersionFilter: coreVersion,
+			Message:           fmt.Sprintf("no project found on Drupal.org for %q", module),
+			Suggestion:        "check the module machine name for typos",
+			Releases:          []ReleaseDetail{},
+		}, nil
+	}
+
+	result := curateReleases(rh, coreVersion)
+	result.Module = module
+	result.Found = true
+	if len(result.Releases) == 0 {
+		result.Status = "no_releases_found"
+		result.Message = fmt.Sprintf("no published releases found for %q", module)
+		result.Suggestion = "check the core_version filter, or the project's maintenance_status"
+	} else {
+		result.Status = "releases_found"
+		result.Message = fmt.Sprintf("%d published release(s) found for %q", len(result.Releases), module)
+		result.Suggestion = "pick the release whose core_compatibility matches your target Drupal major"
+	}
+	return result, nil
+}
+
+// MajorFromVersion extracts the leading major number from "11", "11.1" or
+// "11.x". Returns 0 when there is none. Exported so MCP handlers in
+// internal/app can validate a core_version parameter before calling
+// ModuleReleaseInfo, without duplicating this parsing.
+func MajorFromVersion(version string) int {
 	v := strings.TrimSpace(version)
 	if idx := strings.IndexAny(v, ".-"); idx > 0 {
 		v = v[:idx]
@@ -665,7 +806,7 @@ func UpgradePath(module, currentDrupal, targetDrupal string) (*UpgradeRecommenda
 		// literal only appears in the retired terms format.
 		compatible := false
 		targetKey := "Drupal " + targetDrupal
-		targetMajor := majorFromVersion(targetDrupal)
+		targetMajor := MajorFromVersion(targetDrupal)
 		for _, c := range r.DrupalCompat {
 			if c == targetKey || (targetMajor > 0 && constraintMatchesDrupal(c, targetMajor)) {
 				compatible = true
