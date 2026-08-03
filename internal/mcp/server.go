@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/nireneko/drup/internal/metrics"
 )
 
 // JSONRPCRequest is a JSON-RPC 2.0 request.
@@ -464,6 +466,7 @@ func (s *Server) retryLoop(toolName string, handler ToolHandler, args json.RawMe
 		}
 		lastErr = err
 		if attempt < maxAttempts {
+			metrics.Default().RecordRetry()
 			delay := retryBaseDelay * time.Duration(1<<(attempt-1))
 			time.Sleep(delay)
 		}

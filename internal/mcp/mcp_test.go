@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nireneko/drup/internal/metrics"
 )
 
 func TestServer_HandleRequest_Scan(t *testing.T) {
@@ -697,6 +699,8 @@ func TestRetryLoop_TransientThenSuccess(t *testing.T) {
 	var buf bytes.Buffer
 	server := NewServer(&buf, "test")
 
+	beforeRetries := metrics.Default().Snapshot().Retries
+
 	callCount := 0
 	server.RegisterTool("flaky_tool", func(args json.RawMessage) (json.RawMessage, error) {
 		callCount++
@@ -729,6 +733,9 @@ func TestRetryLoop_TransientThenSuccess(t *testing.T) {
 	}
 	if callCount != 3 {
 		t.Errorf("handler called %d times, want 3", callCount)
+	}
+	if got := metrics.Default().Snapshot().Retries - beforeRetries; got != 2 {
+		t.Errorf("retries recorded = %d, want 2", got)
 	}
 }
 
