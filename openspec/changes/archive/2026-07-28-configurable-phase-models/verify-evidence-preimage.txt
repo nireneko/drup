@@ -1,0 +1,27 @@
+change=configurable-phase-models
+repository=/home/borja/sites/borja/go/drup
+head=c153980
+verify_round=3
+test_command=go test -count=1 ./...
+test_exit_code=0
+test_output_hash=sha256:8acd669bfe263a8917fe648934aa5ad8127adc2cfc269d02a24c84e3ebe2a460
+build_command=go build ./...
+build_exit_code=0
+build_output_hash=sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+vet_command=go vet ./...
+vet_exit_code=0
+gofmt_command=gofmt -l internal/ cmd/
+gofmt_output=
+requirements=10/10
+scenarios=14/14
+verdict=pass
+blockers=0
+critical_findings=0
+warning_1_resolved=true
+warning_7_resolved=true
+e2e_runtime_render=drup install + drup sync in isolated HOME, 32 files, 3 platforms
+e2e_builtin_defaults_match_pre_change=18/18
+e2e_sync_status_modified_only_for_changed=2 modified, 30 unchanged, second run 32 unchanged
+commits_created=0
+review_authority=none (gentle-ai review status: clean, zero entries)
+authored_lines_excluding_openspec=1020

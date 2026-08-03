@@ -219,3 +219,33 @@ The system SHALL determine status by comparing intended write content against ex
 - WHEN the installer computes the drup merge result
 - THEN comparison SHALL use the fully merged JSON, not the raw template snippet
 - AND status SHALL be `unchanged` if merged output matches existing file byte-for-byte
+
+### Requirement: REQ-004 Model Placeholder Substitution
+
+`packaging.Render(platform, binaryPath, modelOverrides)` SHALL accept a third parameter and substitute `{{MODEL_DEFAULT}}` / `{{MODEL_ESCALATION}}` in all 18 agent templates' frontmatter/TOML `model` field and in their "Default model:" prose, plus each platform's `SKILL.md` roster table.
+
+#### Scenario: Zero placeholders survive render
+
+- GIVEN any valid or empty `modelOverrides`
+- WHEN `Render` completes for any platform
+- THEN no rendered file SHALL contain the substring `{{MODEL_`
+
+### Requirement: REQ-005 Codex Model Field Preservation
+
+`renderCodexAgentConfig` SHALL emit the resolved `model` field in the output TOML, fixing the current silent drop. Substitution SHALL happen before Markdown→TOML conversion.
+
+#### Scenario: Codex TOML retains model
+
+- GIVEN codex platform render with any resolved model for `drup-rector`
+- WHEN `renderCodexAgentConfig` converts the template
+- THEN the emitted `.toml` SHALL contain `model = "<resolved>"`
+
+### Requirement: REQ-006 OpenCode Reconciliation
+
+For OpenCode, the rendered frontmatter `model:` value and the rendered "Default model:" prose sentence MUST reference the same resolved model, eliminating today's frontmatter/prose contradiction.
+
+#### Scenario: Frontmatter and prose agree
+
+- GIVEN any config (including empty, using built-ins)
+- WHEN an OpenCode agent file renders
+- THEN the frontmatter `model:` value SHALL be reachable from the prose's stated default/escalation names

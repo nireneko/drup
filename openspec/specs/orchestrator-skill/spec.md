@@ -143,3 +143,13 @@ The system SHALL produce an actionable pending-human list when automated resolut
 - GIVEN commands that failed all retry attempts
 - WHEN the pipeline completes
 - THEN the system SHALL include each item with: path, error summary, attempted fixes, and suggested manual action, sourced from `drup` CLI output
+
+### Requirement: REQ-007 Roster Table Reflects Resolved Models
+
+Each platform `SKILL.md` roster table row for a config-driven agent MUST render the actual resolved default/escalation model names after `drup sync`, not template literals.
+
+#### Scenario: Roster reflects override
+
+- GIVEN `claude.drup-rector` is overridden to `{default:"claude-opus-4", escalation:"claude-opus-4"}`
+- WHEN `drup sync` writes `claude/SKILL.md`
+- THEN the `drup-rector` roster row SHALL read `claude-opus-4 (2 retries)` and not the built-in literal

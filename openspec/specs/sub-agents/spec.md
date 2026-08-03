@@ -76,16 +76,23 @@ The system SHALL define a `drup-theme` sub-agent with model routing to haiku, ap
 
 ### Requirement: Model Routing
 
-The system SHALL route sub-agents to the appropriate model tier based on task complexity.
+The system SHALL route sub-agents to a model tier resolved from `ModelAssignments`, falling back to built-in per-agent defaults when unconfigured. `drup-validator` SHALL keep its distinct non-cheap default, never equal to the fixer-agent cheap default.
+(Previously: model tier names — haiku/sonnet — were hardcoded literals with no configuration path.)
 
 #### Scenario: Cheap model for mechanical work
 
-- GIVEN preflight, contrib, or theme tasks
+- GIVEN preflight, contrib, custom, or theme tasks with no override configured
 - WHEN the orchestrator selects a model
-- THEN the system SHALL use haiku/cheap model by default
+- THEN the system SHALL use the built-in cheap default
 
 #### Scenario: Escalation for custom code
 
-- GIVEN custom code tasks that fail on cheap model
-- WHEN the orchestrator escalates after 2 retries
-- THEN the system SHALL switch to sonnet for that specific file
+- GIVEN custom code tasks that fail on the default model after 2 retries
+- WHEN the orchestrator escalates
+- THEN the system SHALL switch to the configured (or built-in) escalation model for that file
+
+#### Scenario: Configured override changes routing
+
+- GIVEN `ModelAssignments["claude"]["drup-custom"] = {Default: "claude-opus-4", Escalation: "claude-opus-4"}`
+- WHEN the orchestrator selects a model for drup-custom
+- THEN the system SHALL use `claude-opus-4` instead of the built-in default
