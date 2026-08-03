@@ -1,8 +1,8 @@
 # drup MCP Tools — Agent Reference
 
-This document is an **agent-facing reference** for the 26 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
+This document is an **agent-facing reference** for the 29 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
 
-**Tooling totals at runtime:** 20 categorized tools in `defaultTools()` (see §5) + the `cleanup` post-pipeline utility (§5.21) + `custom_compat_fix` (§5.22) + `module_release_info` (§5.23) + 4 backup tools (§6) = **27 total**.
+**Tooling totals at runtime:** 20 categorized tools in `defaultTools()` (see §5) + the `cleanup` post-pipeline utility (§5.21) + `custom_compat_fix` (§5.22) + `module_release_info` (§5.23) + 4 backup tools (§6) + 1 `drupal_version_matrix` (§5.x) = **29 total**. See [§4.1](#41-response-envelope-uniform-contract) for the uniform envelope that wraps every response.
 
 For tool **schemas** (JSON Schema, required fields, types) call `tools/list` — do not hardcode them here. For tool **internals** (Go package, test coverage) read `internal/app/mcp_tools.go`.
 
@@ -12,10 +12,30 @@ For tool **schemas** (JSON Schema, required fields, types) call `tools/list` —
 
 1. **Pick the MCP tool, never shell out.** Every operation in the upgrade pipeline has a deterministic MCP tool. If you find yourself about to run drush, composer, git-apply, curl, or any patch operation via Bash — STOP and pick a tool. The blocker isn't a guideline; the tools do things Bash cannot (env auto-prefix, dry-run pre-check, drush blocklist, git checkpoint).
 2. **Use exact registry names.** Tools are registered as short names (`scan`, `validate`, `core_upgrade_apply`). Depending on host orchestrator they may appear prefixed (`drup_scan`, `drup_validate`). Call your named tool by whatever name it shows in your function-calling UI — never hardcode a prefix.
-3. **Read the response, do not pattern-match its shape.** Every tool returns a unique envelope. The decision rules below tell you what `success`, `total_errors`, `is_applied`, etc. mean per tool.
-4. **Errors are returned two ways.** Either as `"isError": true` (the tool itself failed — bad arg, blocked command, unreachable), or as a successful response body that has `"success": false` or `"supported": false` — meaning the tool ran but the project state is what it is. **Both are non-panics.** Read the body.
+3. **Read the response, do not pattern-match its shape.** Every tool returns the same uniform envelope (`{status, summary, payload}` — see [§4.1](#41-response-envelope-uniform-contract)). The payload field is the tool-specific response shape; read it for `success`, `total_errors`, `is_applied`, etc.
+4. **Errors are returned two ways.** (a) As a uniform envelope with `"status": "fail"` and `"summary": "<error message>"` in the **result** channel — the tool itself failed (bad arg, blocked command, unreachable, transient-after-retry-exhausted). (b) As a JSON-RPC error response (`"code": -32601`, `-32602`, `-32603`) — this is a **protocol-level** failure (malformed request, unknown tool name, marshal failure), NOT a tool failure. Always inspect `status` first; treat JSON-RPC errors as dispatch failures and stop.
 5. **Backup before mutations.** Any tool that mutates `composer.json`, the working tree, or drupal.org state (apply_patch, core_upgrade_apply, patch_rollback, composer_require without dry-run, create_patch) requires a `test_backup_create` recorded in run state. The orchestrator enforces this; sub-agents must read it before dispatching mutators.
 6. **`tasks/list` advertises only what is in `s.tools`.** If a tool is in code but missing from `defaultTools()` AND missing from `toolRegistry`, clients see it with an empty `inputSchema` and may break. Verify the wiring is symmetric (defaultTools entry ↔ toolRegistry entry ↔ real handler ↔ doc entry) before dispatching.
+
+### 1.1 Response Envelope (uniform contract)
+
+Every MCP tool response (success OR tool-level error) is wrapped at the server level (`internal/mcp/server.go:handleToolCall`) in the same envelope:
+
+```json
+{
+  "status": "pass | fail",
+  "summary": "one-line human-readable summary",
+  "payload": { /* original tool-specific response, only on pass */ }
+}
+```
+
+- **`status: "pass"`** — the handler returned without error. `payload` contains the tool's original response shape.
+- **`status: "fail"`** — the handler returned an error. `summary` is the error message; `payload` is empty. **The error is sent in the `result` channel, NOT as a JSON-RPC error.** This is a deliberate protocol extension so the orchestrator model always gets a parseable signal.
+- **JSON-RPC errors** are reserved for **protocol-level** failures (malformed request, unknown tool name, marshal failure). They are not tool failures; the tool never ran.
+
+Sub-agents MUST read the tool-specific response from `payload`, not from the result directly. This is enforced by the grep test `TestSubAgentTemplates_ContainPayloadReference` over the 18 sub-agent templates.
+
+Transient errors (timeout, connection refused, broken pipe) are retried up to 2 times with 1s base exponential backoff before the final `{status: "fail"}` is returned. Retries are recorded via `metrics.Default().RecordRetry()`.
 
 ---
 
