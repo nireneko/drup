@@ -1,348 +1,362 @@
-# drup Upgrade Workflow — Complete Guide
+# Drupal Upgrade Workflow
 
-This document describes the complete Drupal upgrade workflow orchestrated by `drup`, from preflight checks through final reporting.
+This document is the operational reference for the Drupal upgrade workflow exposed by `drup`.
+The **Target Workflow** is normative: it is the process that must be implemented. The current
+agent behavior is documented only to make implementation gaps visible and prevent accidental
+assumptions that an existing prompt already provides a required safeguard.
 
----
+## Executive Summary
 
-## Overview
+The target process is a coordinator-driven workflow with specialized agents:
 
-The `/drup <path>` command in Claude Code (or OpenCode/Codex) runs a **7-stage pipeline** that automates Drupal 8/9/10 → 11 migration:
+1. The orchestrator asks for the commit strategy, scope, and handling of dirty work.
+2. `drup-preflight` opens the project session, creates a local database/files backup, detects the environment, and installs upgrade tooling.
+3. `drup-validator` independently verifies readiness and later validates every fix.
+4. `drup-rector` fixes custom modules and themes automatically.
+5. `drup-contrib` resolves contributed-module releases and patches.
+6. `drup-custom` and `drup-theme` handle remaining file-level fixes.
+7. The core is upgraded, a final validation is run, and a Markdown report is generated.
+8. The backup is retained; it is never deleted automatically.
 
-1. **Preflight** — environment detection, dependency installation
-2. **Dep Check** — validation that dependencies are ready
-3. **Rector** — automatic code cleanup (80% of the work, zero tokens)
-4. **Contrib Loop** — update contrib modules (releases, patches, core-upgrade)
-5. **Custom/Theme Loop** — refactor custom code and themes
-6. **Final Validation** — global error check and routing
-7. **Report** — generate UPGRADE-REPORT.md with full summary
+The current prompts do **not** yet implement the full phased workflow described here. The
+missing pieces are listed in [Implementation Gaps](#implementation-gaps). Until those gaps
+are implemented, the current workflow must not be presented as equivalent to the target.
 
-**Key principle**: The orchestrator (SKILL.md) is a pure coordinator with zero execute permissions. All work is delegated to specialized sub-agents, each with a single responsibility.
+## Source Of Truth
 
----
+The generated platform-specific files are rendered from:
 
-## The 7 Stages
+- `internal/packaging/templates/opencode/SKILL.md`
+- `internal/packaging/templates/opencode/agents/drup-*.md`
+- Equivalent templates under `internal/packaging/templates/claude/` and `codex/`
+- The Codex entry prompt: `~/.codex/prompts/drup.md`
+
+The installed OpenCode agents are generated copies under `~/.config/opencode/agents/`.
+Changes to generated copies are not the source of truth; update the repository templates
+and run `drup sync` when implementation changes are intended.
+
+## Current Effective Workflow
+
+### Stage -1: Plan And User Agreement
+
+Before mutation, the orchestrator asks for:
+
+- Commit strategy: `per-fix`, `single`, or `none`.
+- Scope: Rector, compatibility declarations, contrib, custom code, themes, and/or core.
+- Handling of existing uncommitted changes.
+
+The orchestrator then dispatches all work to sub-agents. It must not run Bash or MCP tools
+itself.
+
+### Stage 0: Safety Backup And Session Binding
+
+`drup-preflight` must first call `session_open` and then `test_backup_create`.
+
+The backup currently contains:
+
+- A Drush database dump compressed as `database.sql.gz`.
+- A filtered project filesystem archive as `files.tar.gz`.
+- A manifest with checksums, the database command, exclusions, and the backup ID.
+
+The backup is stored below `.drup/backups/`. The backup ID and path must remain in the run
+state and in the final report.
+
+Important: the current stage order creates this backup before the normal preflight git
+cleanliness check. A clean-tree gate is still required before any code or dependency
+mutation, but the prompts do not currently enforce the user's preferred order of
+"git clean, then environment check, then backup".
 
 ### Stage 1: Preflight
 
-**Sub-agent**: `drup-preflight`  
-**Responsibility**: Verify environment and install dependencies
+`drup-preflight`:
 
-**What happens**:
-- Detects environment: ddev, lando, docker4drupal, or direct
-  - If **unsupported** → **TERMINAL STATE** — pipeline stops, reports to user, never proceeds
-- Verifies clean git tree (no uncommitted changes)
-- Checks composer and drush availability
-- Detects current Drupal version
-- Installs missing dev dependencies:
-  - `upgrade_status` module (required for scanning)
-  - `drupal-rector` (required for automatic fixes)
-  - `phpstan-drupal` (optional, for static analysis)
+- Detects `ddev`, `lando`, `docker4drupal`, or direct execution.
+- Stops for an unsupported project.
+- Reads the current Drupal core version from Composer metadata.
+- Checks git status.
+- Checks Composer and Drush availability.
+- Installs `drupal/upgrade_status`, `palantirnet/drupal-rector`, and optionally `mglaman/phpstan-drupal`.
+- Enables `upgrade_status` with Drush.
 
-**Tools used**:
-- `detect_env` — identify the environment (ddev/lando/docker/direct)
-- `composer_require` — safely require `upgrade_status`, `drupal-rector`, etc.
-- `drush_exec` — enable modules and verify installation
+It does not install Drush itself. A missing Drush installation is reported as a blocker.
 
-**Output to user**:
-- Environment type (ddev, lando, etc.)
-- Current Drupal version
-- Dependency install summary
-- Any fatal issues (unsupported environment, no git, etc.)
+### Stage 2: Independent Readiness Validation
 
-**Validation**: Stage 2 (`drup-validator`) confirms all dependencies actually took effect before proceeding.
+`drup-validator` verifies the preflight result. It is the only agent allowed to run
+`scan`, `validate`, or `upgrade_scan`.
 
----
+The validator separates environment failures from readiness findings such as core Composer
+constraints and custom `core_version_requirement` declarations. Readiness findings are
+resolved by later stages and must not block environment validation prematurely.
 
-### Stage 2: Dep Check
+### Stage 3: Rector On Existing Custom Code
 
-**Sub-agent**: `drup-validator`  
-**Responsibility**: Confirm Stage 1 is complete and valid
+`drup-rector` runs only on custom modules and themes. It must not process contributed code.
+The agent reports changed paths and never validates its own changes.
 
-**What happens**:
-- Re-scans environment to verify Stage 1's dependency installations took effect
-- Confirms `upgrade_status` is installed and enabled
-- Confirms `drupal-rector` is available
-- Checks that git is in a clean state (no uncommitted changes)
+The orchestrator then asks `drup-validator` to check whether Rector still has fixable work.
+The gate is not blindly `total_errors == 0`, because Upgrade Status also reports advisory
+items that require human judgement and cannot be removed by Rector.
 
-**Tools used**:
-- `detect_env` — re-verify environment
-- `upgrade_scan` — confirm dependencies are ready
-- `scan` — initial deprecation analysis (preview for validation)
+If the result is acceptable, the Rector changes may be committed. Failed targets are retried
+with validator evidence and eventually placed on the pending-human list.
 
-**Why separate from Stage 1**: `drup-preflight` installs dependencies; it never confirms its own work. Only `drup-validator` can confirm, preserving the "no self-approval" guarantee.
+### Stage 3.5: Custom Compatibility Declarations
 
-**Output to user**:
-- Confirmation that dependencies are ready
-- Initial error count (preview of what's to come)
+`custom_compat_fix` widens `core_version_requirement` in custom modules, themes, and profiles.
+It never edits contributed extensions. A dry run is expected before the real rewrite.
 
----
+Extensions with no existing declaration are reported for human review because inserting a
+new declaration requires a file-specific judgement.
 
-### Stage 3: Rector (0 tokens)
+### Stage 4: Contributed Module Resolution
 
-**Sub-agent**: `drup-rector`  
-**Responsibility**: Run drupal-rector to auto-fix standard deprecations
+For each affected contributed module, `drup-contrib`:
 
-**What happens**:
-- Runs `drupal-rector` with Drupal 11 rule sets over custom modules and themes
-- Automatically fixes ~80% of standard deprecations (loops, functions, hooks, etc.)
-- Commits changes with message: "style: apply drupal-rector auto-fixes for D11 compatibility"
+1. Checks whether a compatible release exists.
+2. Selects an exact upgrade path when one exists.
+3. Searches Drupal.org issues for a patch when no compatible release exists.
+4. Applies an upstream patch and registers it in Composer when appropriate.
+5. Generates a local Rector patch as a last resort and then applies it.
+6. Reconciles existing patches instead of blindly reapplying them.
 
-**Tools used**:
-- `autofix` — run drupal-rector on custom code
+`drup-validator` validates the module after the change. Only then may the contrib agent
+commit. A failed module is retried with the validator's evidence and then added to the
+pending-human list.
 
-**Why 0 tokens**: `drupal-rector` is deterministic — it applies pre-defined PHP transformation rules. No AI decision-making needed.
+### Stage 5: Custom And Theme Manual Fixes
 
-**Validation**: `drup-validator` confirms `total_errors == 0` (or identifies remaining errors by scope) before `drup-rector` commits.
+The orchestrator routes each remaining file to:
 
-**Output to user**:
-- Number of files processed
-- Number of deprecations auto-fixed
-- Remaining errors (if any) routed back to Stage 4 or 5
+- `drup-custom` for custom PHP/module files.
+- `drup-theme` for Twig and theme files.
 
----
+Each agent applies the smallest fix, leaves validation to `drup-validator`, and commits only
+after the exact file scope passes. Failed files are retried with concrete validator output.
 
-### Stage 4: Contrib Loop
+### Stage 6: Core Upgrade
 
-**Sub-agent**: `drup-contrib`  
-**Responsibility**: Update contrib modules to D11-compatible versions
+`core_upgrade_check` previews the next major version. `core_upgrade_apply` then updates the
+Composer constraints, resolves dependencies, runs `drush updb`, and verifies the result.
+The real core mutation requires a clean tree, an existing backup, and an explicit user gate.
 
-**Per module** (for each contrib module with errors):
+The current prompt has a single target-version operation. It does not yet orchestrate a
+complete `9 -> 10 -> 11` or `10 -> 11` loop with a full validation boundary for every major.
 
-1. **Check for a D11-compatible release**
-   - Tool: `contrib_check` → fetch Drupal.org release history
-   - If **D11 release exists** → `composer require module:^11` → commit
-   - If **no release** → proceed to patch search
+### Stage 7: Final Validation And Report
 
-2. **Search for patches** (if no release available)
-   - Tool: `issue_patches` → search Drupal.org issues for patches
-   - Tool: `patch_reconcile` → analysis-only: is the patch still needed? is it obsolete?
-   - Tool: `apply_patch` → download and apply the best patch
-   - If **patch applies cleanly** → commit with patch reference
-   - If **no patches available** → create a local patch via `create_patch`
+The validator performs the global validation and generates the Markdown report from the
+accumulated stage evidence. The report is expected to include:
 
-3. **Check for core-version bump** (if target Drupal major version has changed)
-   - Tool: `core_upgrade_check` → preview what `composer.json` will change
-   - Tool: `core_upgrade_apply` → requires clean git; creates checkpoint, mutates `composer.json`, commits
-   - (Dry-run mode available for preview-only)
+- Modules checked and their before/after versions.
+- Contributed releases, patches applied, patches created, and patches removed.
+- Custom modules and themes changed.
+- Validation results and remaining findings.
+- A complete pending-human list with attempted actions and evidence.
 
-4. **Validation gate**: `drup-validator` confirms `total_errors == 0` for this module before committing.
+The user receives a short summary and the path to the full Markdown report.
 
-**Validation**:
-- Each module is validated before commit
-- If errors remain, module is added to the pending list for Stage 5 (custom code refactor)
+### Stage 9: Backup Finalization
 
-**Output to user**:
-- Per-module summary: upgraded, patched, or pending
-- Commit hashes for each update
-- Any modules requiring manual review
+The backup is retained after a successful run. On failure, the orchestrator reports the
+backup and asks the user whether to restore it. Restoration is destructive and must use
+explicit confirmation. Backup deletion is always a separate manual operation.
 
----
+## Agent Responsibilities And Safety Gates
 
-### Stage 5: Custom/Theme Loop
+| Agent | Can mutate | Main responsibility | Independent validator required |
+|---|---:|---|---:|
+| `drup-preflight` | Yes | Session, environment, dependencies, backup | Yes |
+| `drup-rector` | Yes | Rector on custom modules/themes | Yes |
+| `drup-contrib` | Yes | Releases, patches, contrib compatibility, core operation | Yes |
+| `drup-custom` | Yes | Custom PHP fixes | Yes |
+| `drup-theme` | Yes | Twig/theme fixes | Yes |
+| `drup-validator` | No | Scan, classify, validate, report | N/A |
 
-**Sub-agents**: `drup-custom` (custom modules), `drup-theme` (theme files)  
-**Responsibility**: Refactor custom code and themes to D11 compatibility
+The non-negotiable gates are:
 
-**Per file** (for each custom PHP file or twig template with deprecations):
+- No mutating tool before the session and backup guards pass.
+- No fixer agent validates its own work.
+- No commit before the corresponding validator gate passes.
+- Validator failures are retried with evidence, not with blind repetition.
+- After the retry budget, unresolved work is explicitly reported for humans.
 
-1. **Analyze the error**: Read the deprecation message and context
-2. **Apply minimal fix**: Rewrite the code to use the modern API
-3. **Validation gate**: `drup-validator` confirms the fix is valid (zero new errors introduced)
-4. **Commit with message**: "fix: refactor {file} for D11 compatibility"
+## Target Workflow (Normative)
 
-**Retry and escalation**:
-- If validation fails (errors persist):
-  - **Retry 1** (haiku with feedback from validator) → attempt fix again
-  - **Retry 2** (escalate to sonnet model with full context) → attempt fix again
-  - **After 2 retries**: mark as pending for human review
+The following is the complete workflow that should be implemented and treated as the desired
+operational sequence.
 
-**Tools used**:
-- `validate` — per-file scope validation
-- `scan` — categorize remaining errors
+### 0. Preconditions And Git Safety
 
-**Why two sub-agents**: Isolates context per file type (PHP vs Twig) to avoid saturating the orchestrator's window.
+1. Resolve the absolute canonical project path.
+2. Confirm the project is a git repository.
+3. Require a clean working tree before mutation.
+4. Record the current branch and commit.
+5. Create or check out a dedicated branch such as `upgrade/drupal-<target-major>`.
+6. Record the branch in the run state and report it to the user.
 
-**Output to user**:
-- Per-file summary: fixed, pending, escalated
-- Files requiring human review (with context for the developer)
+If the tree is dirty, stop and ask the user to commit, stash, or explicitly change the policy.
+Do not mix existing work with upgrade commits.
 
----
+### 1. Environment And Version Preflight
 
-### Stage 6: Final Validation
+1. Detect `ddev`, `docker4drupal`, `lando`, or direct execution.
+2. Verify Composer, PHP, Drush, database access, and the Drupal web root.
+3. Verify the current Drupal and PHP versions against the compatibility matrix.
+4. Determine the immediate next Drupal major. Never skip a major version.
+5. Check whether an upgrade is actually needed.
+6. Create the initial database/files backup after the clean-tree and environment gates.
 
-**Sub-agent**: `drup-validator`  
-**Responsibility**: Global error check and re-routing
+Drush must either be available from the project or be installed explicitly with Composer;
+the workflow must not silently proceed with only a reachability check.
 
-**What happens**:
-- Runs a global `scan` to get the current error state
-- If `total_errors == 0` → proceed to Stage 7 (Report)
-- If `total_errors > 0` → classify remaining errors and re-route:
-  - Module-level errors → back to Stage 4 (Contrib Loop)
-  - File-level errors → back to Stage 5 (Custom/Theme Loop)
-  - Otherwise → pending human list
+### 2. Install Upgrade Tooling
 
-**Tools used**:
-- `scan` — global scan of the project
-- `validate` — scoped validation per module/file
+1. Install Drush if missing.
+2. Install and enable `upgrade_status`.
+3. Install Rector for Drupal and any required analysis dependencies.
+4. Run the dependency validator.
 
-**Why final validation**: Ensures the upgrade is actually complete before generating the report.
+All Composer changes must be recorded so the final report can distinguish temporary tools
+from project runtime dependencies.
 
-**Output to user**:
-- Current error count
-- What needs to be addressed next (if anything)
+### 3. Baseline Upgrade Status
 
----
+Run `upgrade_status` through Drush and save a structured baseline containing:
 
-### Stage 7: Report
-
-**Sub-agent**: `drup-validator`  
-**Responsibility**: Generate final upgrade report
-
-**What happens**:
-- Generates `UPGRADE-REPORT.md` in the project root with:
-  - **Summary**: Total errors resolved, remaining, pending
-  - **Per-module breakdown**: status (upgraded/patched/pending), commit hashes, issues
-  - **Per-file breakdown** (custom code): status (fixed/pending/escalated), remaining errors
-  - **Pending list**: Files/modules requiring human review with full context
-  - **Next steps**: What the developer should do to complete the upgrade
-
-- Also generates JSON report for machine parsing (CI/CD integration)
-
-**Tools used**:
-- `generate_report` — generate Markdown + JSON reports
-
-**Output to user**:
-- UPGRADE-REPORT.md (displayed in Claude Code)
-- Confirmation of completion or pending items
-
----
-
-## Validation Gates (Strict Rules)
-
-The orchestrator enforces strict validation rules to prevent errors from propagating:
-
-| Rule | What it does |
-|------|-----------|
-| **External Validation Only** | Only `drup-validator` calls `scan`, `validate`, `upgrade_scan`. No other sub-agent validates its own work |
-| **No Self-Approval** | A sub-agent saying "done" is meaningless. Only `drup-validator` report counts |
-| **Validator Owns All Gates** | Before ANY commit, `drup-validator` must confirm zero errors for that exact scope |
-| **Retry with Feedback** | If a fix fails validation, the sub-agent receives the validator's output as feedback before retrying |
-| **Max 2 Retries** | Per scope on haiku model. Then escalate model (haiku → sonnet). Then pending human list |
-| **Phase Gates** | No stage advances until ALL items in that stage pass validation |
-| **Commit Only Post-Gate** | Each commit ONLY happens after `drup-validator` reports 0 errors |
-
----
-
-## Error Classification
-
-When errors persist after Stages 3–5, they are classified:
-
-| Classification | How it's handled |
-|---|---|
-| **Module-level** (contrib, core compatibility) | Re-route to Stage 4 (Contrib Loop) — look for newer release, patch, or local patch |
-| **File-level** (custom code, theme) | Re-route to Stage 5 (Custom/Theme Loop) — refactor with retry and escalation |
-| **Unresolvable** (after 2 retries) | Add to pending human list in UPGRADE-REPORT.md with full context |
-
----
-
-## Git Workflow
-
-Each stage commits atomically:
-
-- **Stage 3**: "style: apply drupal-rector auto-fixes for D11 compatibility"
-- **Stage 4** (per module): "feat: upgrade {module} to D11-compatible {version}" (or "fix: apply {issue-id} patch")
-- **Stage 5** (per file): "fix: refactor {file} for D11 compatibility"
-- **Stage 4** (core): "feat(core): upgrade to Drupal {major}.{minor} (composer.json update)"
-
-**Rollback**: Each commit is a clean checkpoint. If anything fails, revert individual commits from the history.
-
----
-
-## Configuration
-
-Optional config at `~/.config/drup/config.yaml`:
-
-```yaml
-agents:
-  claude-code:
-    skills:
-      drup:
-        model: claude-sonnet-4  # Orchestrator model
-    agents:
-      drup-rector:
-        model: claude-haiku-3-5  # Rector is cheap; haiku is fine
-      drup-contrib:
-        model: claude-haiku-3-5  # Contrib updates are mostly deterministic
-      drup-custom:
-        model: claude-sonnet-4   # Custom code refactoring is hard; use sonnet
-      drup-validator:
-        model: claude-haiku-3-5  # Validator just scans and reports; haiku is fine
-```
-
-If not configured, `drup` uses sensible defaults (cheap for mechanical work, strong for reasoning).
-
----
-
-## Example Run
-
-```
-User: /drup /path/to/project
-
-[Stage 1: Preflight]
-✓ Environment: ddev
-✓ Clean git
-✓ Drupal 10.0.0 detected
-✓ Installing upgrade_status...
-✓ Installing drupal-rector...
-
-[Stage 2: Dep Check]
-✓ Dependencies confirmed
-ℹ 42 total errors found
-
-[Stage 3: Rector]
-✓ Auto-fixed 34 deprecations
-ℹ 8 errors remain (manual fixes needed)
-
-[Stage 4: Contrib Loop]
-  webform:
-    ✓ D11 release available → upgraded to 6.2
-  entity_reference_revisions:
-    ✓ RTBC patch found → applied
-  mymodule (custom, but in contrib folder):
-    ℹ No D11 release, no patch. Routed to Stage 5.
-
-[Stage 5: Custom/Theme Loop]
-  modules/custom/mymodule/mymodule.module:
-    ✓ Fixed deprecated hook_form_alter usage
-  themes/custom/mytheme/mytheme.theme:
-    ✓ Fixed deprecated theme_render_element() call
-  modules/custom/mymodule/mymodule.install:
-    ℹ Requires manual review (complex schema upgrade)
-
-[Stage 6: Final Validation]
-ℹ 1 error remains → pending human review
-
-[Stage 7: Report]
-✓ UPGRADE-REPORT.md generated
-📄 Open it to see the full summary and next steps
-```
-
----
-
-## Specs and Architecture
-
-For full technical requirements, see:
-- `openspec/changes/archive/2026-07-22-drupal-upgrade-orchestrator/specs/` — all formal specifications
-- `openspec/changes/archive/2026-07-22-drupal-upgrade-orchestrator/design.md` — architectural decisions
-
----
-
-## Troubleshooting
-
-| Issue | Cause | Solution |
-|-------|-------|----------|
-| "unsupported environment" | ddev/lando/docker/direct not found | Install one of the supported environments or use `--force` |
-| "dirty git tree" | Uncommitted changes | Commit or stash your changes |
-| "upgrade_status not found" | Preflight install failed | Check composer/drush output, run `drup preflight` again |
-| Errors won't go away | Validator is rightfully blocking | Review the UPGRADE-REPORT.md pending list and manually fix those items |
-| Haiku model keeps failing | The custom code is too complex for cheap models | Configure `drup-custom` to use `claude-sonnet-4` |
+- Current core version.
+- PHP version.
+- Enabled custom modules and themes.
+- Contributed modules and themes with exact installed versions.
+- Current findings by category.
+- Existing Composer patches.
+
+This baseline is required for an accurate before/after report.
+
+### 4. Custom Code And Theme Compatibility
+
+1. Confirm custom module/theme paths exist before invoking Rector.
+2. Run Rector only on those existing paths.
+3. Re-run Upgrade Status.
+4. Apply remaining custom and theme changes manually, one scoped target at a time.
+5. Validate after each target or bounded group.
+6. Export configuration when the code/config state is coherent.
+7. Commit the validated custom/theme phase.
+8. Create a backup before entering the next mutation phase.
+
+### 5. Contrib Updates In Three Ordered Phases
+
+Process only the immediate next core major and keep a ledger of every package.
+
+#### Phase A: Patch-Level Compatibility
+
+Update packages requiring only a patch release. Then:
+
+1. Back up the database/files.
+2. Apply Composer updates.
+3. Run database updates with Drush.
+4. Run Upgrade Status and smoke checks.
+5. Export configuration.
+6. Commit the phase.
+
+#### Phase B: Minor-Level Compatibility
+
+Repeat the same backup, update, database-update, validation, configuration-export, and commit
+sequence for packages requiring a minor release.
+
+#### Phase C: Major-Level Compatibility
+
+Update major-version packages one at a time. For every package:
+
+1. Create a backup.
+2. Update exactly one package and resolve Composer dependencies.
+3. Run database updates.
+4. Run Upgrade Status and application smoke checks.
+5. Export configuration.
+6. Commit or stop with a package-specific rollback point.
+
+Never batch unrelated major-version package updates. If a package has no compatible release,
+use an upstream patch, a project patch, or the pending-human list.
+
+### 6. Core Major Upgrade Loop
+
+For each immediate core major until the requested target is reached:
+
+1. Confirm the next major and PHP requirements.
+2. Create a backup.
+3. Preview the Composer change.
+4. Ask for confirmation before the real core mutation.
+5. Upgrade core and resolve dependencies.
+6. Run database updates.
+7. Run cache rebuild and status checks.
+8. Run Upgrade Status again.
+9. Export configuration.
+10. Commit the validated core phase.
+
+For example, a project moving from major `N` to `N+2` follows
+`N -> complete N-to-N+1 cycle -> N+1 -> complete N+1-to-N+2 cycle -> N+2`.
+The workflow must never jump directly across a major version. The concrete values may be
+Drupal 9/10/11 today or Drupal 12/13 in the future.
+
+### 7. Cleanup And Final Evidence
+
+1. Run final global Upgrade Status validation.
+2. Run the project's available tests and smoke checks.
+3. Remove temporary `upgrade_status` and Rector dependencies only if the user/project policy
+   says they are temporary.
+4. Uninstall temporary modules before removing their Composer packages.
+5. Export configuration if cleanup changes active configuration.
+6. Commit cleanup separately.
+7. Generate the Markdown report in the project root.
+8. Retain the final backup and report its ID and path.
+9. Show the user a concise summary and point them to the complete report.
+
+## Implementation Gaps
+
+These items are not fully represented by the current prompts/tools and must be resolved before
+claiming that the target workflow is implemented:
+
+| Gap | Current state | Required behavior |
+|---|---|---|
+| Git order | Backup stage runs before the preflight clean-tree check | Check git cleanliness before any backup/mutation, then create the branch |
+| Upgrade branch | `upgrade/drupal-<target-major>` is only documented; no orchestrator stage/tool creates it | Add an explicit branch creation/check-out step and record the original branch |
+| Drush installation | Drush is checked but not installed by preflight | Install or clearly block with an actionable instruction |
+| Upgrade-needed decision | Core next-version preview exists, but no explicit no-op gate is documented | Stop cleanly when the project is already at the target or no supported path exists |
+| Backup semantics | `test_backup_create` does database plus selected files | Keep it, but document exclusions and require an external production backup policy when needed |
+| Baseline inventory | Validator scans findings but does not define a complete before-state inventory | Persist exact package/theme versions, patches, config state, and findings |
+| Contrib ordering | Modules are processed in a generic per-module loop | Add patch, minor, and one-at-a-time major phases |
+| Per-phase safety | No explicit backup, `updb`, smoke test, config export, and commit boundary between contrib phases | Make each phase a transaction-like checkpoint |
+| Core major loop | Core stage accepts one target version | Iterate through immediate major versions and complete the full cycle at each one |
+| Configuration export | No orchestrator stage explicitly runs `config:export` | Export and commit configuration after each validated phase |
+| Cleanup scope | Implemented cleanup removes `upgrade_status`; Rector cleanup is not guaranteed by the current app cleanup path | Define whether Rector is temporary and remove its exact Composer packages/config when appropriate |
+| Final runtime checks | Upgrade Status is the primary gate | Add project tests, cache rebuild, `drush status`, and smoke checks where available |
+| Report source | Report generation consumes accumulated agent evidence | Extend evidence to include exact versions, patches added/removed, config exports, commits, backups, and skipped work |
+
+## Failure And Recovery Rules
+
+- A failed environment or backup stage stops the workflow.
+- A failed validation never authorizes a commit.
+- A Composer conflict is resolved before retrying; do not blindly repeat it.
+- A patch conflict is rolled back or isolated before trying another patch.
+- A failed phase leaves its backup and checkpoint available.
+- Restoration is destructive and requires explicit user confirmation.
+- A retained backup is never deleted automatically.
+- Unresolved work goes into the report with the exact target, error, attempts, and next action.
+
+## Final Checklist
+
+- [ ] Git was clean before mutation.
+- [ ] Original branch and upgrade branch were recorded.
+- [ ] Environment and PHP/core compatibility were verified.
+- [ ] The immediate next major was selected without skipping a major.
+- [ ] Drush, Upgrade Status, and Rector availability were verified.
+- [ ] A baseline scan and package inventory were saved.
+- [ ] Custom modules and themes were checked for existence before Rector.
+- [ ] Custom/theme changes passed independent validation.
+- [ ] Contrib updates ran in patch, minor, then one-at-a-time major phases.
+- [ ] Each mutation phase had a backup, database update, validation, config export, and commit.
+- [ ] Core was upgraded one major at a time.
+- [ ] Final validation, tests, cache rebuild, and status checks passed or were reported.
+- [ ] Temporary tooling cleanup was explicit and validated.
+- [ ] The root Markdown report contains exact versions, patches, commits, backups, and pending work.
+- [ ] The user received the summary and report path.

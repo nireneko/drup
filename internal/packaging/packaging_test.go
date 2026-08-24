@@ -171,8 +171,8 @@ func TestSKILLMD_ContainsDrupCLIPipeline(t *testing.T) {
 			}
 			content := files["SKILL.md"]
 
-			// Must contain the orchestrated pipeline and backup safety gate.
-			required := []string{"Stage 0: SAFETY BACKUP", "Stage 1: PREFLIGHT", "Stage 6: CORE UPGRADE", "Stage 9: BACKUP FINALIZATION", "test-backup-create"}
+			// Must contain the normative workflow's ordering and safety gates.
+			required := []string{"0. Agreement And Git Safety", "1. Environment, Tools, Baseline, And Backup", "3. Contrib In Ordered Checkpoints", "4. Core Major Loop", "session_open", "test-backup-create", "upgrade/drupal-<target-major>", "Never skip a Drupal major"}
 			for _, r := range required {
 				if !strings.Contains(content, r) {
 					t.Errorf("SKILL.md for %s missing required CLI stage %q", platform, r)
@@ -186,7 +186,7 @@ func TestSKILLMD_CrossPlatformIdentical(t *testing.T) {
 	for _, platform := range Platforms() {
 		files, _ := Render(platform, "/usr/local/bin/drup", nil)
 		content := files["SKILL.md"]
-		for _, required := range []string{"Stage 0: SAFETY BACKUP", "test-backup-create", "test-backup-restore", "manual `test-backup-delete`", "report its `backup_id` and path"} {
+		for _, required := range []string{"Required Sequence", "test-backup-create", "Never delete or restore a backup automatically", "patch-level updates", "one package at a time", "never jump from N to N+2"} {
 			if !strings.Contains(content, required) {
 				t.Errorf("%s SKILL.md missing shared lifecycle rule %q", platform, required)
 			}
@@ -583,31 +583,12 @@ func TestRender_RosterReflectsOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
-	skill, ok := files["SKILL.md"]
+	agent, ok := files["agents/drup-rector.md"]
 	if !ok {
-		t.Fatal("missing SKILL.md")
+		t.Fatal("missing agents/drup-rector.md")
 	}
-	// The overridden agent's own roster row must reflect the configured
-	// value, not the built-in literal — other, unconfigured agent rows are
-	// unaffected and keep showing their own built-in default.
-	rosterLine := ""
-	for _, line := range strings.Split(skill, "\n") {
-		if strings.Contains(line, "| drup-rector |") {
-			rosterLine = line
-			break
-		}
-	}
-	if rosterLine == "" {
-		t.Fatal("missing drup-rector roster row")
-	}
-	if strings.Contains(rosterLine, "claude-haiku-4-5-20251001") {
-		t.Errorf("drup-rector roster row still shows the built-in literal: %q", rosterLine)
-	}
-	if !strings.Contains(rosterLine, "claude-opus-4") {
-		t.Errorf("drup-rector roster row does not reflect the override: %q", rosterLine)
-	}
-	if !strings.Contains(rosterLine, "2 retries") {
-		t.Errorf("drup-rector roster row lost its retry annotation: %q", rosterLine)
+	if !strings.Contains(agent, "model: claude-opus-4") {
+		t.Errorf("drup-rector agent does not reflect the override: %q", agent)
 	}
 }
 

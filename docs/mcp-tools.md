@@ -48,8 +48,8 @@ Transient errors (timeout, connection refused, broken pipe) are retried up to 2 
 | Project-wide deprecation scan, with all modules | `upgrade_scan` (atomic install→enable→analyze) | `scan` (assumes upgrade_status already installed) |
 | Re-scan after a fix to count remaining errors | `scan` or `validate` | `upgrade_scan` (skips fresh install) |
 | Validate just one module or one file | `validate` (with `module` or `file`) | `scan` (no filter) |
-| "Will this contrib work on Drupal 11?" | `contrib_check` | `contrib_upgrade_path` (different question) |
-| "Which exact version should I **install** for D11?" | `contrib_upgrade_path` | `contrib_check` (only reports has-d11-branch) |
+| "Will this contrib work on the target Drupal major?" | `contrib_check` | `contrib_upgrade_path` (different question) |
+| "Which exact version should I **install** for the target major?" | `contrib_upgrade_path` | `contrib_check` (only reports compatibility branch availability) |
 | Find a patch for an issue or module | `issue_patches` | curl + grep d.o HTML |
 | Download and apply a .patch + register in composer.json | `apply_patch` | curl + git apply manually |
 | Reverse a failed patch cleanly | `patch_rollback` | git revert + manual composer edit |
@@ -66,27 +66,31 @@ Transient errors (timeout, connection refused, broken pipe) are retried up to 2 
 
 ## 3. Standard Pipelines / Sequencing
 
-### 3.1 First-time upgrade of a project
+### 3.1 Target first-time upgrade pipeline
+
+The authoritative process is documented in [`workflow.md`](workflow.md). The compact
+tool sequence below preserves its ordering; it is intentionally not a shortcut around the
+phase gates.
 
 ```
-1. test_backup_create           (mandatory before any mutation)
-2. detect_env                    (set prefix, catch unsupported env early)
-3. drupal_version_matrix         (does the PHP version even meet min?)
-4. core_upgrade_check            (read-only next major preview)
-5. core_upgrade_apply dry_run    (preview the composer.json diff)
-[user gate — confirm]
-6. core_upgrade_apply            (real; gets rollback_checkpoint)
-7. upgrade_scan                  (install/enable upgrade_status, full analyze)
-8. contrib_upgrade_path per module → composer_require → apply_patch / create_patch → patch_reconcile
-9. autofix                       (custom + themes only)
-10. validate                     (zero-errors gate)
-11. composer update              (resolve any new conflicts)
-12. drush updb
-13. validate                     (final scope-global)
-14. generate_report
-15. custom_compat_fix project_path=... (declare D11 in custom modules/themes)
-16. cleanup validate_passed=true (uninstall upgrade_status, revert temp patches)
-16. test_backup cleanup (manual only — never automated)
+1. git clean check, record current branch/commit, create upgrade branch
+2. detect_env, verify PHP/core/Composer/Drush/database access
+3. decide whether an upgrade is needed and select the immediate next major
+4. test_backup_create (database + selected filesystem snapshot)
+5. install Drush if missing, then install/enable upgrade_status and Rector tooling
+6. upgrade_scan (baseline findings and inventory)
+7. custom_compat_fix dry_run → apply → validate → config export → commit
+8. autofix existing custom modules/themes only → validate → manual fixes → commit
+9. contrib patch-level phase: backup → update → drush updb → validate/smoke → config export → commit
+10. contrib minor-level phase: same checkpoint sequence
+11. contrib major-level phase: one package at a time with the same checkpoint sequence
+12. core_upgrade_check for the immediate next major
+13. core_upgrade_apply dry_run → user gate → apply → drush updb → validate/smoke → config export → commit
+14. repeat steps 9–13 for every remaining major; never skip a major
+15. final upgrade_status validation, tests, cache rebuild, and status checks
+16. remove temporary tooling when explicitly configured → validate → config export → commit
+17. generate_report with exact versions, patches, commits, backups, and pending work
+18. retain the backup; restore only after explicit user confirmation; never delete automatically
 ```
 
 ### 3.2 Patch workflow per contrib module
@@ -197,7 +201,7 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 
 ### 5.7 `drupal_version_matrix`
 
-- **Purpose**: Static compatibility table D9/D10/D11 → min PHP, recommended PHP, supported-until, next major.
+- **Purpose**: Static compatibility table for the supported Drupal majors → min PHP, recommended PHP, supported-until, next major. The current table must evolve as new Drupal majors are released.
 - **Returns**: `{ drupal_version, php_requirements: {minimum, recommended}, supported_until, upgrade_path: {next_major, migration_guide_url}, known_issues }`
 - **Side-effects**: none (no network).
 - **NOTE**: PHP comparison is lexicographic (`>=`). Works for `8.1, 8.3, 8.4` but NOT for `7.x` vs `8.x`. Treat as advisory, not strict semver.
