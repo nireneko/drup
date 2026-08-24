@@ -1408,6 +1408,38 @@ func TestCliRun_DirectEnvironment(t *testing.T) {
 	}
 }
 
+// TestCliRun_BoundByDefaultExecTimeout guards D2 for the shared cliRun exec
+// path (scan, autofix, validate, create_patch, and every other handler that
+// goes through it): a hanging subprocess must not block cliRun past
+// defaultExecTimeout.
+func TestCliRun_BoundByDefaultExecTimeout(t *testing.T) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origTimeout := defaultExecTimeout
+	defaultExecTimeout = 50 * time.Millisecond
+	defer func() { defaultExecTimeout = origTimeout }()
+
+	origRunWithEnv := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(_ string, _ []string, cmd string, args ...string) (string, string, int, error) {
+		time.Sleep(2 * time.Second) // far past the 50ms deadline
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRunWithEnv }()
+
+	start := time.Now()
+	_, _, _, err := cliRun("/tmp/test-project", "drush", "status")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a timeout error from cliRun, got nil")
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("cliRun blocked for %v past its 50ms exec deadline, want it to return promptly", elapsed)
+	}
+}
+
 // Task 2.9: Smart no-op bypass — both empty dirs skip scan.
 func TestRunScan_EmptyCustomDirs_SkipBypass(t *testing.T) {
 	dir := t.TempDir()
@@ -1761,6 +1793,48 @@ func TestRunInit(t *testing.T) {
 	}
 }
 
+// TestInstallAgents_LockedRendersLockedArgIntoMcpConfig is the regression
+// guard for specs/installer "User opts into locked mode": drup install/sync
+// must be able to select locked mode so the installed mcp.json launches
+// `drup mcp --locked`. Without the flag, args stay byte-identical to the
+// pre-existing default-off behavior (no "--locked" present).
+func TestInstallAgents_LockedRendersLockedArgIntoMcpConfig(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		locked     bool
+		wantLocked bool
+	}{
+		{"locked selected", true, true},
+		{"locked not selected (default off)", false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.MkdirAll(home, 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			agents := []installer.AgentAdapter{
+				&installer.ClaudeAdapter{HomeDir: home},
+			}
+
+			succeeded, failures := installAgents(agents, filepath.Join(home, "bin", "drup"), "install", tt.locked, nil)
+			if len(succeeded) != 1 {
+				t.Fatalf("succeeded = %v, failures = %v, want 1 success", succeeded, failures)
+			}
+
+			data, err := os.ReadFile(filepath.Join(home, ".claude.json"))
+			if err != nil {
+				t.Fatalf("read installed .claude.json: %v", err)
+			}
+
+			hasLocked := strings.Contains(string(data), "--locked")
+			if hasLocked != tt.wantLocked {
+				t.Errorf("installed mcp config --locked presence = %v, want %v\ncontent: %s", hasLocked, tt.wantLocked, data)
+			}
+		})
+	}
+}
+
 func TestInstallAgents_IsolatesFailingAgent(t *testing.T) {
 	home := t.TempDir()
 	// A corrupt Claude config must not stop the remaining agents.
@@ -1773,7 +1847,7 @@ func TestInstallAgents_IsolatesFailingAgent(t *testing.T) {
 		&installer.CodexAdapter{HomeDir: home},
 	}
 
-	succeeded, failures := installAgents(agents, filepath.Join(home, "bin", "drup"), "install", nil)
+	succeeded, failures := installAgents(agents, filepath.Join(home, "bin", "drup"), "install", false, nil)
 
 	if len(succeeded) != 1 || succeeded[0] != "codex" {
 		t.Errorf("succeeded = %v, want [codex]", succeeded)
@@ -1801,7 +1875,7 @@ func TestInstallAgents_AppliesConfiguredModelAssignments(t *testing.T) {
 		},
 	}
 
-	succeeded, failures := installAgents(agents, filepath.Join(home, "bin", "drup"), "install", assignments)
+	succeeded, failures := installAgents(agents, filepath.Join(home, "bin", "drup"), "install", false, assignments)
 	if len(succeeded) != 1 {
 		t.Fatalf("succeeded = %v, failures = %v, want 1 success", succeeded, failures)
 	}
@@ -1843,7 +1917,7 @@ func TestInstallAgents_UnknownAssignmentFailsOnlyThatPlatform(t *testing.T) {
 		"claude": {"drup-not-a-real-agent": {Default: "claude-opus-4"}},
 	}
 
-	succeeded, failures := installAgents(agents, filepath.Join(home, "bin", "drup"), "install", assignments)
+	succeeded, failures := installAgents(agents, filepath.Join(home, "bin", "drup"), "install", false, assignments)
 	if len(succeeded) != 1 || succeeded[0] != "codex" {
 		t.Errorf("succeeded = %v, want [codex]", succeeded)
 	}
@@ -1870,7 +1944,7 @@ func TestInstallAgents_ReportsSyncFileResultsAlongsideFailures(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	succeeded, failures := installAgents(agents, filepath.Join(home, "bin", "drup"), "sync", nil)
+	succeeded, failures := installAgents(agents, filepath.Join(home, "bin", "drup"), "sync", false, nil)
 
 	w.Close()
 	os.Stdout = oldStdout
@@ -1886,6 +1960,127 @@ func TestInstallAgents_ReportsSyncFileResultsAlongsideFailures(t *testing.T) {
 	}
 	if !strings.Contains(output, "Synced drup to codex") || !strings.Contains(output, "new:") {
 		t.Errorf("codex SyncFileResult statuses not reported, got: %s", output)
+	}
+}
+
+// withFakeHome points HOME (and XDG_CONFIG_HOME, so state.Load resolves
+// underneath it too) at a fresh temp dir for the duration of the test, and
+// pre-creates the marker directories installer.DetectAgents checks for
+// claude, opencode, and codex so all three platforms are detected.
+func withFakeHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	for _, dir := range []string{
+		filepath.Join(home, ".claude"),
+		filepath.Join(home, ".config", "opencode"),
+		filepath.Join(home, ".codex"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return home
+}
+
+// captureStdout redirects os.Stdout for the duration of fn and returns
+// everything it wrote.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	fn()
+	w.Close()
+	os.Stdout = old
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	return buf.String()
+}
+
+// --- drup install/sync --locked reachable from the real CLI entry point
+// (specs/installer "User opts into locked mode" + "Locked flag parity
+// across platforms") ---
+
+func TestRunInstall_LockedFlagRendersLockedArgForAllPlatforms(t *testing.T) {
+	home := withFakeHome(t)
+
+	captureStdout(t, func() {
+		if err := RunInstall([]string{"--locked"}); err != nil {
+			t.Fatalf("RunInstall(--locked): %v", err)
+		}
+	})
+
+	for _, installed := range []string{
+		filepath.Join(home, ".claude.json"),
+		filepath.Join(home, ".config", "opencode", "opencode.json"),
+		filepath.Join(home, ".codex", "config.toml"),
+	} {
+		data, err := os.ReadFile(installed)
+		if err != nil {
+			t.Fatalf("read %s: %v", installed, err)
+		}
+		if !strings.Contains(string(data), "--locked") {
+			t.Errorf("%s: expected --locked in rendered MCP config, got:\n%s", installed, data)
+		}
+	}
+}
+
+func TestRunInstall_WithoutLockedFlagOmitsLockedArg(t *testing.T) {
+	home := withFakeHome(t)
+
+	captureStdout(t, func() {
+		if err := RunInstall(nil); err != nil {
+			t.Fatalf("RunInstall(nil): %v", err)
+		}
+	})
+
+	for _, installed := range []string{
+		filepath.Join(home, ".claude.json"),
+		filepath.Join(home, ".config", "opencode", "opencode.json"),
+		filepath.Join(home, ".codex", "config.toml"),
+	} {
+		data, err := os.ReadFile(installed)
+		if err != nil {
+			t.Fatalf("read %s: %v", installed, err)
+		}
+		if strings.Contains(string(data), "--locked") {
+			t.Errorf("%s: --locked present without the flag, want it omitted by default, got:\n%s", installed, data)
+		}
+	}
+}
+
+func TestRunSync_LockedFlagRendersLockedArgForAllPlatforms(t *testing.T) {
+	home := withFakeHome(t)
+
+	captureStdout(t, func() {
+		if err := RunInstall(nil); err != nil {
+			t.Fatalf("RunInstall(nil): %v", err)
+		}
+	})
+
+	captureStdout(t, func() {
+		if err := RunSync([]string{"--locked"}); err != nil {
+			t.Fatalf("RunSync(--locked): %v", err)
+		}
+	})
+
+	for _, installed := range []string{
+		filepath.Join(home, ".claude.json"),
+		filepath.Join(home, ".config", "opencode", "opencode.json"),
+		filepath.Join(home, ".codex", "config.toml"),
+	} {
+		data, err := os.ReadFile(installed)
+		if err != nil {
+			t.Fatalf("read %s: %v", installed, err)
+		}
+		if !strings.Contains(string(data), "--locked") {
+			t.Errorf("%s: expected --locked in resynced MCP config, got:\n%s", installed, data)
+		}
 	}
 }
 
@@ -2070,6 +2265,51 @@ func TestRestoreComposerJSON(t *testing.T) {
 	got, _ := os.ReadFile(composerPath)
 	if !strings.Contains(string(got), "10.5.10") {
 		t.Errorf("composer.json was not restored: %s", got)
+	}
+}
+
+// --- drup mcp --locked (specs/mcp-server Kill Switch and Dry-Run Partition) ---
+
+func TestMcpLockedRequested(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"no args", nil, false},
+		{"unrelated flag", []string{"--verbose"}, false},
+		{"locked flag present", []string{"--locked"}, true},
+		{"locked flag among others", []string{"--verbose", "--locked"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := mcpLockedRequested(tt.args); got != tt.want {
+				t.Errorf("mcpLockedRequested(%v) = %v, want %v", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- drup install/sync --locked (specs/installer "User opts into locked
+// mode" scenario) ---
+
+func TestInstallLockedRequested(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"no args", nil, false},
+		{"unrelated flag", []string{"--verbose"}, false},
+		{"locked flag present", []string{"--locked"}, true},
+		{"locked flag among others", []string{"--verbose", "--locked"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := installLockedRequested(tt.args); got != tt.want {
+				t.Errorf("installLockedRequested(%v) = %v, want %v", tt.args, got, tt.want)
+			}
+		})
 	}
 }
 

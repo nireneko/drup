@@ -67,6 +67,47 @@ func TestRollback_PathTraversalRejected(t *testing.T) {
 	}
 }
 
+func TestRollback_ResolvesSymlinkedProjectPath(t *testing.T) {
+	requireGit(t)
+	real := t.TempDir()
+	initGitRepo(t, real)
+	writeComposerFixture(t, real)
+	runGit(t, real, "add", ".")
+	runGit(t, real, "commit", "-m", "initial")
+
+	applyResult, err := Apply(real, "11.0.9", false, false, false)
+	if err != nil {
+		t.Fatalf("Apply error: %v", err)
+	}
+	if !applyResult.Success {
+		t.Fatalf("Apply did not succeed: %s", applyResult.Report)
+	}
+
+	parent := t.TempDir()
+	link := filepath.Join(parent, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink not supported on this platform: %v", err)
+	}
+
+	if err := Rollback(link, applyResult.RollbackCheckpoint); err != nil {
+		t.Fatalf("Rollback error: %v", err)
+	}
+
+	after, err := os.ReadFile(filepath.Join(real, "composer.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Require map[string]string `json:"require"`
+	}
+	if err := json.Unmarshal(after, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Require["drupal/core-recommended"] != "^10.1" {
+		t.Errorf("after rollback, drupal/core-recommended = %q, want %q (restored)", doc.Require["drupal/core-recommended"], "^10.1")
+	}
+}
+
 func TestRollback_InvalidCheckpoint(t *testing.T) {
 	requireGit(t)
 	dir := t.TempDir()

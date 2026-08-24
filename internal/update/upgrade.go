@@ -150,10 +150,9 @@ func expectedChecksumFor(content, filename string) (string, error) {
 // subdirectory (e.g. "drup_1.0.0_linux_amd64/drup") are handled the same as
 // a root-level layout. hdr.Name is used only for this basename comparison —
 // it is never joined into a filesystem path, so path-traversal entries in
-// the archive are structurally inert. Only tar.TypeReg/TypeRegA entries are
-// accepted; symlinks, hardlinks, and directories are rejected even if their
-// base name matches, so a malicious or unexpected archive cannot redirect
-// the write.
+// the archive are structurally inert. Only tar.TypeReg entries are accepted;
+// symlinks, hardlinks, and directories are rejected even if their base name
+// matches, so a malicious or unexpected archive cannot redirect the write.
 func ExtractBinaryFromTarGz(r io.Reader, binaryName, outPath string) error {
 	gr, err := gzip.NewReader(r)
 	if err != nil {
@@ -220,6 +219,19 @@ func atomicReplace(src, dst string) error {
 	return nil
 }
 
+// fileCreator abstracts the Write/Close/Chmod trio of *os.File that
+// copyFile needs, so tests can substitute a stand-in that observes Close
+// call counts without changing copyFile's behavior.
+type fileCreator interface {
+	io.Writer
+	Close() error
+	Chmod(os.FileMode) error
+}
+
+// osCreate is the production fileCreator seam for copyFile's destination
+// file; tests override it to count Close calls.
+var osCreate = func(name string) (fileCreator, error) { return os.Create(name) }
+
 // copyFile copies src to dst by reading and writing (not os.Rename), so it
 // works across filesystem boundaries. The destination's executable bits are
 // preserved from the source's mode.
@@ -234,7 +246,7 @@ func copyFile(src, dst string) error {
 		return fmt.Errorf("create parent dir for %s: %w", dst, err)
 	}
 
-	out, err := os.Create(dst)
+	out, err := osCreate(dst)
 	if err != nil {
 		return fmt.Errorf("create %s: %w", dst, err)
 	}
@@ -250,7 +262,7 @@ func copyFile(src, dst string) error {
 		}
 	}
 
-	return out.Close()
+	return nil
 }
 
 // BackupBinary copies currentBin to backupPath, preserving its executable

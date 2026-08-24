@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -97,7 +98,8 @@ func TestPipeline_CleanupSkippedOnValidateFailure(t *testing.T) {
 	defer func() { drupexec.RunWithEnv = origRunWithEnv }()
 
 	// Run cleanup with validate-failed flag.
-	_ = app.RunCleanup([]string{dir, "--validate-failed"})
+	var cleanupOut bytes.Buffer
+	_ = app.RunCleanup(&cleanupOut, []string{dir, "--validate-failed"})
 
 	if cleanupRanDrush {
 		t.Error("cleanup should NOT run drush when validate failed")
@@ -129,7 +131,8 @@ func TestPipeline_CleanupRunsOnValidatePass(t *testing.T) {
 		drupexec.Run = origRun
 	}()
 
-	_ = app.RunCleanup([]string{dir, "--validate-passed"})
+	var cleanupOut bytes.Buffer
+	_ = app.RunCleanup(&cleanupOut, []string{dir, "--validate-passed"})
 
 	if !drushUninstallCalled {
 		t.Error("cleanup should run drush pm:uninstall when validate passed")

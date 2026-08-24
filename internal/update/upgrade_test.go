@@ -882,3 +882,61 @@ func TestReplaceBinary_CrossDeviceCopy(t *testing.T) {
 		t.Errorf("newBinaryPath %s should no longer exist after replace", newBinaryPath)
 	}
 }
+
+// closeCountingFile wraps *os.File and counts Close calls, so tests can
+// assert copyFile never closes its destination handle more than once
+// (regression guard for M5: copyFile used to call Close explicitly on top
+// of the deferred Close).
+type closeCountingFile struct {
+	*os.File
+	closes int
+}
+
+func (c *closeCountingFile) Close() error {
+	c.closes++
+	return c.File.Close()
+}
+
+// TestCopyFile_ClosesDestinationExactlyOnce guards against a regression of
+// the historical double-Close bug in copyFile: an explicit Close() call at
+// the end of the function on top of the deferred Close(). It substitutes
+// osCreate with a stand-in that counts Close invocations on the returned
+// destination file and asserts the count is exactly 1.
+func TestCopyFile_ClosesDestinationExactlyOnce(t *testing.T) {
+	srcPath := filepath.Join(t.TempDir(), "src.bin")
+	if err := os.WriteFile(srcPath, []byte("payload"), 0o755); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	dstPath := filepath.Join(t.TempDir(), "dst.bin")
+
+	var counter *closeCountingFile
+	original := osCreate
+	osCreate = func(name string) (fileCreator, error) {
+		f, err := os.Create(name)
+		if err != nil {
+			return nil, err
+		}
+		counter = &closeCountingFile{File: f}
+		return counter, nil
+	}
+	defer func() { osCreate = original }()
+
+	if err := copyFile(srcPath, dstPath); err != nil {
+		t.Fatalf("copyFile error: %v", err)
+	}
+
+	if counter == nil {
+		t.Fatal("osCreate stand-in was never invoked by copyFile")
+	}
+	if counter.closes != 1 {
+		t.Errorf("destination file Close() called %d times, want exactly 1", counter.closes)
+	}
+
+	got, err := os.ReadFile(dstPath)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if string(got) != "payload" {
+		t.Errorf("dst content = %q, want %q", got, "payload")
+	}
+}

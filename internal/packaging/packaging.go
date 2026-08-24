@@ -18,7 +18,26 @@ var templateFS embed.FS
 // binaryPath is injected into MCP config templates. assignments configures
 // per-platform/per-agent model overrides (REQ-004); nil/empty renders the
 // built-in defaults byte-identically to pre-change output (REQ-003).
+// Locked mode is never selected through this entry point — use RenderLocked
+// to render the mcp.json `--locked` argument.
 func Render(platform, binaryPath string, assignments map[string]map[string]state.ModelPhaseAssignment) (map[string]string, error) {
+	return renderInternal(platform, binaryPath, false, assignments)
+}
+
+// RenderLocked is Render plus locked-mode selection: when locked is true,
+// every rendered mcp.json launches `drup mcp --locked` instead of `drup
+// mcp`, equivalent to setting DRUP_DISABLE_MUTATIONS=1 for that agent's MCP
+// server process. locked=false renders byte-identically to Render.
+func RenderLocked(platform, binaryPath string, locked bool, assignments map[string]map[string]state.ModelPhaseAssignment) (map[string]string, error) {
+	return renderInternal(platform, binaryPath, locked, assignments)
+}
+
+// renderInternal is the shared implementation behind Render and
+// RenderLocked, kept as a single function (D2-style rationale: adding a
+// locked bool here churns zero existing Render call sites — see
+// internal/packaging/packaging_test.go's 27 pre-existing Render(...) calls
+// and internal/app/commands.go's installAgents).
+func renderInternal(platform, binaryPath string, locked bool, assignments map[string]map[string]state.ModelPhaseAssignment) (map[string]string, error) {
 	platformDir := platform
 	switch platform {
 	case "claude", "opencode", "codex":
@@ -63,6 +82,15 @@ func Render(platform, binaryPath string, assignments map[string]map[string]state
 		// Replace binary path placeholder in MCP config.
 		s := string(content)
 		s = strings.ReplaceAll(s, "{{BINARY_PATH}}", binaryPath)
+
+		// Replace the locked-mode arg placeholder in MCP config. Omitted
+		// (empty string) by default so unlocked output stays byte-identical
+		// to before this placeholder existed.
+		lockedArg := ""
+		if locked {
+			lockedArg = `, "--locked"`
+		}
+		s = strings.ReplaceAll(s, "{{LOCKED_ARG}}", lockedArg)
 
 		// Replace skill path placeholder in bootstrap templates.
 		// Uses "." (current directory) as default — SKILL.md is co-located with the bootstrap.

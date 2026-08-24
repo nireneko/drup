@@ -369,3 +369,81 @@ func TestClassifyPath(t *testing.T) {
 		})
 	}
 }
+
+// --- Phase 7: EvidenceHash (G9) ---
+
+func TestEvidenceHash_DeterministicForIdenticalFindings(t *testing.T) {
+	build := func() *ScanResult {
+		return &ScanResult{
+			ProjectPath: "/tmp/project",
+			TotalErrs:   1,
+			Modules: []ModuleStatus{
+				{
+					Name: "token",
+					Type: ClassContrib,
+					Errors: []DepError{
+						{File: "modules/contrib/token/token.module", Line: 42, Message: "Deprecated function.", Rule: "SomeRule", Severity: "warning", Source: "upgrade_status"},
+					},
+				},
+			},
+		}
+	}
+
+	r1 := build()
+	r2 := build()
+
+	h1 := r1.EvidenceHash()
+	h2 := r2.EvidenceHash()
+
+	if h1 == "" {
+		t.Fatal("expected non-empty evidence hash")
+	}
+	if h1 != h2 {
+		t.Errorf("EvidenceHash() = %q and %q, want equal for identical findings", h1, h2)
+	}
+}
+
+func TestEvidenceHash_DiffersOnDifferentFindings(t *testing.T) {
+	base := &ScanResult{
+		Modules: []ModuleStatus{
+			{
+				Name: "token",
+				Type: ClassContrib,
+				Errors: []DepError{
+					{File: "modules/contrib/token/token.module", Line: 42, Message: "Deprecated function.", Severity: "warning", Source: "upgrade_status"},
+				},
+			},
+		},
+	}
+	changed := &ScanResult{
+		Modules: []ModuleStatus{
+			{
+				Name: "token",
+				Type: ClassContrib,
+				Errors: []DepError{
+					{File: "modules/contrib/token/token.module", Line: 99, Message: "Deprecated function.", Severity: "warning", Source: "upgrade_status"},
+				},
+			},
+		},
+	}
+
+	hBase := base.EvidenceHash()
+	hChanged := changed.EvidenceHash()
+
+	if hBase == hChanged {
+		t.Errorf("EvidenceHash() = %q for both, want different hashes for differing error entries", hBase)
+	}
+}
+
+func TestEvidenceHash_EmptyFindingsStillProducesValidHash(t *testing.T) {
+	result := &ScanResult{Modules: nil, TotalErrs: 0}
+
+	h := result.EvidenceHash()
+	if h == "" {
+		t.Error("EvidenceHash() = \"\", want a valid non-empty hash for zero-error scans")
+	}
+	// SHA256 hex digest is 64 characters.
+	if len(h) != 64 {
+		t.Errorf("EvidenceHash() length = %d, want 64 (SHA256 hex digest)", len(h))
+	}
+}

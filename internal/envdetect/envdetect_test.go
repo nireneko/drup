@@ -158,6 +158,60 @@ func TestDetect_CacheHit(t *testing.T) {
 	}
 }
 
+func TestDetect_SymlinkedPathResolvesToRealTargetAndSharesCache(t *testing.T) {
+	real := t.TempDir()
+	os.WriteFile(filepath.Join(real, "composer.json"), []byte("{}"), 0o644)
+
+	parent := t.TempDir()
+	link := filepath.Join(parent, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink not supported on this platform: %v", err)
+	}
+
+	d := NewDetector()
+	viaLink, err := d.Detect(link, false)
+	if err != nil {
+		t.Fatalf("Detect(link) error: %v", err)
+	}
+	if viaLink.Environment != EnvDirect {
+		t.Errorf("Environment via symlink = %q, want %q", viaLink.Environment, EnvDirect)
+	}
+
+	viaReal, err := d.Detect(real, false)
+	if err != nil {
+		t.Fatalf("Detect(real) error: %v", err)
+	}
+	// Both paths resolve to the same real project, so they must hit the
+	// same cache entry (design Open Question 2: the cache is keyed on the
+	// resolved path, not the raw caller-supplied one).
+	if viaLink != viaReal {
+		t.Error("expected the symlinked and real path to share the same cache entry")
+	}
+}
+
+func TestDetect_UnsupportedEnvironmentStaysGracefulAfterSymlinkResolution(t *testing.T) {
+	dir := t.TempDir() // no markers at all
+	d := NewDetector()
+	result, err := d.Detect(dir, false)
+	if err != nil {
+		t.Fatalf("Detect error: %v", err)
+	}
+	if result.Environment != EnvUnsupported {
+		t.Errorf("Environment = %q, want %q", result.Environment, EnvUnsupported)
+	}
+}
+
+func TestDetect_NonExistentPathStaysGracefulAfterSymlinkResolution(t *testing.T) {
+	d := NewDetector()
+	result, err := d.Detect("/nonexistent/path/xyz-envdetect", false)
+	if err != nil {
+		t.Fatalf("Detect error: %v", err)
+	}
+	if result.Environment != EnvUnknown {
+		t.Errorf("Environment = %q, want %q", result.Environment, EnvUnknown)
+	}
+}
+
 func TestDetect_ForceDetectBypassesCache(t *testing.T) {
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, ".ddev"), 0o755)

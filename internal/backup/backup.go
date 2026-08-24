@@ -19,6 +19,7 @@ import (
 
 	"github.com/nireneko/drup/internal/envdetect"
 	drupexec "github.com/nireneko/drup/internal/exec"
+	"github.com/nireneko/drup/internal/session"
 )
 
 const version = 1
@@ -61,7 +62,16 @@ func validateProject(path string) (string, error) {
 	if err != nil || !info.IsDir() {
 		return "", fmt.Errorf("invalid project: %s", path)
 	}
-	return path, nil
+	// Resolve symlinks through the shared canonical-root helper so a
+	// symlinked and non-symlinked path to the same project share identity
+	// with every other entry point (coreupgrade, envdetect). No Drupal
+	// project marker is required here — callers of backup already expect an
+	// existing directory, not necessarily a fully-formed Drupal project.
+	resolved, err := session.ResolveSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("invalid project: %w", err)
+	}
+	return resolved, nil
 }
 
 func (m *Manager) Create(project string) (Manifest, error) {

@@ -152,6 +152,60 @@ func TestApply_RelativePathRejected(t *testing.T) {
 	}
 }
 
+func TestValidateProjectPath_ReturnsResolvedPath(t *testing.T) {
+	dir := t.TempDir()
+	resolved, err := ValidateProjectPath(dir)
+	if err != nil {
+		t.Fatalf("ValidateProjectPath error: %v", err)
+	}
+	wantResolved, evalErr := filepath.EvalSymlinks(dir)
+	if evalErr != nil {
+		t.Fatalf("EvalSymlinks error: %v", evalErr)
+	}
+	if resolved != wantResolved {
+		t.Errorf("ValidateProjectPath(%q) = %q, want %q", dir, resolved, wantResolved)
+	}
+}
+
+func TestApply_ResolvesSymlinkedProjectPath(t *testing.T) {
+	requireGit(t)
+	real := t.TempDir()
+	initGitRepo(t, real)
+	writeComposerFixture(t, real)
+	runGit(t, real, "add", ".")
+	runGit(t, real, "commit", "-m", "initial")
+
+	parent := t.TempDir()
+	link := filepath.Join(parent, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink not supported on this platform: %v", err)
+	}
+
+	result, err := Apply(link, "11.0.9", false, false, false)
+	if err != nil {
+		t.Fatalf("Apply error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected Success=true, got false: %s", result.Report)
+	}
+
+	// The mutation must have landed on the real target, resolved from the
+	// symlink, not attempted against the symlink path itself.
+	after, err := os.ReadFile(filepath.Join(real, "composer.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Require map[string]string `json:"require"`
+	}
+	if err := json.Unmarshal(after, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Require["drupal/core-recommended"] != "^11.0" {
+		t.Errorf("drupal/core-recommended = %q, want %q", doc.Require["drupal/core-recommended"], "^11.0")
+	}
+}
+
 func TestApply_NoChangeReported(t *testing.T) {
 	requireGit(t)
 	dir := t.TempDir()

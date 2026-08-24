@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nireneko/drup/internal/audit"
 	"github.com/nireneko/drup/internal/backup"
 	"github.com/nireneko/drup/internal/composerutil"
 	"github.com/nireneko/drup/internal/coreupgrade"
@@ -23,23 +25,78 @@ import (
 	"github.com/nireneko/drup/internal/report"
 	"github.com/nireneko/drup/internal/scan"
 	"github.com/nireneko/drup/internal/semver"
+	"github.com/nireneko/drup/internal/session"
 )
 
 // defaultEnvDetector is the shared environment detector.
 var defaultEnvDetector envdetect.Detector = envdetect.NewDetector()
 
-// drushBlocklist contains commands that must not be executed via drush_exec.
+// defaultExecTimeout bounds every subprocess invocation that has no more
+// specific entry in execTimeoutOverride. Without a deadline a hanging
+// drush/composer call blocks its MCP request forever — the stdio server
+// handles requests synchronously, so one stuck call stalls every
+// subsequent tool call too.
+var defaultExecTimeout = 5 * time.Minute
+
+// execTimeoutOverride raises the deadline for tools whose underlying
+// command legitimately runs longer than the 5-minute default: a full
+// composer install, a core upgrade apply, or an upgrade_status re-scan.
+var execTimeoutOverride = map[string]time.Duration{
+	"composer_require":   10 * time.Minute,
+	"core_upgrade_apply": 15 * time.Minute,
+	"upgrade_scan":       10 * time.Minute,
+}
+
+// resolveExecTimeout returns the configured deadline for toolName, falling
+// back to defaultExecTimeout when no override is set.
+func resolveExecTimeout(toolName string) time.Duration {
+	if d, ok := execTimeoutOverride[toolName]; ok {
+		return d
+	}
+	return defaultExecTimeout
+}
+
+// drushBlocklist contains the canonical drush command names that must not be
+// executed via drush_exec. Evaluated after normalizeDrushCommand resolves
+// aliases, so an alias of a blocked command is blocked identically to its
+// canonical form.
 var drushBlocklist = map[string]bool{
 	"sql-drop":         true,
 	"site-install":     true,
 	"site:install":     true,
 	"sql-sanitize":     true,
 	"php-eval":         true,
+	"php:script":       true,
 	"core:execute-cli": true,
+	"sql:query":        true,
 }
 
-// shellMetacharPattern matches shell injection characters.
-var shellMetacharPattern = regexp.MustCompile("[;|&$`]")
+// drushAliasMap resolves known drush command aliases to their canonical
+// form, evaluated before drushBlocklist so an alias cannot bypass it.
+var drushAliasMap = map[string]string{
+	"sqlq":         "sql:query",
+	"sql-cli":      "sql:query",
+	"sqlc":         "sql:query",
+	"scr":          "php:script",
+	"ev":           "php-eval",
+	"exec":         "core:execute-cli",
+	"core:execute": "core:execute-cli",
+}
+
+// normalizeDrushCommand trims whitespace, lowercases, and resolves known
+// aliases to their canonical drush command name so blocklist evaluation
+// cannot be bypassed via an alias, case, or surrounding whitespace.
+func normalizeDrushCommand(cmd string) string {
+	normalized := strings.ToLower(strings.TrimSpace(cmd))
+	if canonical, ok := drushAliasMap[normalized]; ok {
+		return canonical
+	}
+	return normalized
+}
+
+// shellMetacharPattern matches shell injection characters, including
+// newlines, so a command or argument cannot smuggle a second statement.
+var shellMetacharPattern = regexp.MustCompile("[;|&$`\n]")
 
 // composerPackagePattern validates composer package names.
 var composerPackagePattern = regexp.MustCompile(`^[a-z0-9]([_.\-]?[a-z0-9]+)*/[a-z0-9]([_.\-]?[a-z0-9]+)*(:[a-zA-Z0-9^~<>=*. -]+)?$`)
@@ -47,38 +104,97 @@ var composerPackagePattern = regexp.MustCompile(`^[a-z0-9]([_.\-]?[a-z0-9]+)*/[a
 // moduleNamePattern validates Drupal module machine names.
 var moduleNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
-// WireMCPTools registers real tool handlers on the MCP server, replacing placeholders.
+// WireMCPTools registers real tool handlers on the MCP server, replacing
+// placeholders. Every tool in session.GuardedTools() (the force-dry-run and
+// refuse-only partitions from specs/agent-session's Guard Middleware
+// Enforcement requirement) is wrapped with guardHandler at this single
+// registration point. upgrade_scan is deliberately NOT wrapped here — its
+// only mutation (the nested drupal/upgrade_status composer install) bypasses
+// s.tools entirely, so it is guarded inline inside realHandleUpgradeScan via
+// the same guardedCall helper the middleware uses, applied directly to that
+// nested composer_require call.
 func WireMCPTools(s *mcp.Server) {
 	s.RegisterTool("scan", realHandleScan)
 	s.RegisterTool("autofix", realHandleAutofix)
 	s.RegisterTool("contrib_check", realHandleContribCheck)
 	s.RegisterTool("issue_patches", realHandleIssuePatches)
-	s.RegisterTool("apply_patch", realHandleApplyPatch)
+	s.RegisterTool("apply_patch", guardHandler("apply_patch", realHandleApplyPatch))
 	s.RegisterTool("validate", realHandleValidate)
-	s.RegisterTool("create_patch", realHandleCreatePatch)
+	s.RegisterTool("create_patch", guardHandler("create_patch", realHandleCreatePatch))
 	// New tools.
 	s.RegisterTool("detect_env", realHandleDetectEnv)
-	s.RegisterTool("composer_require", realHandleComposerRequire)
+	s.RegisterTool("composer_require", guardHandler("composer_require", realHandleComposerRequire))
 	s.RegisterTool("drush_exec", realHandleDrushExec)
 	s.RegisterTool("contrib_upgrade_path", realHandleContribUpgradePath)
 	s.RegisterTool("upgrade_scan", realHandleUpgradeScan)
 	s.RegisterTool("patch_status", realHandlePatchStatus)
-	s.RegisterTool("patch_rollback", realHandlePatchRollback)
+	s.RegisterTool("patch_rollback", guardHandler("patch_rollback", realHandlePatchRollback))
 	s.RegisterTool("generate_report", realHandleGenerateReport)
 	s.RegisterTool("module_info", realHandleModuleInfo)
 	s.RegisterTool("drupal_version_matrix", realHandleDrupalVersionMatrix)
 	s.RegisterTool("core_upgrade_check", realHandleCoreUpgradeCheck)
-	s.RegisterTool("core_upgrade_apply", realHandleCoreUpgradeApply)
+	s.RegisterTool("core_upgrade_apply", guardHandler("core_upgrade_apply", realHandleCoreUpgradeApply))
 	s.RegisterTool("patch_reconcile", realHandlePatchReconcile)
-	s.RegisterTool("cleanup", realHandleCleanup)
-	s.RegisterTool("custom_compat_fix", realHandleCustomCompatFix)
-	s.RegisterTool("contrib_allow_lenient", realHandleContribAllowLenient)
-	s.RegisterTool("contrib_compat_patch", realHandleContribCompatPatch)
+	s.RegisterTool("cleanup", guardHandler("cleanup", realHandleCleanup))
+	s.RegisterTool("custom_compat_fix", guardHandler("custom_compat_fix", realHandleCustomCompatFix))
+	s.RegisterTool("contrib_allow_lenient", guardHandler("contrib_allow_lenient", realHandleContribAllowLenient))
+	s.RegisterTool("contrib_compat_patch", guardHandler("contrib_compat_patch", realHandleContribCompatPatch))
 	s.RegisterTool("test_backup_create", realHandleTestBackupCreate)
 	s.RegisterTool("test_backup_list", realHandleTestBackupList)
-	s.RegisterTool("test_backup_restore", realHandleTestBackupRestore)
-	s.RegisterTool("test_backup_delete", realHandleTestBackupDelete)
+	s.RegisterTool("test_backup_restore", guardHandler("test_backup_restore", realHandleTestBackupRestore))
+	s.RegisterTool("test_backup_delete", guardHandler("test_backup_delete", realHandleTestBackupDelete))
 	s.RegisterTool("module_release_info", realHandleModuleReleaseInfo)
+	s.RegisterTool("session_open", realHandleSessionOpen)
+	s.RegisterTool("pipeline_status", realHandlePipelineStatus)
+}
+
+// realHandlePipelineStatus summarizes the project's mutation ledger
+// (specs/mutation-audit's pipeline_status Tool requirement): per-tool
+// counts, total mutations, and the remaining mutation-cap headroom for
+// whichever window currently applies (per-session if a matching session is
+// bound, otherwise per-day). A project with no ledger yet returns zero
+// counts and the full cap, never an error.
+func realHandlePipelineStatus(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath string `json:"project_path"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if params.ProjectPath == "" {
+		return nil, fmt.Errorf("project_path is required")
+	}
+
+	records, err := audit.ReadAll(params.ProjectPath)
+	if err != nil {
+		return nil, err
+	}
+
+	perTool := map[string]int{}
+	for _, r := range records {
+		perTool[r.Tool]++
+	}
+
+	hasSession := false
+	var openedAt time.Time
+	if sess, ok := session.Current(); ok {
+		if root, rerr := session.ResolveSymlinks(params.ProjectPath); rerr == nil && root == sess.Root {
+			hasSession = true
+			openedAt = sess.OpenedAt
+		}
+	}
+	_, count, capN, capErr := audit.CheckCap(params.ProjectPath, hasSession, openedAt)
+	remaining := capN - count
+	if capErr != nil || remaining < 0 {
+		remaining = 0
+	}
+
+	result := map[string]interface{}{
+		"per_tool_counts": perTool,
+		"total_mutations": len(records),
+		"remaining_cap":   remaining,
+	}
+	return json.Marshal(result)
 }
 
 func backupParams(args json.RawMessage) (string, error) {
@@ -158,7 +274,7 @@ func realHandleScan(args json.RawMessage) (json.RawMessage, error) {
 	}
 
 	// Ensure upgrade_status is enabled before running the scan.
-	if err := ensureUpgradeStatusEnabled(params.ProjectPath); err != nil {
+	if err := ensureUpgradeStatusEnabled(params.ProjectPath, resolveExecTimeout("scan")); err != nil {
 		return nil, err
 	}
 
@@ -315,10 +431,11 @@ func normalizeScope(scope string) (string, error) {
 
 func realHandleValidate(args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		ProjectPath string `json:"project_path"`
-		Scope       string `json:"scope,omitempty"`
-		Module      string `json:"module,omitempty"`
-		File        string `json:"file,omitempty"`
+		ProjectPath  string `json:"project_path"`
+		Scope        string `json:"scope,omitempty"`
+		Module       string `json:"module,omitempty"`
+		File         string `json:"file,omitempty"`
+		ExpectedHash string `json:"expected_hash,omitempty"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, err
@@ -327,6 +444,19 @@ func realHandleValidate(args json.RawMessage) (json.RawMessage, error) {
 	result, filtered, err := DoValidate(params.ProjectPath, params.Module)
 	if err != nil {
 		return nil, err
+	}
+
+	var currentHash string
+	if result != nil {
+		currentHash = result.EvidenceHash()
+	}
+
+	// Fail closed on a stale scan regardless of total_errors: a caller that
+	// pins expected_hash to a prior scan is asserting "nothing has changed
+	// since I last looked" — if the current evidence_hash disagrees, the
+	// prior total_errors (even zero) can no longer be trusted.
+	if params.ExpectedHash != "" && params.ExpectedHash != currentHash {
+		return nil, fmt.Errorf("validate: evidence_hash mismatch — expected %s, got %s; the scan is stale, re-run upgrade_scan/validate before trusting total_errors", params.ExpectedHash, currentHash)
 	}
 
 	// Filter by scope. Without this the tool answered a request for custom
@@ -354,11 +484,10 @@ func realHandleValidate(args json.RawMessage) (json.RawMessage, error) {
 		filtered = byFile
 	}
 
-	_ = result // result available if needed for richer response
-
 	response := map[string]interface{}{
-		"total_errors": len(filtered),
-		"errors":       filtered,
+		"total_errors":  len(filtered),
+		"errors":        filtered,
+		"evidence_hash": currentHash,
 	}
 	return json.Marshal(response)
 }
@@ -590,7 +719,9 @@ func realHandleComposerRequire(args json.RawMessage) (json.RawMessage, error) {
 	if params.NoUpdate {
 		dryArgs = append(dryArgs, "--no-update")
 	}
-	_, dryStderr, dryExit, err := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "composer", dryArgs...)
+	dryCtx, dryCancel := context.WithTimeout(context.Background(), resolveExecTimeout("composer_require"))
+	defer dryCancel()
+	_, dryStderr, dryExit, err := drupexec.RunWithEnvCtx(dryCtx, params.ProjectPath, detection.CommandPrefix, "composer", dryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("exec composer dry-run: %w", err)
 	}
@@ -613,7 +744,9 @@ func realHandleComposerRequire(args json.RawMessage) (json.RawMessage, error) {
 	if params.NoUpdate {
 		realArgs = append(realArgs, "--no-update")
 	}
-	stdout, stderr, exitCode, err := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "composer", realArgs...)
+	realCtx, realCancel := context.WithTimeout(context.Background(), resolveExecTimeout("composer_require"))
+	defer realCancel()
+	stdout, stderr, exitCode, err := drupexec.RunWithEnvCtx(realCtx, params.ProjectPath, detection.CommandPrefix, "composer", realArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("exec composer require: %w", err)
 	}
@@ -660,8 +793,8 @@ func realHandleDrushExec(args json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("project_path and command are required")
 	}
 
-	// Check blocklist.
-	if drushBlocklist[params.Command] {
+	// Check blocklist against the alias-normalized canonical command name.
+	if drushBlocklist[normalizeDrushCommand(params.Command)] {
 		result := map[string]interface{}{
 			"success":   false,
 			"output":    "",
@@ -709,7 +842,9 @@ func realHandleDrushExec(args json.RawMessage) (json.RawMessage, error) {
 		cmdArgs = append(cmdArgs, "--format="+params.Format)
 	}
 
-	stdout, stderr, exitCode, err := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", cmdArgs...)
+	drushCtx, drushCancel := context.WithTimeout(context.Background(), resolveExecTimeout("drush_exec"))
+	defer drushCancel()
+	stdout, stderr, exitCode, err := drupexec.RunWithEnvCtx(drushCtx, params.ProjectPath, detection.CommandPrefix, "drush", cmdArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("exec drush: %w", err)
 	}
@@ -721,7 +856,10 @@ func realHandleDrushExec(args json.RawMessage) (json.RawMessage, error) {
 		if jsonErr := json.Unmarshal([]byte(stdout), &parsed); jsonErr == nil {
 			output = parsed
 		} else {
-			stderr = stderr + "warning: failed to parse JSON output"
+			if stderr != "" {
+				stderr += "\n"
+			}
+			stderr += "warning: failed to parse JSON output"
 		}
 	}
 
@@ -817,17 +955,25 @@ func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 
 	upgradeStatusInstalled := hasPackage(composerJSON, "drupal/upgrade_status")
 
-	// Install if needed.
+	upgradeScanTimeout := resolveExecTimeout("upgrade_scan")
+
+	// Install if needed. This calls straight into realHandleComposerRequire,
+	// bypassing s.tools and the registration-time guardHandler wrapping
+	// composer_require entirely, so it re-enters the exact same guardedCall
+	// path inline instead — the same session/backup-freshness/mutation-cap
+	// partition and audit trail a direct composer_require call would get.
 	if !upgradeStatusInstalled {
 		reqArgs := json.RawMessage(fmt.Sprintf(`{"project_path":%q,"package":"drupal/upgrade_status","dev":true}`, params.ProjectPath))
-		_, reqErr := realHandleComposerRequire(reqArgs)
-		if reqErr != nil {
+		if _, reqErr := guardedCall("composer_require", reqArgs, realHandleComposerRequire); reqErr != nil {
 			return nil, fmt.Errorf("install upgrade_status: %w", reqErr)
 		}
 	}
 
-	// Ensure upgrade_status is enabled (shared helper).
-	if err := ensureUpgradeStatusEnabled(params.ProjectPath); err != nil {
+	// Ensure upgrade_status is enabled (shared helper — also used by
+	// realHandleScan for DRY compliance). Uses upgradeScanTimeout, not the
+	// flat default, so the "upgrade_scan" exec-timeout override still governs
+	// every drush call this handler makes, not just the final analyze call.
+	if err := ensureUpgradeStatusEnabled(params.ProjectPath, upgradeScanTimeout); err != nil {
 		return nil, err
 	}
 	upgradeStatusEnabled := true
@@ -839,7 +985,9 @@ func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 		analyzeTarget = params.Module
 	}
 	analyzeArgs := []string{"upgrade_status:analyze", analyzeTarget, "--format=checkstyle", "--root=" + params.ProjectPath}
-	analyzeStdout, analyzeStderr, analyzeExit, analyzeErr := drupexec.RunWithEnv(params.ProjectPath, detection.CommandPrefix, "drush", analyzeArgs...)
+	analyzeCtx, analyzeCancel := context.WithTimeout(context.Background(), upgradeScanTimeout)
+	analyzeStdout, analyzeStderr, analyzeExit, analyzeErr := drupexec.RunWithEnvCtx(analyzeCtx, params.ProjectPath, detection.CommandPrefix, "drush", analyzeArgs...)
+	analyzeCancel()
 	if analyzeErr != nil {
 		return nil, drushExecError("drush", analyzeArgs, -1, analyzeErr.Error(), "")
 	}
@@ -906,11 +1054,20 @@ func hasPackage(composerJSON map[string]interface{}, pkg string) bool {
 
 // ensureUpgradeStatusEnabled checks if upgrade_status is enabled and enables it
 // if present in composer.json but not enabled. Returns an error if the module
-// is not installed or if enabling fails.
-func ensureUpgradeStatusEnabled(projectPath string) error {
+// is not installed or if enabling fails. timeout bounds each drush call —
+// callers pass their own resolveExecTimeout(toolName) result so a caller with
+// a longer override (e.g. "upgrade_scan") is not silently clamped down to the
+// flat default.
+func ensureUpgradeStatusEnabled(projectPath string, timeout time.Duration) error {
 	detection, err := defaultEnvDetector.Detect(projectPath, false)
 	if err != nil {
 		return err
+	}
+
+	run := func(args ...string) (string, string, int, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		return drupexec.RunWithEnvCtx(ctx, projectPath, detection.CommandPrefix, "drush", args...)
 	}
 
 	// 1. Check composer.json for upgrade_status.
@@ -929,7 +1086,7 @@ func ensureUpgradeStatusEnabled(projectPath string) error {
 
 	// 2. Check pm:list --status=enabled.
 	pmListArgs := []string{"pm:list", "--status=enabled", "--format=json", "--root=" + projectPath}
-	pmStdout, _, pmExit, _ := drupexec.RunWithEnv(projectPath, detection.CommandPrefix, "drush", pmListArgs...)
+	pmStdout, _, pmExit, _ := run(pmListArgs...)
 	if pmExit == 0 {
 		var pmData map[string]interface{}
 		if json.Unmarshal([]byte(pmStdout), &pmData) == nil {
@@ -941,10 +1098,10 @@ func ensureUpgradeStatusEnabled(projectPath string) error {
 
 	// 3. Auto-enable sequence: config:delete → drush en → drush cr.
 	cdArgs := []string{"config:delete", "update.settings", "--root=" + projectPath}
-	_, _, _, _ = drupexec.RunWithEnv(projectPath, detection.CommandPrefix, "drush", cdArgs...)
+	_, _, _, _ = run(cdArgs...)
 
 	enArgs := []string{"en", "upgrade_status", "-y", "--root=" + projectPath}
-	_, enStderr, enExit, enErr := drupexec.RunWithEnv(projectPath, detection.CommandPrefix, "drush", enArgs...)
+	_, enStderr, enExit, enErr := run(enArgs...)
 	if enErr != nil {
 		return fmt.Errorf("enable upgrade_status: %w", enErr)
 	}
@@ -953,7 +1110,7 @@ func ensureUpgradeStatusEnabled(projectPath string) error {
 	}
 
 	crArgs := []string{"cr", "--root=" + projectPath}
-	_, _, _, _ = drupexec.RunWithEnv(projectPath, detection.CommandPrefix, "drush", crArgs...)
+	_, _, _, _ = run(crArgs...)
 	return nil
 }
 
@@ -1663,15 +1820,11 @@ func realHandleCoreUpgradeCheck(args json.RawMessage) (json.RawMessage, error) {
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, err
 	}
-	if params.ProjectPath == "" {
-		return nil, fmt.Errorf("project_path is required")
+	resolvedPath, err := coreupgrade.ValidateProjectPath(params.ProjectPath)
+	if err != nil {
+		return nil, err
 	}
-	if !filepath.IsAbs(params.ProjectPath) {
-		return nil, fmt.Errorf("project_path must be an absolute path: %s", params.ProjectPath)
-	}
-	if strings.Contains(params.ProjectPath, "..") {
-		return nil, fmt.Errorf("project_path must not contain '..' segments")
-	}
+	params.ProjectPath = resolvedPath
 
 	detection, err := defaultEnvDetector.Detect(params.ProjectPath, false)
 	if err != nil {
@@ -1765,7 +1918,6 @@ func realHandleCoreUpgradeApply(args json.RawMessage) (json.RawMessage, error) {
 		ProjectPath   string `json:"project_path"`
 		TargetVersion string `json:"target_version"`
 		DryRun        bool   `json:"dry_run"`
-		AllowDirty    bool   `json:"allow_dirty,omitempty"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, err
@@ -1777,7 +1929,11 @@ func realHandleCoreUpgradeApply(args json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("target_version is required")
 	}
 
-	result, err := coreupgrade.Apply(params.ProjectPath, params.TargetVersion, params.DryRun, params.AllowDirty, false)
+	// allow_dirty is CLI-only (drup upgrade-core --allow-dirty per proposal
+	// decision 3); the MCP surface never accepts a dirty-tree override, so
+	// allowDirty is always false here regardless of what the caller sends —
+	// closing the schema-undocumented-argument backdoor (G4/G5/S2).
+	result, err := coreupgrade.Apply(params.ProjectPath, params.TargetVersion, params.DryRun, false, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1832,19 +1988,13 @@ func realHandleCleanup(args json.RawMessage) (json.RawMessage, error) {
 		cliArgs = append(cliArgs, "--validate-failed")
 	}
 
-	// Capture stdout from RunCleanup.
-	oldStdout := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	err := RunCleanup(cliArgs)
-
-	w.Close()
-	os.Stdout = oldStdout
-
+	// Capture RunCleanup's output directly into an in-memory buffer instead
+	// of swapping the process-global os.Stdout through an os.Pipe. A pipe
+	// has a fixed kernel buffer and needs a concurrent reader draining it;
+	// a bytes.Buffer just grows, so there is no deadlock risk regardless of
+	// output size, and no global state is mutated for the call's duration.
 	var buf bytes.Buffer
-	buf.ReadFrom(r)
-
+	err := RunCleanup(&buf, cliArgs)
 	if err != nil {
 		return nil, err
 	}

@@ -124,6 +124,45 @@ func maliciousArchive(t *testing.T, header *tar.Header, data []byte) string {
 	return path
 }
 
+func TestValidateProject_ResolvesSymlinkedPath(t *testing.T) {
+	real := t.TempDir()
+	parent := t.TempDir()
+	link := filepath.Join(parent, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink not supported on this platform: %v", err)
+	}
+
+	resolved, err := validateProject(link)
+	if err != nil {
+		t.Fatalf("validateProject error: %v", err)
+	}
+	wantResolved, evalErr := filepath.EvalSymlinks(real)
+	if evalErr != nil {
+		t.Fatalf("EvalSymlinks error: %v", evalErr)
+	}
+	if resolved != wantResolved {
+		t.Errorf("validateProject(%q) = %q, want %q (the real target)", link, resolved, wantResolved)
+	}
+}
+
+func TestValidateProject_MissingPathErrorUnchanged(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	if _, err := validateProject(missing); err == nil {
+		t.Fatal("expected error for a missing project path")
+	}
+}
+
+func TestValidateProject_NonDirErrorUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateProject(file); err == nil {
+		t.Fatal("expected error for a non-directory project path")
+	}
+}
+
 func TestRestoreRequiresConfirmation(t *testing.T) {
 	project := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(project, ".drup", "backups"), 0o700); err != nil {

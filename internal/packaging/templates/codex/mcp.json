@@ -2,7 +2,7 @@
   "mcpServers": {
     "drup": {
       "command": "{{BINARY_PATH}}",
-      "args": ["mcp"]
+      "args": ["mcp"{{LOCKED_ARG}}]
     }
   }
 }

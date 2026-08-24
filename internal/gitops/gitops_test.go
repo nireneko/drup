@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -123,5 +124,94 @@ func TestCommit_NothingToCommit(t *testing.T) {
 	_, err := Commit(dir, "empty commit", []string{})
 	if err == nil {
 		t.Error("expected error for empty commit, got nil")
+	}
+	if !strings.Contains(err.Error(), "nothing to commit") {
+		t.Errorf("error = %q, want it to mention %q", err.Error(), "nothing to commit")
+	}
+}
+
+// TestCommit_DeclaredSubset_Succeeds guards G8: a scoped commit that only
+// declares files actually changed must stage exactly those files and
+// succeed, leaving no unexpected paths behind.
+func TestCommit_DeclaredSubset_Succeeds(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"name":"x"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "composer.lock"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "add", "composer.json", "composer.lock")
+	git(t, dir, "commit", "-m", "seed declared files")
+
+	if err := os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"name":"x","changed":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	hash, err := Commit(dir, "chore: update composer.json", []string{"composer.json", "composer.lock"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hash == "" {
+		t.Error("expected commit hash, got empty")
+	}
+
+	// The working tree must be clean afterward — only the declared files
+	// had pending changes, and they were committed.
+	clean, files, err := IsClean(dir)
+	if err != nil {
+		t.Fatalf("IsClean error: %v", err)
+	}
+	if !clean {
+		t.Errorf("expected clean tree after scoped commit, got dirty with files: %v", files)
+	}
+}
+
+// TestCommit_UnexpectedStagedFile_Aborts guards G8: if the index already
+// carries a staged change outside the declared list (e.g. leftover from an
+// earlier, unrelated `git add`), the scoped commit must refuse to commit,
+// unstage everything, and name the offending path in its error.
+func TestCommit_UnexpectedStagedFile_Aborts(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "declared.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "add", "declared.txt", "unrelated.txt")
+	git(t, dir, "commit", "-m", "seed both files")
+
+	// Modify both, but only stage-and-declare "declared.txt" — pre-stage
+	// "unrelated.txt" directly to simulate an already-dirty index.
+	if err := os.WriteFile(filepath.Join(dir, "declared.txt"), []byte("a-changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("b-changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "add", "unrelated.txt")
+
+	_, err := Commit(dir, "chore: update declared.txt", []string{"declared.txt"})
+	if err == nil {
+		t.Fatal("expected error for unexpected staged file, got nil")
+	}
+	if !strings.Contains(err.Error(), "unrelated.txt") {
+		t.Errorf("error = %q, want it to name %q", err.Error(), "unrelated.txt")
+	}
+
+	// The abort must have unstaged everything — no commit created, and the
+	// previously-staged "unrelated.txt" is no longer in the index.
+	cmd := exec.Command("git", "-C", dir, "diff", "--cached", "--name-only")
+	out, cmdErr := cmd.Output()
+	if cmdErr != nil {
+		t.Fatalf("git diff --cached: %v", cmdErr)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		t.Errorf("expected empty index after abort, got staged: %q", out)
 	}
 }

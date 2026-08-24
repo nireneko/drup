@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,10 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nireneko/drup/internal/audit"
 	"github.com/nireneko/drup/internal/drupalorg"
 	"github.com/nireneko/drup/internal/envdetect"
 	drupexec "github.com/nireneko/drup/internal/exec"
 	"github.com/nireneko/drup/internal/mcp"
+	"github.com/nireneko/drup/internal/session"
 )
 
 func TestWireMCPTools_NoPanic(t *testing.T) {
@@ -32,7 +35,7 @@ func TestWireMCPTools_AllToolsRegistered(t *testing.T) {
 	server := mcp.NewServer(&buf, "test")
 	WireMCPTools(server)
 
-	expected := 29
+	expected := 31
 	actual := server.ToolCount()
 	if actual != expected {
 		t.Errorf("expected %d tools, got %d", expected, actual)
@@ -177,6 +180,175 @@ func TestDrushExec_ShellMetacharacters(t *testing.T) {
 	if resp["success"] == true {
 		t.Error("expected success=false for command with shell metacharacters")
 	}
+}
+
+// Task 3.1: normalizeDrushCommand trims, lowercases, and resolves known
+// aliases to their canonical drush command name before blocklist evaluation.
+func TestNormalizeDrushCommand(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"already canonical, unchanged", "sql-drop", "sql-drop"},
+		{"trims and lowercases a legitimate command", "  PM:List  ", "pm:list"},
+		{"sqlq alias resolves to sql:query", "sqlq", "sql:query"},
+		{"sql-cli alias resolves to sql:query", "sql-cli", "sql:query"},
+		{"sqlc alias resolves to sql:query", "sqlc", "sql:query"},
+		{"scr alias resolves to php:script", "scr", "php:script"},
+		{"ev alias resolves to php-eval", "ev", "php-eval"},
+		{"exec alias resolves to core:execute-cli", "exec", "core:execute-cli"},
+		{"core:execute alias resolves to core:execute-cli", "core:execute", "core:execute-cli"},
+		{"alias resolution is case-insensitive and trims whitespace", "  SQLQ  ", "sql:query"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeDrushCommand(tt.in); got != tt.want {
+				t.Errorf("normalizeDrushCommand(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// Task 3.1/3.4: drush_exec must block every documented alias identically to
+// its canonical form, and block the two newly-extended canonical entries
+// (sql:query, php:script) directly.
+func TestDrushExec_BlocklistViaAlias(t *testing.T) {
+	blocked := []string{
+		"sql:query", "php:script", // newly-extended canonical forms
+		"sqlq", "sql-cli", "sqlc", // sql:query aliases
+		"scr",          // php:script alias
+		"ev",           // php-eval alias
+		"exec",         // core:execute-cli alias
+		"core:execute", // core:execute-cli alias
+	}
+	for _, cmd := range blocked {
+		t.Run(cmd, func(t *testing.T) {
+			args := json.RawMessage(`{"project_path":"/tmp","command":"` + cmd + `"}`)
+			result, err := realHandleDrushExec(args)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			var resp map[string]interface{}
+			json.Unmarshal(result, &resp)
+			if resp["success"] == true {
+				t.Errorf("expected success=false for blocked command %q", cmd)
+			}
+			if stderr, ok := resp["stderr"].(string); ok {
+				if !strings.Contains(stderr, "blocked for safety") {
+					t.Errorf("stderr = %q, want it to mention 'blocked for safety'", stderr)
+				}
+			} else {
+				t.Errorf("expected stderr field to be present for blocked command %q", cmd)
+			}
+		})
+	}
+}
+
+// Task 3.1: legitimate, non-destructive drush commands must still pass the
+// blocklist evaluation after alias normalization is introduced.
+func TestDrushExec_LegitimateCommandsNotBlocked(t *testing.T) {
+	allowed := []string{"cr", "updb", "pm:list"}
+	for _, cmd := range allowed {
+		t.Run(cmd, func(t *testing.T) {
+			normalized := normalizeDrushCommand(cmd)
+			if drushBlocklist[normalized] {
+				t.Errorf("expected legitimate command %q (normalized %q) to NOT be blocked", cmd, normalized)
+			}
+		})
+	}
+}
+
+// Task 3.2/3.4: the shell metacharacter filter must reject newline and
+// backtick injection identically to semicolon/pipe/ampersand/dollar.
+func TestShellMetacharPattern_RejectsNewlineAndBacktick(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		matches bool
+	}{
+		{"semicolon", "status; rm -rf /", true},
+		{"pipe", "status | cat", true},
+		{"ampersand", "status & echo", true},
+		{"dollar", "status $(whoami)", true},
+		{"backtick", "status `whoami`", true},
+		{"newline", "status\nrm -rf /", true},
+		{"safe command", "pm:list", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shellMetacharPattern.MatchString(tt.in); got != tt.matches {
+				t.Errorf("shellMetacharPattern.MatchString(%q) = %v, want %v", tt.in, got, tt.matches)
+			}
+		})
+	}
+}
+
+// Task 3.2: drush_exec rejects a command argument containing a newline,
+// matching the semicolon/pipe/ampersand/dollar/backtick behavior end-to-end.
+func TestDrushExec_NewlineInArgRejected(t *testing.T) {
+	args := json.RawMessage(`{"project_path":"/tmp","command":"status","args":["--foo\nrm -rf /"]}`)
+	result, err := realHandleDrushExec(args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(result, &resp)
+	if resp["success"] == true {
+		t.Error("expected success=false for argument containing a newline")
+	}
+	stderr, _ := resp["stderr"].(string)
+	if !strings.Contains(stderr, "shell metacharacters") {
+		t.Errorf("stderr = %q, want it to mention shell metacharacters", stderr)
+	}
+}
+
+// Task 3.3: drushExecError / realHandleDrushExec's JSON-parse-warning append
+// must insert a newline separator so it never glues onto the prior stderr
+// line, per the "Warning appended with separator" spec scenario.
+func TestRealHandleDrushExec_StderrWarningSeparator(t *testing.T) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
+	defer func() { drupexec.RunWithEnv = origRun }()
+
+	t.Run("existing stderr content gets a newline before the warning", func(t *testing.T) {
+		drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+			return "not valid json", "deprecation notice: something", 0, nil
+		}
+		args := json.RawMessage(`{"project_path":"/tmp","command":"status","format":"json"}`)
+		result, err := realHandleDrushExec(args)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		var resp map[string]interface{}
+		json.Unmarshal(result, &resp)
+		stderr, _ := resp["stderr"].(string)
+		want := "deprecation notice: something\nwarning: failed to parse JSON output"
+		if stderr != want {
+			t.Errorf("stderr = %q, want %q", stderr, want)
+		}
+	})
+
+	t.Run("empty stderr gets no leading blank line", func(t *testing.T) {
+		drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+			return "not valid json", "", 0, nil
+		}
+		args := json.RawMessage(`{"project_path":"/tmp","command":"status","format":"json"}`)
+		result, err := realHandleDrushExec(args)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		var resp map[string]interface{}
+		json.Unmarshal(result, &resp)
+		stderr, _ := resp["stderr"].(string)
+		want := "warning: failed to parse JSON output"
+		if stderr != want {
+			t.Errorf("stderr = %q, want %q", stderr, want)
+		}
+	})
 }
 
 func TestUpgradeScan_PathTraversal(t *testing.T) {
@@ -412,6 +584,143 @@ func jsonStr(s string) string {
 	return string(b)
 }
 
+// --- PR2: D2 bounded subprocess execution wired into MCP handlers ---
+
+// TestResolveExecTimeout_UsesOverrideOrDefault guards the exec-timeout
+// lookup table: tools with a configured override get it, everything else
+// falls back to defaultExecTimeout.
+func TestResolveExecTimeout_UsesOverrideOrDefault(t *testing.T) {
+	tests := []struct {
+		tool string
+		want time.Duration
+	}{
+		{"composer_require", execTimeoutOverride["composer_require"]},
+		{"core_upgrade_apply", execTimeoutOverride["core_upgrade_apply"]},
+		{"upgrade_scan", execTimeoutOverride["upgrade_scan"]},
+		{"drush_exec", defaultExecTimeout},
+		{"some_unknown_tool", defaultExecTimeout},
+	}
+	for _, tt := range tests {
+		if got := resolveExecTimeout(tt.tool); got != tt.want {
+			t.Errorf("resolveExecTimeout(%q) = %v, want %v", tt.tool, got, tt.want)
+		}
+	}
+}
+
+// TestResolveExecTimeout_OverridesAreLongerThanDefault documents why the 3
+// overridden tools exist: their underlying commands legitimately run longer
+// than a typical drush/composer call.
+func TestResolveExecTimeout_OverridesAreLongerThanDefault(t *testing.T) {
+	for _, tool := range []string{"composer_require", "core_upgrade_apply", "upgrade_scan"} {
+		if execTimeoutOverride[tool] <= defaultExecTimeout {
+			t.Errorf("execTimeoutOverride[%q] = %v, want it longer than defaultExecTimeout %v", tool, execTimeoutOverride[tool], defaultExecTimeout)
+		}
+	}
+}
+
+// TestComposerRequire_ExecTimeout_ReturnsErrorPromptly guards D2 end-to-end
+// through the composer_require handler: a hanging composer call must not
+// block the handler past its configured deadline.
+func TestComposerRequire_ExecTimeout_ReturnsErrorPromptly(t *testing.T) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	// composer_require has its own execTimeoutOverride entry, so it must be
+	// shrunk directly — changing defaultExecTimeout alone would not affect it.
+	origOverride := execTimeoutOverride["composer_require"]
+	execTimeoutOverride["composer_require"] = 50 * time.Millisecond
+	defer func() { execTimeoutOverride["composer_require"] = origOverride }()
+
+	origRunWithEnv := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(_ string, _ []string, cmd string, args ...string) (string, string, int, error) {
+		time.Sleep(2 * time.Second) // far past the 50ms deadline
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRunWithEnv }()
+
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{}`), 0o644)
+
+	start := time.Now()
+	_, err := realHandleComposerRequire(json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"package":"drupal/token"}`))
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a timeout error from realHandleComposerRequire, got nil")
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("realHandleComposerRequire blocked for %v past its 50ms exec deadline, want it to return promptly", elapsed)
+	}
+}
+
+// TestDrushExec_ExecTimeout_ReturnsErrorPromptly mirrors the above for
+// drush_exec, which has no override and so relies on defaultExecTimeout.
+func TestDrushExec_ExecTimeout_ReturnsErrorPromptly(t *testing.T) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origTimeout := defaultExecTimeout
+	defaultExecTimeout = 50 * time.Millisecond
+	defer func() { defaultExecTimeout = origTimeout }()
+
+	origRunWithEnv := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(_ string, _ []string, cmd string, args ...string) (string, string, int, error) {
+		time.Sleep(2 * time.Second)
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRunWithEnv }()
+
+	start := time.Now()
+	_, err := realHandleDrushExec(json.RawMessage(`{"project_path":"/tmp","command":"status"}`))
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a timeout error from realHandleDrushExec, got nil")
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("realHandleDrushExec blocked for %v past its 50ms exec deadline, want it to return promptly", elapsed)
+	}
+}
+
+// TestUpgradeScan_ExecTimeout_ReturnsErrorPromptly mirrors the above for
+// upgrade_scan's drush calls.
+func TestUpgradeScan_ExecTimeout_ReturnsErrorPromptly(t *testing.T) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	// upgrade_scan has its own execTimeoutOverride entry, so it must be
+	// shrunk directly — changing defaultExecTimeout alone would not affect it.
+	origOverride := execTimeoutOverride["upgrade_scan"]
+	execTimeoutOverride["upgrade_scan"] = 50 * time.Millisecond
+	defer func() { execTimeoutOverride["upgrade_scan"] = origOverride }()
+
+	origRunWithEnv := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(_ string, _ []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			time.Sleep(2 * time.Second)
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRunWithEnv }()
+
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/upgrade_status":"*"}}`), 0o644)
+
+	start := time.Now()
+	_, err := realHandleUpgradeScan(json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`))
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a timeout error from realHandleUpgradeScan, got nil")
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("realHandleUpgradeScan blocked for %v past its 50ms exec deadline, want it to return promptly", elapsed)
+	}
+}
+
 // --- core_upgrade_check ---
 
 func TestCoreUpgradeCheck_InvalidJSON(t *testing.T) {
@@ -515,6 +824,41 @@ func TestCoreUpgradeApply_DryRunPreview(t *testing.T) {
 	report, _ := resp["report"].(string)
 	if !strings.Contains(report, "drupal/core-recommended") {
 		t.Errorf("report = %q, want it to mention drupal/core-recommended", report)
+	}
+}
+
+// TestCoreUpgradeApply_AllowDirtyArgumentIgnored guards G4/G5/S2: allow_dirty
+// was removed from the MCP surface (proposal decision 3), so an
+// undocumented allow_dirty argument in the raw JSON call must never bypass
+// the dirty-tree check — only the separate CLI `drup upgrade-core
+// --allow-dirty` command keeps that behavior.
+func TestCoreUpgradeApply_AllowDirtyArgumentIgnored(t *testing.T) {
+	requireGitForApp(t)
+	dir := t.TempDir()
+	runGitCmd(t, dir, "init")
+	runGitCmd(t, dir, "config", "user.email", "test@test.com")
+	runGitCmd(t, dir, "config", "user.name", "Test")
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/core-recommended":"^10.1"}}`), 0o644)
+	runGitCmd(t, dir, "add", ".")
+	runGitCmd(t, dir, "commit", "-m", "initial")
+
+	// Dirty the tree after the commit so Apply's dirty-tree check has
+	// something to refuse.
+	os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("x"), 0o644)
+
+	args := json.RawMessage(fmt.Sprintf(`{"project_path":%s,"target_version":"11.0.9","dry_run":false,"allow_dirty":true}`, jsonStr(dir)))
+	result, err := realHandleCoreUpgradeApply(args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(result, &resp)
+	if resp["success"] != false {
+		t.Errorf("success = %v, want false — an MCP-supplied allow_dirty must be ignored", resp["success"])
+	}
+	report, _ := resp["report"].(string)
+	if !strings.Contains(report, "uncommitted changes") {
+		t.Errorf("report = %q, want it to mention uncommitted changes (allow_dirty must not bypass the MCP dirty-tree check)", report)
 	}
 }
 
@@ -882,6 +1226,110 @@ func TestRealHandleValidate_PlainText(t *testing.T) {
 	}
 }
 
+// --- Phase 7: G9 — validate's expected_hash gate ---
+
+const validateChecklistXML = `<?xml version="1.0"?><checkstyle><file name="modules/custom/mymod/mymod.module"><error line="5" message="Deprecated function foo()." severity="error"/></file></checkstyle>`
+
+func realHandleValidateWithMockedDrush(t *testing.T, xml string) (json.RawMessage, error) {
+	t.Helper()
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	t.Cleanup(func() { defaultEnvDetector = origDetector })
+
+	origRun := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			return xml, "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	t.Cleanup(func() { drupexec.RunWithEnv = origRun })
+
+	args := json.RawMessage(`{"project_path":"/tmp/test-project","module":"mymod"}`)
+	return realHandleValidate(args)
+}
+
+func TestRealHandleValidate_ExpectedHashOmitted_PreservesTotalErrorsGating(t *testing.T) {
+	result, err := realHandleValidateWithMockedDrush(t, validateChecklistXML)
+	if err != nil {
+		t.Fatalf("realHandleValidate error: %v", err)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp["total_errors"].(float64) != 1 {
+		t.Errorf("total_errors = %v, want 1", resp["total_errors"])
+	}
+	hash, ok := resp["evidence_hash"].(string)
+	if !ok || hash == "" {
+		t.Errorf("evidence_hash = %v, want a non-empty string", resp["evidence_hash"])
+	}
+}
+
+func TestRealHandleValidate_MatchingExpectedHash_ProceedsWithNormalGating(t *testing.T) {
+	// First call to learn the current evidence_hash.
+	first, err := realHandleValidateWithMockedDrush(t, validateChecklistXML)
+	if err != nil {
+		t.Fatalf("realHandleValidate error: %v", err)
+	}
+	var firstResp map[string]interface{}
+	json.Unmarshal(first, &firstResp)
+	hash := firstResp["evidence_hash"].(string)
+
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+	origRun := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			return validateChecklistXML, "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRun }()
+
+	args := json.RawMessage(fmt.Sprintf(`{"project_path":"/tmp/test-project","module":"mymod","expected_hash":%q}`, hash))
+	result, err := realHandleValidate(args)
+	if err != nil {
+		t.Fatalf("realHandleValidate error with matching expected_hash: %v", err)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(result, &resp)
+	if resp["total_errors"].(float64) != 1 {
+		t.Errorf("total_errors = %v, want 1", resp["total_errors"])
+	}
+}
+
+func TestRealHandleValidate_MismatchedExpectedHash_FailsClosedRegardlessOfTotalErrors(t *testing.T) {
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	origRun := drupexec.RunWithEnv
+	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			// Zero findings — even so, a stale expected_hash must fail
+			// closed rather than reporting total_errors == 0 as trustworthy.
+			return `<?xml version="1.0"?><checkstyle></checkstyle>`, "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnv = origRun }()
+
+	staleHash := "0000000000000000000000000000000000000000000000000000000000stale"
+	args := json.RawMessage(fmt.Sprintf(`{"project_path":"/tmp/test-project","module":"mymod","expected_hash":%q}`, staleHash))
+	_, err := realHandleValidate(args)
+	if err == nil {
+		t.Fatal("expected error for mismatched expected_hash, got nil")
+	}
+	if !strings.Contains(err.Error(), staleHash) {
+		t.Errorf("error = %q, want it to include the expected hash %q", err.Error(), staleHash)
+	}
+}
+
 // --- Phase 5: RED test for config conflict in realHandleUpgradeScan ---
 
 func TestRealHandleUpgradeScan_DeletesUpdateSettingsBeforeEnable(t *testing.T) {
@@ -1180,7 +1628,7 @@ func TestEnsureUpgradeStatusEnabled_AlreadyEnabled(t *testing.T) {
 	}
 	defer func() { drupexec.RunWithEnv = origRun }()
 
-	err := ensureUpgradeStatusEnabled(dir)
+	err := ensureUpgradeStatusEnabled(dir, defaultExecTimeout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1212,7 +1660,7 @@ func TestEnsureUpgradeStatusEnabled_AutoEnables(t *testing.T) {
 	}
 	defer func() { drupexec.RunWithEnv = origRun }()
 
-	err := ensureUpgradeStatusEnabled(dir)
+	err := ensureUpgradeStatusEnabled(dir, defaultExecTimeout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1238,7 +1686,7 @@ func TestEnsureUpgradeStatusEnabled_NotInstalled(t *testing.T) {
 	defaultEnvDetector = &mockEnvDetector{}
 	defer func() { defaultEnvDetector = origDetector }()
 
-	err := ensureUpgradeStatusEnabled(dir)
+	err := ensureUpgradeStatusEnabled(dir, defaultExecTimeout)
 	if err == nil {
 		t.Fatal("expected error when upgrade_status is not in composer.json, got nil")
 	}
@@ -1295,5 +1743,310 @@ func TestRealHandleScan_AutoEnablesUpgradeStatus(t *testing.T) {
 	}
 	if !foundAnalyze {
 		t.Error("realHandleScan did not call upgrade_status:analyze")
+	}
+}
+
+// --- session_open ---
+
+func resetSessionForTest(t *testing.T) {
+	t.Helper()
+	session.Reset()
+	t.Cleanup(session.Reset)
+}
+
+func newDrupalProjectDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "composer.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestRealHandleSessionOpen_BindsCanonicalRootOnSuccess(t *testing.T) {
+	resetSessionForTest(t)
+	dir := newDrupalProjectDir(t)
+
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	result, err := realHandleSessionOpen(args)
+	if err != nil {
+		t.Fatalf("realHandleSessionOpen error: %v", err)
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		t.Fatalf("invalid result JSON: %v", err)
+	}
+	if resp["session_active"] != true {
+		t.Errorf("session_active = %v, want true", resp["session_active"])
+	}
+	if resp["root"] == "" {
+		t.Error("root must not be empty on a successful session_open")
+	}
+
+	sess, ok := session.Current()
+	if !ok {
+		t.Fatal("expected an active session after realHandleSessionOpen")
+	}
+	if sess.Root != resp["root"] {
+		t.Errorf("bound session root = %q, response root = %v", sess.Root, resp["root"])
+	}
+}
+
+func TestRealHandleSessionOpen_RejectsNonDrupalDirectory(t *testing.T) {
+	resetSessionForTest(t)
+	dir := t.TempDir() // no composer.json, no web root markers
+
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	if _, err := realHandleSessionOpen(args); err == nil {
+		t.Fatal("expected an error opening a session against a non-Drupal directory")
+	}
+	if _, ok := session.Current(); ok {
+		t.Error("no session should be bound after a rejected session_open")
+	}
+}
+
+func TestRealHandleSessionOpen_MissingProjectPath(t *testing.T) {
+	resetSessionForTest(t)
+	if _, err := realHandleSessionOpen(json.RawMessage(`{}`)); err == nil {
+		t.Error("expected an error for a missing project_path")
+	}
+}
+
+// --- Guard middleware wiring (specs/agent-session Guard Middleware Enforcement) ---
+
+func TestWireMCPTools_RefuseOnlyToolsRefuseWithoutSession(t *testing.T) {
+	resetSessionForTest(t)
+
+	var buf bytes.Buffer
+	server := mcp.NewServer(&buf, "test")
+	WireMCPTools(server)
+
+	dir := t.TempDir()
+	for name := range session.RefuseOnlyTools {
+		t.Run(name, func(t *testing.T) {
+			args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+			_, err := server.CallTool(name, args)
+			if err == nil {
+				t.Fatalf("%s: expected refusal without a bound session", name)
+			}
+			if !strings.Contains(err.Error(), "session_open") {
+				t.Errorf("%s: error %q does not name the session_open flow", name, err.Error())
+			}
+		})
+	}
+}
+
+func TestWireMCPTools_ForceDryRunToolsNeverRefusedWithoutSession(t *testing.T) {
+	resetSessionForTest(t)
+
+	var buf bytes.Buffer
+	server := mcp.NewServer(&buf, "test")
+	WireMCPTools(server)
+
+	dir := t.TempDir()
+	for name := range session.ForceDryRunTools {
+		t.Run(name, func(t *testing.T) {
+			// Minimal args (project_path only). Whatever the real handler
+			// does with incomplete input, the guard itself must never
+			// produce the refuse-only session_open error for a force-dry-run
+			// tool — it forces dry_run and lets the call through instead.
+			args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+			_, err := server.CallTool(name, args)
+			if err != nil && strings.Contains(err.Error(), "session_open") {
+				t.Errorf("%s: guard refused instead of forcing dry-run: %v", name, err)
+			}
+		})
+	}
+}
+
+func TestWireMCPTools_CoreUpgradeApply_ForcesDryRunWithoutSession(t *testing.T) {
+	resetSessionForTest(t)
+	requireGitForApp(t)
+
+	dir := t.TempDir()
+	runGitCmd(t, dir, "init")
+	runGitCmd(t, dir, "config", "user.email", "test@test.com")
+	runGitCmd(t, dir, "config", "user.name", "Test")
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/core-recommended":"^10.1"}}`), 0o644)
+	runGitCmd(t, dir, "add", ".")
+	runGitCmd(t, dir, "commit", "-m", "initial")
+
+	var buf bytes.Buffer
+	server := mcp.NewServer(&buf, "test")
+	WireMCPTools(server)
+
+	// No dry_run field in the request at all — without a bound session the
+	// guard must force it to true regardless.
+	args := json.RawMessage(fmt.Sprintf(`{"project_path":%s,"target_version":"11.0.9"}`, jsonStr(dir)))
+	result, err := server.CallTool("core_upgrade_apply", args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(result, &resp)
+	if resp["success"] != true {
+		t.Errorf("success = %v, want true", resp["success"])
+	}
+	if resp["rollback_checkpoint"] != "" {
+		t.Errorf("rollback_checkpoint = %v, want empty — the guard should have forced dry_run without a session", resp["rollback_checkpoint"])
+	}
+}
+
+func TestWireMCPTools_MatchingSessionAllowsGuardedToolThrough(t *testing.T) {
+	resetSessionForTest(t)
+
+	var buf bytes.Buffer
+	server := mcp.NewServer(&buf, "test")
+	WireMCPTools(server)
+
+	dir := newDrupalProjectDir(t)
+	// A matching session alone is not enough since PR6 — the guard also
+	// requires a fresh backup manifest before reaching the real handler.
+	writeFreshBackupManifest(t, dir)
+	if _, err := session.Open(dir); err != nil {
+		t.Fatalf("session.Open error: %v", err)
+	}
+
+	// composer_require with project_path only (missing "package") must fail
+	// on the handler's own validation, never on the guard.
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	_, err := server.CallTool("composer_require", args)
+	if err == nil {
+		t.Fatal("expected an error from composer_require's own validation (missing package)")
+	}
+	if strings.Contains(err.Error(), "session_open") || strings.Contains(err.Error(), "test_backup_create") {
+		t.Errorf("guard refused despite a matching bound session and fresh backup: %v", err)
+	}
+}
+
+func TestWireMCPTools_UpgradeScanItselfIsNotRegistrationGuarded(t *testing.T) {
+	// upgrade_scan is intentionally excluded from the registration-time
+	// guard set (session.GuardedTools()); it is guarded only at its nested
+	// composer-install path. Registering it directly must not wrap it.
+	if session.GuardedTools()["upgrade_scan"] {
+		t.Fatal("upgrade_scan must not be part of the registration-time guarded set")
+	}
+}
+
+// --- upgrade_scan nested install path guard (session.RequireInstallAllowed) ---
+
+func TestRealHandleUpgradeScan_NestedInstallPathGuardedWithoutSession(t *testing.T) {
+	resetSessionForTest(t)
+
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{}}`), 0o644)
+
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	_, err := realHandleUpgradeScan(args)
+	if err == nil {
+		t.Fatal("expected the nested composer-install path to be refused without a bound session")
+	}
+	if !strings.Contains(err.Error(), "session_open") {
+		t.Errorf("error = %q, want it to name the session_open flow", err.Error())
+	}
+}
+
+// --- pipeline_status ---
+
+func TestRealHandlePipelineStatus_WithPriorMutations(t *testing.T) {
+	resetSessionForTest(t)
+	dir := t.TempDir()
+	audit.Append(dir, "apply_patch", []byte(`{}`), audit.ResultSuccess, "abc123")
+	audit.Append(dir, "apply_patch", []byte(`{}`), audit.ResultSuccess, "def456")
+	audit.Append(dir, "composer_require", []byte(`{}`), audit.ResultFailure, "")
+
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	result, err := realHandlePipelineStatus(args)
+	if err != nil {
+		t.Fatalf("realHandlePipelineStatus error: %v", err)
+	}
+
+	var resp struct {
+		PerToolCounts  map[string]int `json:"per_tool_counts"`
+		TotalMutations int            `json:"total_mutations"`
+		RemainingCap   int            `json:"remaining_cap"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		t.Fatalf("invalid response JSON: %v", err)
+	}
+	if resp.PerToolCounts["apply_patch"] != 2 {
+		t.Errorf("per_tool_counts[apply_patch] = %d, want 2", resp.PerToolCounts["apply_patch"])
+	}
+	if resp.PerToolCounts["composer_require"] != 1 {
+		t.Errorf("per_tool_counts[composer_require] = %d, want 1", resp.PerToolCounts["composer_require"])
+	}
+	if resp.TotalMutations != 3 {
+		t.Errorf("total_mutations = %d, want 3", resp.TotalMutations)
+	}
+	// No session bound in this test, so the per-day default cap (200) applies
+	// and all 3 recorded mutations happened within the last 24h.
+	if resp.RemainingCap != 197 {
+		t.Errorf("remaining_cap = %d, want 197 (default per-day cap 200 - 3 recorded)", resp.RemainingCap)
+	}
+}
+
+func TestRealHandlePipelineStatus_EmptyLedgerReturnsZeroCountsFullCapNoError(t *testing.T) {
+	resetSessionForTest(t)
+	dir := t.TempDir()
+
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	result, err := realHandlePipelineStatus(args)
+	if err != nil {
+		t.Fatalf("realHandlePipelineStatus error on empty ledger: %v", err)
+	}
+
+	var resp struct {
+		PerToolCounts  map[string]int `json:"per_tool_counts"`
+		TotalMutations int            `json:"total_mutations"`
+		RemainingCap   int            `json:"remaining_cap"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		t.Fatalf("invalid response JSON: %v", err)
+	}
+	if len(resp.PerToolCounts) != 0 {
+		t.Errorf("per_tool_counts = %v, want empty for an unused ledger", resp.PerToolCounts)
+	}
+	if resp.TotalMutations != 0 {
+		t.Errorf("total_mutations = %d, want 0", resp.TotalMutations)
+	}
+	if resp.RemainingCap != 200 {
+		t.Errorf("remaining_cap = %d, want 200 (the full built-in default per-day cap)", resp.RemainingCap)
+	}
+}
+
+func TestRealHandleUpgradeScan_NestedInstallPathAllowedWithMatchingSession(t *testing.T) {
+	resetSessionForTest(t)
+
+	origDetector := defaultEnvDetector
+	defaultEnvDetector = &mockEnvDetector{}
+	defer func() { defaultEnvDetector = origDetector }()
+
+	dir := t.TempDir()
+
+	origRunWithEnvCtx := drupexec.RunWithEnvCtx
+	drupexec.RunWithEnvCtx = func(_ context.Context, projectPath string, _ []string, cmd string, args ...string) (string, string, int, error) {
+		// A real `composer require drupal/upgrade_status` would add the
+		// package to composer.json; simulate that so the later
+		// ensureUpgradeStatusEnabled check (which re-reads composer.json)
+		// sees the package as installed, exactly like it would in production.
+		if cmd == "composer" && len(args) > 1 && args[0] == "require" && args[1] == "drupal/upgrade_status" {
+			os.WriteFile(filepath.Join(projectPath, "composer.json"), []byte(`{"require":{"drupal/upgrade_status":"*"}}`), 0o644)
+		}
+		return "", "", 0, nil
+	}
+	defer func() { drupexec.RunWithEnvCtx = origRunWithEnvCtx }()
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{}}`), 0o644)
+	// The nested composer-install path now goes through the same
+	// guardedCall as every other guarded tool (PR6), which also requires a
+	// fresh backup manifest before allowing the mutation through.
+	writeFreshBackupManifest(t, dir)
+
+	if _, err := session.Open(dir); err != nil {
+		t.Fatalf("session.Open error: %v", err)
+	}
+
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	if _, err := realHandleUpgradeScan(args); err != nil {
+		t.Fatalf("unexpected error with a matching session bound: %v", err)
 	}
 }

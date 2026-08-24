@@ -5,7 +5,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.25.10+-00ADD8?logo=go&logoColor=white" alt="Go">
   <img src="https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey" alt="Platform">
-  <img src="https://img.shields.io/badge/tests-498%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-passing-brightgreen" alt="Tests">
 </p>
 
 ---
@@ -100,7 +100,7 @@ When running `drup install`, the binary detects which agents you have installed 
 | | `~/.claude/agents/drup-custom.md` | Custom code: refactor with retry and escalation |
 | | `~/.claude/agents/drup-theme.md` | Themes: twig/.theme deprecations |
 | | `~/.claude/agents/drup-validator.md` | Validator: owns every `scan`/`validate`/`upgrade_scan` call — the only agent allowed to confirm a gate; generates the final report |
-| **MCP server** | `~/.claude.json` | Registers `drup mcp` as a user-scoped MCP server with 26 tools |
+| **MCP server** | `~/.claude.json` | Registers `drup mcp` as a user-scoped MCP server with 31 tools |
 
 **Usage**: open Claude Code in the Drupal project and run:
 
@@ -147,7 +147,7 @@ All 3 agents share the same MCP configuration. The `.mcp.json` (or `mcp.json`) f
 }
 ```
 
-The MCP server communicates over **stdio** (JSON-RPC 2.0). No port needed, no network needed — the agent launches the `drup mcp` process and communicates via stdin/stdout. The 26 exposed tools are documented in [MCP Tools](#mcp-tools) and in [`docs/mcp-tools.md`](docs/mcp-tools.md).
+The MCP server communicates over **stdio** (JSON-RPC 2.0). No port needed, no network needed — the agent launches the `drup mcp` process and communicates via stdin/stdout. The 31 exposed tools are documented in [MCP Tools](#mcp-tools) and in [`docs/mcp-tools.md`](docs/mcp-tools.md).
 
 ### Verifying the installation
 
@@ -292,7 +292,7 @@ The binary only does deterministic work. The full flow is executed by an **AI ag
 
 ### The bridge (MCP)
 
-`drup`'s MCP server exposes 25 tools with JSON types and schemas. It's the standard protocol that connects the binary with any compatible agent:
+`drup`'s MCP server exposes 31 tools with JSON types and schemas. It's the standard protocol that connects the binary with any compatible agent:
 
 ```
 Claude Code ───┐
@@ -339,7 +339,7 @@ Codex ─────────┘
 | `core_upgrade_apply` | `project_path, target_version, dry_run` | `{ success, report, rollback_checkpoint, stderr }` | Requires a clean git tree; `dry_run` previews only; on apply, commits a git checkpoint before mutating `composer.json` |
 | `patch_reconcile` | `module_machine_name, current_patch_url` | `{ newer_patches[], is_still_needed, recommendation }` | Analysis-only: is an already-applied patch obsolete, still needed, or superseded? |
 
-### Post-pipeline / Backup Lifecycle (5 added)
+### Post-pipeline / Backup Lifecycle (6 added)
 
 | Tool | Input | Output | Purpose |
 |---|---|---|---|
@@ -356,7 +356,7 @@ Codex ─────────┘
 
 `drup` splits responsibility strictly along one rule: **all deterministic work happens in the Go binary/MCP tools; the AI agent only orchestrates and talks to the user.**
 
-- **Go/MCP tools** (this binary): version checking, composer.json mutation, patch analysis, git operations, drush/composer execution, report generation — all 20 tools above run without spending a single AI token.
+- **Go/MCP tools** (this binary): version checking, composer.json mutation, patch analysis, git operations, drush/composer execution, report generation — all 31 tools above run without spending a single AI token.
 - **Agent orchestration** (`SKILL.md` + sub-agents, installed via `drup install`): the `/drup` skill is a pure coordinator with zero execute permission — it never calls Bash or an MCP tool directly. It only dispatches sub-agents (which do call the MCP tools) and relays their structured reports to the user.
 
 This means `/drup <path>` is **not a shell command** — it is a slash command that loads an AI agent skill in Claude Code, OpenCode, or Codex. See [`openspec/changes/drupal-upgrade-orchestrator/specs/`](openspec/changes/drupal-upgrade-orchestrator/specs/) for the requirements this split is built on.
@@ -418,7 +418,7 @@ git clone git@github.com:nireneko/drup.git
 cd drup
 
 go build ./cmd/drup     # build
-go test ./...           # all tests (163+)
+go test ./...           # all tests passing
 go vet ./...            # static analysis
 ```
 

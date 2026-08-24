@@ -1,6 +1,9 @@
 package app
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
 // Version is set at build time via ldflags.
 // Default value is "dev-version" so any binary not produced by the release
@@ -62,13 +65,13 @@ func Run(args []string) error {
 		}
 		return RunReport(args[1])
 	case "mcp":
-		return RunMCP()
+		return RunMCP(args[1:])
 	case "install":
-		return RunInstall()
+		return RunInstall(args[1:])
 	case "uninstall":
 		return RunUninstall(args[1:])
 	case "sync":
-		return RunSync()
+		return RunSync(args[1:])
 	case "upgrade":
 		return RunUpgrade()
 	case "preflight":
@@ -109,7 +112,7 @@ func Run(args []string) error {
 		if len(args) < 2 {
 			return fmt.Errorf("usage: drup cleanup <project-path> [--validate-passed|--validate-failed]")
 		}
-		return RunCleanup(args[1:])
+		return RunCleanup(os.Stdout, args[1:])
 	default:
 		return fmt.Errorf("unknown command %q — run 'drup help' for available commands", args[0])
 	}
@@ -127,10 +130,10 @@ Commands:
   contrib <module>      Check Drupal.org for D11 compatibility
   issue <module_or_nid> Extract patch/diff/MR links from Drupal.org issues
   report <path>         Generate JSON and markdown reports
-  mcp                   Start MCP stdio server
-  install               Detect agents and write skill files
+  mcp [--locked]        Start MCP stdio server (--locked disables all mutating tool calls)
+  install [--locked]    Detect agents and write skill files (--locked installs a locked MCP config)
   uninstall             Remove drup from all installed agents
-  sync                  Re-apply agent assets
+  sync [--locked]       Re-apply agent assets (--locked installs a locked MCP config)
   upgrade               Self-update binary
   preflight [path] [--allow-dirty]  Check project readiness for upgrade automation
   validate <path> [mod] Re-run scan and return error state (exit 1 if errors)

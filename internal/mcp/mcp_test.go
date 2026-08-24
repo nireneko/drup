@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -170,8 +172,33 @@ func TestServer_ListTools(t *testing.T) {
 	if !ok {
 		t.Fatal("missing tools array in result")
 	}
-	if len(tools) != 25 {
-		t.Errorf("len(tools) = %d, want 25", len(tools))
+	if len(tools) != 27 {
+		t.Errorf("len(tools) = %d, want 27", len(tools))
+	}
+}
+
+func TestServer_CallTool_DispatchesToRegisteredHandler(t *testing.T) {
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+	server.RegisterTool("probe", func(args json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"ok":true}`), nil
+	})
+
+	result, err := server.CallTool("probe", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("CallTool error: %v", err)
+	}
+	if string(result) != `{"ok":true}` {
+		t.Errorf("CallTool result = %s, want {\"ok\":true}", result)
+	}
+}
+
+func TestServer_CallTool_UnknownToolReturnsError(t *testing.T) {
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+
+	if _, err := server.CallTool("does-not-exist", json.RawMessage(`{}`)); err == nil {
+		t.Error("expected error calling an unregistered tool")
 	}
 }
 
@@ -357,6 +384,24 @@ func TestServer_WiringSymmetryOnlyBackupToolsAreReverseAsymmetric(t *testing.T) 
 	}
 }
 
+// TestToolRegistry_CoreUpgradeApplyHasNoAllowDirty guards G4/G5/S2
+// (proposal decision 3): the MCP core_upgrade_apply schema must never
+// expose allow_dirty — that flag stays CLI-only (drup upgrade-core
+// --allow-dirty). The unguarded-session path forces dry_run: true instead
+// of accepting any override.
+func TestToolRegistry_CoreUpgradeApplyHasNoAllowDirty(t *testing.T) {
+	schema, ok := toolRegistry["core_upgrade_apply"]
+	if !ok {
+		t.Fatal("core_upgrade_apply is missing from toolRegistry")
+	}
+	if _, exists := schema.Properties["allow_dirty"]; exists {
+		t.Error("core_upgrade_apply schema exposes allow_dirty — it must be CLI-only, not part of the MCP surface")
+	}
+	if _, exists := schema.Properties["dry_run"]; !exists {
+		t.Error("core_upgrade_apply schema is missing dry_run — the native override the guard forces instead of allow_dirty")
+	}
+}
+
 // TestServer_WiringSymmetryCleanupToolIsSymmetric guards the fix that
 // re-introduced `cleanup` to defaultTools() and toolRegistry. Both must stay
 // in sync; if either is dropped, this test fails.
@@ -402,11 +447,12 @@ var runtimeBackupNames = []string{
 	"test_backup_delete",
 }
 
-// TestServer_PostWireUpCountIs28 asserts that after the production-style
-// registration of the 4 backup tools, tools/list reports 29 tools (the 25
-// default stubs + 4 reverse-asymmetric backup tools). This locks the runtime
-// count that docs/mcp-tools.md §1 advertises.
-func TestServer_PostWireUpCountIs29(t *testing.T) {
+// TestServer_PostWireUpCountIs31 asserts that after the production-style
+// registration of the 4 backup tools, tools/list reports 31 tools (the 27
+// default stubs — including session_open added in PR4 and pipeline_status
+// added in PR6 — + 4 reverse-asymmetric backup tools). This locks the
+// runtime count that docs/mcp-tools.md §1 advertises.
+func TestServer_PostWireUpCountIs31(t *testing.T) {
 	req := JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      1,
@@ -439,8 +485,8 @@ func TestServer_PostWireUpCountIs29(t *testing.T) {
 	if !ok {
 		t.Fatal("missing tools array in result")
 	}
-	if len(tools) != 29 {
-		t.Errorf("post-wire-up tool count = %d, want 29 (25 default + 4 backup)", len(tools))
+	if len(tools) != 31 {
+		t.Errorf("post-wire-up tool count = %d, want 31 (27 default + 4 backup)", len(tools))
 	}
 }
 
@@ -462,9 +508,10 @@ func TestServer_ListTools_ProjectPathAwareToolsAdvertiseIt(t *testing.T) {
 func TestServer_ToolCount(t *testing.T) {
 	var buf bytes.Buffer
 	server := NewServer(&buf, "test")
-	// defaultTools() returns 25 tools.
-	if got := server.ToolCount(); got != 25 {
-		t.Errorf("default ToolCount() = %d, want 25", got)
+	// defaultTools() returns 27 tools (25 original + session_open added in
+	// PR4 + pipeline_status added in PR6).
+	if got := server.ToolCount(); got != 27 {
+		t.Errorf("default ToolCount() = %d, want 27", got)
 	}
 
 	// Register 2 more tools.
@@ -473,8 +520,8 @@ func TestServer_ToolCount(t *testing.T) {
 	}
 	server.RegisterTool("extra_tool_1", dummy)
 	server.RegisterTool("extra_tool_2", dummy)
-	if got := server.ToolCount(); got != 27 {
-		t.Errorf("after adding 2 tools, ToolCount() = %d, want 27", got)
+	if got := server.ToolCount(); got != 29 {
+		t.Errorf("after adding 2 tools, ToolCount() = %d, want 29", got)
 	}
 }
 
@@ -819,5 +866,219 @@ func TestRetryLoop_Exhausted(t *testing.T) {
 	}
 	if callCount != 3 {
 		t.Errorf("handler called %d times, want 3", callCount)
+	}
+}
+
+// --- PR2: transport hardening (D1 scanner buffer, M3 sorted tools/list,
+// M6 JSON-RPC notification handling) ---
+
+// decodeResponses splits newline-delimited JSON-RPC response lines and
+// decodes each one, skipping blank lines.
+func decodeResponses(t *testing.T, data []byte) []JSONRPCResponse {
+	t.Helper()
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return nil
+	}
+	var out []JSONRPCResponse
+	for _, line := range strings.Split(trimmed, "\n") {
+		if line == "" {
+			continue
+		}
+		var resp JSONRPCResponse
+		if err := json.Unmarshal([]byte(line), &resp); err != nil {
+			t.Fatalf("invalid response line %q: %v", line, err)
+		}
+		out = append(out, resp)
+	}
+	return out
+}
+
+// toolNamesFromResult extracts the ordered tool name list from a tools/list
+// result payload, preserving JSON array order.
+func toolNamesFromResult(t *testing.T, result json.RawMessage) []string {
+	t.Helper()
+	var parsed struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("invalid tools/list result: %v", err)
+	}
+	names := make([]string, len(parsed.Tools))
+	for i, tool := range parsed.Tools {
+		names[i] = tool.Name
+	}
+	return names
+}
+
+// TestServer_ListTools_RepeatedCallsMatchAndSorted guards M3: tools/list must
+// list tools in a deterministic, name-sorted order across repeated calls,
+// not the randomized order Go map iteration would otherwise produce.
+func TestServer_ListTools_RepeatedCallsMatchAndSorted(t *testing.T) {
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+	req := JSONRPCRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"}
+
+	if err := server.handleRequest(req); err != nil {
+		t.Fatalf("handleRequest error (call 1): %v", err)
+	}
+	if err := server.handleRequest(req); err != nil {
+		t.Fatalf("handleRequest error (call 2): %v", err)
+	}
+
+	responses := decodeResponses(t, buf.Bytes())
+	if len(responses) != 2 {
+		t.Fatalf("got %d responses, want 2", len(responses))
+	}
+
+	names1 := toolNamesFromResult(t, responses[0].Result)
+	names2 := toolNamesFromResult(t, responses[1].Result)
+	if !reflect.DeepEqual(names1, names2) {
+		t.Fatalf("tool order changed between two tools/list calls in the same session:\n1: %v\n2: %v", names1, names2)
+	}
+
+	sorted := append([]string(nil), names1...)
+	sort.Strings(sorted)
+	if !reflect.DeepEqual(names1, sorted) {
+		t.Errorf("tools/list order = %v, want sorted by name = %v", names1, sorted)
+	}
+}
+
+// TestServer_HandleRequest_NotificationProducesNoResponse guards M6: a
+// JSON-RPC request with no "id" field is a notification. The server must not
+// write any response for it, not even an error one.
+func TestServer_HandleRequest_NotificationProducesNoResponse(t *testing.T) {
+	req := JSONRPCRequest{JSONRPC: "2.0", Method: "notifications/initialized"}
+
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+
+	if err := server.handleRequest(req); err != nil {
+		t.Fatalf("handleRequest error: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no response written for a notification, got: %q", buf.String())
+	}
+}
+
+// TestServer_HandleRequest_NotificationForUnknownMethodStillNoResponse
+// ensures the notification short-circuit applies before method dispatch, so
+// even an unrecognized notification method never triggers the -32601 error
+// response that would otherwise fire for a request with an id.
+func TestServer_HandleRequest_NotificationForUnknownMethodStillNoResponse(t *testing.T) {
+	req := JSONRPCRequest{JSONRPC: "2.0", Method: "notifications/some_unknown_event"}
+
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+
+	if err := server.handleRequest(req); err != nil {
+		t.Fatalf("handleRequest error: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no response written for an unknown notification, got: %q", buf.String())
+	}
+}
+
+// TestServer_HandleRequest_OrdinaryRequestStillGetsResponse guards the other
+// half of M6: a request that DOES carry a non-null id must still receive
+// exactly one response.
+func TestServer_HandleRequest_OrdinaryRequestStillGetsResponse(t *testing.T) {
+	req := JSONRPCRequest{JSONRPC: "2.0", ID: float64(7), Method: "tools/list"}
+
+	var buf bytes.Buffer
+	server := NewServer(&buf, "test")
+
+	if err := server.handleRequest(req); err != nil {
+		t.Fatalf("handleRequest error: %v", err)
+	}
+	responses := decodeResponses(t, buf.Bytes())
+	if len(responses) != 1 {
+		t.Fatalf("got %d responses, want exactly 1 for a request with a non-null id", len(responses))
+	}
+	if responses[0].Error != nil {
+		t.Errorf("unexpected error: %v", responses[0].Error)
+	}
+	if fmt.Sprint(responses[0].ID) != "7" {
+		t.Errorf("response id = %v, want 7", responses[0].ID)
+	}
+}
+
+// TestServer_Run_NotificationInStreamGetsNoResponseButNextRequestDoes drives
+// the notification behavior through the stdin read loop (server.run), not
+// just handleRequest directly, mirroring how a real client interleaves
+// notifications/initialized with ordinary requests over stdio.
+func TestServer_Run_NotificationInStreamGetsNoResponseButNextRequestDoes(t *testing.T) {
+	input := `{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n" +
+		`{"jsonrpc":"2.0","id":1,"method":"tools/list"}` + "\n"
+
+	var buf bytes.Buffer
+	server := &Server{out: &buf, tools: defaultTools()}
+	if err := server.run(strings.NewReader(input)); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	responses := decodeResponses(t, buf.Bytes())
+	if len(responses) != 1 {
+		t.Fatalf("got %d responses, want exactly 1 (the notification must not produce one)", len(responses))
+	}
+	if fmt.Sprint(responses[0].ID) != "1" {
+		t.Errorf("response id = %v, want 1", responses[0].ID)
+	}
+}
+
+// TestServer_Run_LineOver64KBWithinBoundParsesNormally guards D1's "within
+// bound" scenario: a request larger than the default 64KB bufio.Scanner
+// buffer, but within the server's configured maximum, must still parse.
+func TestServer_Run_LineOver64KBWithinBoundParsesNormally(t *testing.T) {
+	bigValue := strings.Repeat("x", 100*1024) // 100KB — over the 64KB default.
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"scan","arguments":{"project_path":"` + bigValue + `"}}}` + "\n"
+
+	var buf bytes.Buffer
+	server := &Server{out: &buf, tools: defaultTools()}
+	if err := server.run(strings.NewReader(req)); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	responses := decodeResponses(t, buf.Bytes())
+	if len(responses) != 1 {
+		t.Fatalf("got %d responses, want 1", len(responses))
+	}
+	if responses[0].Error != nil {
+		t.Errorf("unexpected error for a large-but-within-bound line: %v", responses[0].Error)
+	}
+}
+
+// TestServer_Run_OversizedLineDoesNotKillServer guards D1's core fix: today
+// an oversized line makes bufio.Scanner return bufio.ErrTooLong, server.run
+// propagates that as an error, and the whole stdio loop dies — every
+// subsequent request in the same process is lost. After the fix, an
+// oversized line must produce a parse error for that one request and the
+// server must keep serving the next request in the stream.
+func TestServer_Run_OversizedLineDoesNotKillServer(t *testing.T) {
+	giant := strings.Repeat("a", 11*1024*1024) // over the 10MB configured max.
+	oversized := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"scan","arguments":{"project_path":"` + giant + `"}}}`
+	next := `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`
+	input := oversized + "\n" + next + "\n"
+
+	var buf bytes.Buffer
+	server := &Server{out: &buf, tools: defaultTools()}
+	if err := server.run(strings.NewReader(input)); err != nil {
+		t.Fatalf("run returned error — the server must survive an oversized line: %v", err)
+	}
+
+	responses := decodeResponses(t, buf.Bytes())
+	if len(responses) == 0 {
+		t.Fatal("expected at least one response, got none")
+	}
+
+	last := responses[len(responses)-1]
+	if last.Error != nil {
+		t.Fatalf("expected the trailing tools/list request to succeed after the oversized line, got error: %v", last.Error)
+	}
+	names := toolNamesFromResult(t, last.Result)
+	if len(names) == 0 {
+		t.Fatal("expected tools/list to return a non-empty tool list after recovering from the oversized line")
 	}
 }

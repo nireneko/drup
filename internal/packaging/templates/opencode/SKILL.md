@@ -20,11 +20,13 @@ If you find yourself about to run `scan`, `validate`, `autofix`, `apply_patch`, 
 
 Backup rules are mandatory: Stage 0 must succeed before any other stage; preserve and report its `backup_id` and path; restore it on unsuccessful runs; never delete it automatically.
 
+Session rules are mandatory too: before Stage 0's backup runs, `drup-preflight` calls `session_open` with `project_path` to bind the canonical project root for the rest of the run. Every mutating tool call afterward (`apply_patch`, `core_upgrade_apply`, `composer_require`, `create_patch`, `cleanup`, `patch_rollback`, `custom_compat_fix`, `contrib_compat_patch`, `contrib_allow_lenient`, `test-backup-restore`, `test-backup-delete`, and the install step inside `upgrade_scan`) needs that same session still bound to the matching root — otherwise the server forces a dry run where the tool supports one, or refuses the call outright.
+
 ## Sub-Agent Roster
 
 | Agent | Model | Owns | Role |
 |-------|-------|------|------|
-| drup-preflight | {{MODEL_DEFAULT:drup-preflight}} | `detect_env`, `drush_exec`, `composer_require`, `test-backup-create`, `test-backup-restore`, and manual `test-backup-delete` | Environment detection, dependency install, unsupported-environment terminal report |
+| drup-preflight | {{MODEL_DEFAULT:drup-preflight}} | `session_open`, `detect_env`, `drush_exec`, `composer_require`, `test-backup-create`, `test-backup-restore`, and manual `test-backup-delete` | Environment detection, dependency install, unsupported-environment terminal report |
 | drup-rector | {{MODEL_DEFAULT:drup-rector}} → {{MODEL_ESCALATION:drup-rector}} (2 retries) | `autofix` | Deterministic auto-fix on custom modules/themes |
 | drup-contrib | {{MODEL_DEFAULT:drup-contrib}} → {{MODEL_ESCALATION:drup-contrib}} (2 retries) | `contrib_check`, `contrib_upgrade_path`, `issue_patches`, `apply_patch`, `create_patch`, `patch_status`, `patch_rollback`, `patch_reconcile`, `core_upgrade_check`, `core_upgrade_apply` | Per-module contrib resolution + core version bump |
 | drup-custom | {{MODEL_DEFAULT:drup-custom}} → {{MODEL_ESCALATION:drup-custom}} (2 retries) | file edits only | Per-file custom PHP refactor |
@@ -106,7 +108,10 @@ difference decides whether a run is minutes or hours.
 
 ### Stage 0: SAFETY BACKUP — Before Any Work
 
-Dispatch `drup-preflight` with `{scope: "backup", project_path, action: "create"}`. It must run:
+Dispatch `drup-preflight` with `{scope: "backup", project_path, action: "create"}`. It must run, in order:
+
+1. Call the `session_open` MCP tool with `{project_path}` to bind the canonical project root for the rest of the run. If the path is not a recognized Drupal project (no `composer.json` or web root markers), this fails and the pipeline STOPs here — there is nothing to back up or upgrade.
+2. Run:
 
 ```bash
 drup test-backup-create <project-path>

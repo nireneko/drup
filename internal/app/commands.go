@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -122,8 +123,12 @@ func cliRun(projectPath string, cmd string, args ...string) (string, string, int
 	}
 	// Run from the project so container CLIs can resolve it. Without this the
 	// MCP server, whose working directory is wherever the agent started it,
-	// fails every ddev and lando call.
-	return drupexec.RunWithEnv(projectPath, detection.CommandPrefix, cmd, args...)
+	// fails every ddev and lando call. Bounded by defaultExecTimeout so a
+	// hanging drush/composer/rector call can't stall the (synchronous) MCP
+	// request loop forever.
+	ctx, cancel := context.WithTimeout(context.Background(), defaultExecTimeout)
+	defer cancel()
+	return drupexec.RunWithEnvCtx(ctx, projectPath, detection.CommandPrefix, cmd, args...)
 }
 
 // isContainerized reports whether commands for projectPath run inside a
@@ -403,8 +408,41 @@ func snapshotMetrics() *metrics.Metrics {
 	return &snap
 }
 
-// RunMCP starts the MCP stdio server.
-func RunMCP() error {
+// mcpLockedRequested reports whether args request locked mode via
+// --locked, equivalent to setting DRUP_DISABLE_MUTATIONS=1 before the
+// server starts: every mutating tool call is refused regardless of session
+// state for the remainder of the process lifetime.
+func mcpLockedRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "--locked" {
+			return true
+		}
+	}
+	return false
+}
+
+// installLockedRequested reports whether args request locked mode via
+// --locked for `drup install`/`drup sync`: the rendered mcp.json launches
+// `drup mcp --locked` for every installed agent (specs/installer "User opts
+// into locked mode").
+func installLockedRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "--locked" {
+			return true
+		}
+	}
+	return false
+}
+
+// RunMCP starts the MCP stdio server. --locked is equivalent to setting
+// DRUP_DISABLE_MUTATIONS=1: the kill switch refuses every guarded mutating
+// tool call for the lifetime of this process.
+func RunMCP(args []string) error {
+	if mcpLockedRequested(args) {
+		if err := os.Setenv("DRUP_DISABLE_MUTATIONS", "1"); err != nil {
+			return fmt.Errorf("enable locked mode: %w", err)
+		}
+	}
 	server := mcp.NewServer(os.Stdout, Version)
 	WireMCPTools(server)
 	return server.Run()
@@ -591,8 +629,12 @@ func RunApplyPatch(args []string) error {
 	return nil
 }
 
-// RunInstall detects agents and writes skill files.
-func RunInstall() error {
+// RunInstall detects agents and writes skill files. --locked selects locked
+// mode (specs/installer "User opts into locked mode"): the installed
+// mcp.json launches `drup mcp --locked` for every detected agent.
+func RunInstall(args []string) error {
+	locked := installLockedRequested(args)
+
 	agents := installer.DetectAgents()
 	if len(agents) == 0 {
 		return fmt.Errorf("no agents detected — install Claude Code, OpenCode, or Codex first")
@@ -612,7 +654,7 @@ func RunInstall() error {
 
 	// Render templates for each detected agent. A failure on one agent (for
 	// example a corrupt config file) must not block the remaining agents.
-	agentIDs, failures := installAgents(agents, binaryPath, "install", s.ModelAssignments)
+	agentIDs, failures := installAgents(agents, binaryPath, "install", locked, s.ModelAssignments)
 	if len(agentIDs) == 0 {
 		return fmt.Errorf("install failed for every detected agent:\n  %s", strings.Join(failures, "\n  "))
 	}
@@ -630,8 +672,12 @@ func RunInstall() error {
 	return nil
 }
 
-// RunSync re-applies agent assets.
-func RunSync() error {
+// RunSync re-applies agent assets. --locked selects locked mode
+// (specs/installer "User opts into locked mode"): the re-installed mcp.json
+// launches `drup mcp --locked` for every previously installed agent.
+func RunSync(args []string) error {
+	locked := installLockedRequested(args)
+
 	s, err := statepkg.Load()
 	if err != nil {
 		return fmt.Errorf("load state: %w", err)
@@ -648,7 +694,7 @@ func RunSync() error {
 
 	// Re-install to all previously installed agents.
 	agents := installer.DetectAgents()
-	synced, failures := installAgents(agents, binaryPath, "sync", s.ModelAssignments)
+	synced, failures := installAgents(agents, binaryPath, "sync", locked, s.ModelAssignments)
 	if len(synced) == 0 {
 		return fmt.Errorf("sync failed for every detected agent:\n  %s", strings.Join(failures, "\n  "))
 	}
@@ -667,10 +713,13 @@ func RunSync() error {
 
 // installAgents renders and installs assets for each agent independently.
 // It returns the agents that succeeded and a message per agent that failed,
-// so one broken agent config cannot block the others.
-func installAgents(agents []installer.AgentAdapter, binaryPath, action string, assignments map[string]map[string]statepkg.ModelPhaseAssignment) (succeeded []string, failures []string) {
+// so one broken agent config cannot block the others. locked selects whether
+// the rendered mcp.json launches `drup mcp --locked` (specs/installer "User
+// opts into locked mode"); false renders byte-identically to before locked
+// mode existed.
+func installAgents(agents []installer.AgentAdapter, binaryPath, action string, locked bool, assignments map[string]map[string]statepkg.ModelPhaseAssignment) (succeeded []string, failures []string) {
 	for _, agent := range agents {
-		files, err := packaging.Render(agent.ID(), binaryPath, assignments)
+		files, err := packaging.RenderLocked(agent.ID(), binaryPath, locked, assignments)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: render templates: %v", agent.ID(), err))
 			continue
@@ -1384,10 +1433,15 @@ func RunUpgradeCore(args []string) error {
 		return fmt.Errorf("get working directory: %w", err)
 	}
 
-	// Validate project path (security: absolute path, no traversal).
-	if err := coreupgrade.ValidateProjectPath(cwd); err != nil {
+	// Validate project path (security: absolute path, no traversal,
+	// symlink-resolved) and use the resolved path from here on, so the CLI
+	// and the MCP core_upgrade_check/core_upgrade_apply tools always agree
+	// on the same canonical project root for a symlinked path.
+	resolvedCwd, err := coreupgrade.ValidateProjectPath(cwd)
+	if err != nil {
 		return err
 	}
+	cwd = resolvedCwd
 
 	composerPath := filepath.Join(cwd, "composer.json")
 	composerData, err := os.ReadFile(composerPath)

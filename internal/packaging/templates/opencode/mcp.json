@@ -1,4 +1,4 @@
 {
   "type": "local",
-  "command": ["{{BINARY_PATH}}", "mcp"]
+  "command": ["{{BINARY_PATH}}", "mcp"{{LOCKED_ARG}}]
 }

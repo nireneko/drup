@@ -54,7 +54,44 @@ func defaultTools() map[string]ToolHandler {
 		"contrib_allow_lenient": handleContribAllowLenient,
 		"contrib_compat_patch":  handleContribCompatPatch,
 		"module_release_info":   handleModuleReleaseInfo,
+		// Session binding.
+		"session_open": handleSessionOpen,
+		// Mutation audit ledger.
+		"pipeline_status": handlePipelineStatus,
 	}
+}
+
+func handlePipelineStatus(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath string `json:"project_path"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+
+	// Placeholder — the real handler calls audit.ReadAll/CheckCap.
+	result := map[string]interface{}{
+		"per_tool_counts": map[string]interface{}{},
+		"total_mutations": 0,
+		"remaining_cap":   0,
+	}
+	return json.Marshal(result)
+}
+
+func handleSessionOpen(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath string `json:"project_path"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+
+	// Placeholder — the real handler calls session.Open.
+	result := map[string]interface{}{
+		"session_active": false,
+		"root":           "",
+	}
+	return json.Marshal(result)
 }
 
 func handleModuleReleaseInfo(args json.RawMessage) (json.RawMessage, error) {

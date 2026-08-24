@@ -1,6 +1,8 @@
 package exec
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -246,5 +248,147 @@ func TestRunWithEnvInDir_RunsFromTheGivenDirectory(t *testing.T) {
 func TestRunWithEnvInDir_EmptyDirFallsBackToInheritedCwd(t *testing.T) {
 	if _, _, exitCode, err := RunWithEnv("", nil, "true"); err != nil || exitCode != 0 {
 		t.Errorf("empty dir should behave like RunWithEnv: %v (exit %d)", err, exitCode)
+	}
+}
+
+// --- PR2: D2 bounded subprocess execution (RunCtx family) ---
+
+// TestRunCtx_TimesOutAndKillsProcess guards D2's core fix: today Run and
+// RunWithEnv have no way to bound a hanging subprocess — a stuck drush or
+// composer call blocks the whole MCP request forever. RunCtx must return a
+// timeout error near the deadline instead of waiting for the full sleep.
+func TestRunCtx_TimesOutAndKillsProcess(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	stdout, _, exitCode, err := RunCtx(ctx, "sleep", "30")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a timeout error, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want it to wrap context.DeadlineExceeded", err)
+	}
+	if exitCode != -1 {
+		t.Errorf("exitCode = %d, want -1", exitCode)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty on timeout", stdout)
+	}
+	// RunCtx must return promptly once ctx is done, not block until the
+	// killed process actually exits or the original 30s sleep elapses.
+	if elapsed > 3*time.Second {
+		t.Errorf("RunCtx blocked for %v after its 100ms deadline, want it to return promptly", elapsed)
+	}
+
+	// The process group must actually be terminated, not merely abandoned —
+	// verify the pid is no longer tracked shortly after the timeout fires.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		runningMu.Lock()
+		n := len(running)
+		runningMu.Unlock()
+		if n == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Error("sleep process was not terminated after RunCtx timed out")
+}
+
+// TestRunCtx_CompletesWithinDeadline guards the non-timeout path: a command
+// that finishes before its deadline must return its normal result.
+func TestRunCtx_CompletesWithinDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stdout, stderr, exitCode, err := RunCtx(ctx, "echo", "hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exitCode != 0 {
+		t.Errorf("exit code = %d, want 0", exitCode)
+	}
+	if stdout != "hello\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "hello\n")
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want empty", stderr)
+	}
+}
+
+// TestRunWithEnvCtx_TimesOut mirrors the RunCtx timeout case for the
+// dir+prefix variant used by cliRun and the composer/drush/upgrade_scan
+// handlers.
+func TestRunWithEnvCtx_TimesOut(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	dir := t.TempDir()
+	start := time.Now()
+	_, _, exitCode, err := RunWithEnvCtx(ctx, dir, nil, "sleep", "30")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a timeout error, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want it to wrap context.DeadlineExceeded", err)
+	}
+	if exitCode != -1 {
+		t.Errorf("exitCode = %d, want -1", exitCode)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("RunWithEnvCtx blocked for %v after its 100ms deadline, want it to return promptly", elapsed)
+	}
+}
+
+// TestRunWithEnvCtx_CompletesWithinDeadline guards the non-timeout path for
+// the dir+prefix variant.
+func TestRunWithEnvCtx_CompletesWithinDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	dir := t.TempDir()
+	stdout, _, exitCode, err := RunWithEnvCtx(ctx, dir, nil, "echo", "hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exitCode != 0 {
+		t.Errorf("exit code = %d, want 0", exitCode)
+	}
+	if stdout != "hi\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "hi\n")
+	}
+}
+
+// TestRunCtx_RespectsOverriddenRun proves RunCtx delegates through the
+// package-level Run var rather than bypassing it, so existing var-seam test
+// overrides of Run/RunWithEnv keep working for callers that switch to the
+// Ctx sibling.
+func TestRunCtx_RespectsOverriddenRun(t *testing.T) {
+	orig := execCommand
+	defer func() { execCommand = orig }()
+
+	var calledCmd string
+	execCommand = func(cmd string, args ...string) commandRunner {
+		calledCmd = cmd
+		return &mockRunner{stdout: "mocked\n", stderr: "", exitCode: 0}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stdout, _, exitCode, err := RunCtx(ctx, "git", "status")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calledCmd != "git" {
+		t.Errorf("called cmd = %q, want %q", calledCmd, "git")
+	}
+	if stdout != "mocked\n" || exitCode != 0 {
+		t.Errorf("stdout=%q exitCode=%d, want mocked result to flow through RunCtx", stdout, exitCode)
 	}
 }

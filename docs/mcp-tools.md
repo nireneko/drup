@@ -1,8 +1,8 @@
 # drup MCP Tools — Agent Reference
 
-This document is an **agent-facing reference** for the 29 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
+This document is an **agent-facing reference** for the 31 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
 
-**Tooling totals at runtime:** 20 categorized tools in `defaultTools()` (see §5) + the `cleanup` post-pipeline utility (§5.21) + `custom_compat_fix` (§5.22) + `module_release_info` (§5.23) + 4 backup tools (§6) + 1 `drupal_version_matrix` (§5.x) = **29 total**. See [§4.1](#41-response-envelope-uniform-contract) for the uniform envelope that wraps every response.
+**Tooling totals at runtime:** `defaultTools()` registers 27 stub entries (see §5, including `session_open` §5.24 and `pipeline_status` §5.25) + 4 reverse-asymmetric backup tools (§6, not in `defaultTools()`) = **31 total**. This is the exact count locked by `TestServer_PostWireUpCountIs31` in `internal/mcp/mcp_test.go`. See [§1.1](#11-response-envelope-uniform-contract) for the uniform envelope that wraps every response.
 
 For tool **schemas** (JSON Schema, required fields, types) call `tools/list` — do not hardcode them here. For tool **internals** (Go package, test coverage) read `internal/app/mcp_tools.go`.
 
@@ -349,12 +349,30 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 - **Error signals**: unknown module → `status: "not_found"` (NOT a JSON-RPC error, same convention as `contrib_check`); invalid `module_machine_name` or an unparseable `core_version` → JSON-RPC error before the Drupal.org call.
 - **Red flag**: assuming an empty `releases[]` always means "unknown module" — check `status`; `no_releases_found` means the project exists but has nothing published (or nothing matching the filter).
 
+### 5.24 `session_open`
+
+- **Purpose**: Resolve `project_path` to its canonical Drupal project root (symlinks followed, no `..`, marker-checked) and bind a session to it for the rest of the server process's lifetime. Call this once before any guarded mutating tool.
+- **Returns**: `{ session_active: true, root: <resolved absolute path> }`
+- **Prerequisites**: `project_path` required; must resolve to a valid Drupal project root.
+- **Side-effects**: replaces any session bound earlier in this same server process — reopening rebinds, it does not stack.
+- **Error signals**: symlink resolution or marker-check failure returns an error before any session is bound.
+- **Red flag**: calling a guarded mutating tool (`apply_patch`, `core_upgrade_apply`, `composer_require`, `create_patch`, `cleanup`, `patch_rollback`, `custom_compat_fix`, `contrib_compat_patch`, `contrib_allow_lenient`, `test_backup_restore`, `test_backup_delete`, or `upgrade_scan`'s nested install) without an open, matching session — it is refused or forced into dry-run depending on the tool's guard partition.
+
+### 5.25 `pipeline_status`
+
+- **Purpose**: Read-only summary of the project's mutation audit ledger: per-tool call counts, total mutations, and remaining mutation-cap headroom for whichever window currently applies (per-session if a matching session is bound, otherwise per-day).
+- **Returns**: `{ per_tool_counts: {<tool>: <int>, ...}, total_mutations: <int>, remaining_cap: <int> }`
+- **Prerequisites**: `project_path` required.
+- **Side-effects**: none — reads the audit ledger, never writes.
+- **Error signals**: a project with no ledger yet still returns zero counts and the full cap, never an error.
+- **Red flag**: assuming `remaining_cap` reflects a global cap — it is scoped to a session window when one is bound, otherwise to the current day.
+
 ---
 
 ## 6. Backup Tools (additional)
 > **Policy enforcement**: the reverse asymmetry described above (backup tools are intentionally NOT in `defaultTools()`) is enforced by `TestServer_WiringSymmetryOnlyBackupToolsAreReverseAsymmetric` in `internal/mcp/mcp_test.go`. Adding a new tool that is not in `defaultTools()` without the `test_backup_` prefix fails that test. Adding a new backup-style tool fails it too if you forget to also register the schema in `toolRegistry` or skip the `project_path` requirement. Update both the code and this section in lockstep when changing the policy.
 
-Not part of the categorized 21, but mandatory in the pipeline.
+Not part of the 27 categorized tools in §5, but mandatory in the pipeline.
 
 ### `test_backup_create`, `test_backup_list`, `test_backup_restore`, `test_backup_delete`
 

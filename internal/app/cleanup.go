@@ -3,17 +3,23 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
-	drupexec "github.com/nireneko/drup/internal/exec"
+	"github.com/nireneko/drup/internal/gitops"
 )
 
 // RunCleanup executes the post-validation cleanup stage (Stage 8).
 // It uninstalls upgrade_status, removes it from composer.json, and commits.
+// Output is written to w instead of os.Stdout so callers that need to
+// capture it (like the MCP cleanup handler) can pass an in-memory buffer
+// directly, instead of swapping the process-global os.Stdout through an
+// os.Pipe — a technique with a fixed kernel buffer that can deadlock on
+// large output with no concurrent reader.
 // Args: [project-path] [--validate-passed|--validate-failed]
-func RunCleanup(args []string) error {
+func RunCleanup(w io.Writer, args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: drup cleanup <project-path> [--validate-passed|--validate-failed]")
 	}
@@ -33,7 +39,7 @@ func RunCleanup(args []string) error {
 			"message": "cleanup skipped: validation failed",
 		}
 		data, _ := json.MarshalIndent(output, "", "  ")
-		fmt.Println(string(data))
+		fmt.Fprintln(w, string(data))
 		return nil
 	}
 
@@ -45,7 +51,7 @@ func RunCleanup(args []string) error {
 			"message": "cleanup: nothing to do — upgrade_status not found",
 		}
 		data, _ := json.MarshalIndent(output, "", "  ")
-		fmt.Println(string(data))
+		fmt.Fprintln(w, string(data))
 		return nil
 	}
 
@@ -67,18 +73,17 @@ func RunCleanup(args []string) error {
 		return fmt.Errorf("composer remove failed (exit %d): %s", exitCode, stderr)
 	}
 
-	// Step 3: git add + commit.
-	_, stderr, exitCode, err = drupexec.Run("git", "-C", projectPath, "add", "-A")
-	if err != nil || exitCode != 0 {
-		return fmt.Errorf("git add failed: %s", stderr)
-	}
-
+	// Step 3: scoped commit. Only composer.json/composer.lock are ever
+	// modified by the steps above (drush pm:uninstall and composer remove) —
+	// declaring exactly that set instead of `git add -A` means any other
+	// uncommitted change already sitting in the working tree is left alone.
 	commitMsg := "chore(cleanup): remove upgrade_status post D11 migration"
-	_, stderr, exitCode, err = drupexec.Run("git", "-C", projectPath, "commit", "-m", commitMsg)
-	if err != nil || exitCode != 0 {
-		// Commit may fail if nothing changed — not a hard error.
-		if !strings.Contains(stderr, "nothing to commit") {
-			return fmt.Errorf("git commit failed: %s", stderr)
+	declaredPaths := []string{"composer.json", "composer.lock"}
+	if _, commitErr := gitops.Commit(projectPath, commitMsg, declaredPaths); commitErr != nil {
+		// Nothing to commit is not a hard error — composer/drush may have
+		// left composer.json/composer.lock unchanged (e.g. already removed).
+		if !strings.Contains(commitErr.Error(), "nothing to commit") {
+			return fmt.Errorf("git commit failed: %w", commitErr)
 		}
 	}
 
@@ -88,7 +93,7 @@ func RunCleanup(args []string) error {
 		"message": "cleanup complete: upgrade_status removed",
 	}
 	data, _ := json.MarshalIndent(output, "", "  ")
-	fmt.Println(string(data))
+	fmt.Fprintln(w, string(data))
 	return nil
 }
 

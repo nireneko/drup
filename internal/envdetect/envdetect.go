@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nireneko/drup/internal/session"
 )
 
 // Environment represents the detected development environment.
@@ -80,11 +82,28 @@ func (d *DefaultDetector) Detect(projectPath string, forceDetect bool) (*Detecti
 		}, nil
 	}
 
+	// Resolve symlinks through the shared canonical-root helper so a
+	// symlinked and a non-symlinked path to the same real project resolve
+	// identically (see specs/agent-session's "Canonical Root Resolution"
+	// requirement). This sits after the existence/IsDir check above and
+	// before the cache lookup and detect() marker scan below, so a
+	// nonexistent path still returns the graceful EnvUnknown above rather
+	// than an EvalSymlinks error.
+	resolvedPath, err := session.ResolveSymlinks(projectPath)
+	if err != nil {
+		return nil, err
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	// Decision (design Open Question 2): key the cache on the resolved,
+	// symlink-following path rather than the raw caller-supplied one. A
+	// symlink and its real target then collapse to a single cache entry —
+	// mtime-invalidation semantics stay correct either way, since both
+	// paths point at the same underlying directory and inode.
 	if !forceDetect {
-		if cached, ok := d.cache[projectPath]; ok {
+		if cached, ok := d.cache[resolvedPath]; ok {
 			// Check if project root mtime is newer than detection time.
 			if !info.ModTime().After(cached.DetectedAt) {
 				return cached, nil
@@ -92,8 +111,8 @@ func (d *DefaultDetector) Detect(projectPath string, forceDetect bool) (*Detecti
 		}
 	}
 
-	result := detect(projectPath)
-	d.cache[projectPath] = result
+	result := detect(resolvedPath)
+	d.cache[resolvedPath] = result
 	return result, nil
 }
 

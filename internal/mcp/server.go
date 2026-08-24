@@ -3,6 +3,7 @@ package mcp
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,17 @@ import (
 	"time"
 
 	"github.com/nireneko/drup/internal/metrics"
+)
+
+// scannerStartBuf is the initial per-line buffer bufio.Scanner grows from.
+// scannerMaxLine is the hard ceiling a single JSON-RPC request line may
+// reach before it is rejected. Both are well above the 64KB bufio.Scanner
+// default: agents can legitimately send large tool arguments (e.g. long
+// diffs or file contents), and the previous default silently killed the
+// whole stdio loop once a line exceeded it.
+const (
+	scannerStartBuf = 64 * 1024
+	scannerMaxLine  = 10 * 1024 * 1024
 )
 
 // JSONRPCRequest is a JSON-RPC 2.0 request.
@@ -312,6 +324,20 @@ var toolRegistry = map[string]toolSchema{
 		},
 		Required: []string{"module_machine_name"},
 	},
+	"session_open": {
+		Description: "Bind an agent session to the canonical root of a Drupal project for the rest of the server process. Every mutating tool call needs a session bound to a matching root, or it is forced into dry-run (where supported) or refused",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+		},
+		Required: []string{"project_path"},
+	},
+	"pipeline_status": {
+		Description: "Read-only summary of the project's mutation ledger: per-tool call counts, total mutations, and remaining mutation-cap headroom",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+		},
+		Required: []string{"project_path"},
+	},
 }
 
 // NewServer creates a new MCP server writing to out.
@@ -343,20 +369,53 @@ func (s *Server) RegisterTool(name string, handler ToolHandler) {
 	s.tools[name] = handler
 }
 
+// CallTool invokes the registered handler for name directly, bypassing the
+// JSON-RPC transport. It is the same lookup handleToolCall uses, exposed so
+// callers (chiefly tests exercising registration-time middleware such as
+// internal/app's guard wrapping) can dispatch a tool call without spinning
+// up a stdio round trip.
+func (s *Server) CallTool(name string, args json.RawMessage) (json.RawMessage, error) {
+	handler, ok := s.tools[name]
+	if !ok {
+		return nil, fmt.Errorf("tool not found: %s", name)
+	}
+	return handler(args)
+}
+
 // Run starts the server, reading from stdin and writing to stdout.
 func (s *Server) Run() error {
 	return s.run(os.Stdin)
 }
 
 func (s *Server) run(in io.Reader) error {
-	scanner := bufio.NewScanner(in)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if err := s.handleRaw(line); err != nil {
-			return err
+	// bufio.Scanner is terminal once it reports an error: a further Scan()
+	// call keeps returning false. An oversized line must not end the whole
+	// stdio session, so on bufio.ErrTooLong we report a parse error for that
+	// one request and rebuild a fresh scanner over the same underlying
+	// reader to keep serving whatever comes after it.
+	for {
+		scanner := bufio.NewScanner(in)
+		scanner.Buffer(make([]byte, 0, scannerStartBuf), scannerMaxLine)
+
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			if err := s.handleRaw(line); err != nil {
+				return err
+			}
 		}
+
+		err := scanner.Err()
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, bufio.ErrTooLong) {
+			if sendErr := s.sendError(nil, -32700, "Parse error: request exceeds maximum line size"); sendErr != nil {
+				return sendErr
+			}
+			continue
+		}
+		return err
 	}
-	return scanner.Err()
 }
 
 func (s *Server) handleRaw(data []byte) error {
@@ -368,6 +427,14 @@ func (s *Server) handleRaw(data []byte) error {
 }
 
 func (s *Server) handleRequest(req JSONRPCRequest) error {
+	// A JSON-RPC request with no "id" field is a notification. Per the
+	// JSON-RPC 2.0 spec the server MUST NOT write any response for it — not
+	// a result, and not an error — because the client has signaled it is
+	// not listening for a reply.
+	if req.ID == nil {
+		return s.handleNotification(req)
+	}
+
 	switch req.Method {
 	case "initialize":
 		result := fmt.Sprintf(`{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"drup","version":"%s"}}`, s.version)
@@ -381,11 +448,28 @@ func (s *Server) handleRequest(req JSONRPCRequest) error {
 	}
 }
 
-func (s *Server) handleListTools(id interface{}) error {
-	tools := []map[string]interface{}{}
-	for name, handler := range s.tools {
-		_ = handler
+// handleNotification processes a JSON-RPC notification (a request whose
+// "id" field is absent or null). None of the methods this server currently
+// recognizes (e.g. notifications/initialized) carry state that needs
+// updating on receipt, so there is nothing to execute beyond declining to
+// write a response.
+func (s *Server) handleNotification(req JSONRPCRequest) error {
+	return nil
+}
 
+func (s *Server) handleListTools(id interface{}) error {
+	// Go map iteration order is randomized. Sorting by name here keeps
+	// tools/list deterministic across repeated calls in the same server run
+	// — clients and tests that diff two responses would otherwise see
+	// spurious reordering.
+	names := make([]string, 0, len(s.tools))
+	for name := range s.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	tools := []map[string]interface{}{}
+	for _, name := range names {
 		// Look up schema from registry
 		schema, hasSchema := toolRegistry[name]
 

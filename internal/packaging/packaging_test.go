@@ -1,6 +1,7 @@
 package packaging
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 	"testing"
@@ -41,6 +42,75 @@ func TestRender_Codex(t *testing.T) {
 	}
 	if _, ok := files["mcp.json"]; !ok {
 		t.Error("missing MCP template for codex")
+	}
+}
+
+// --- RenderLocked / --locked mcp.json arg (specs/mcp-server Kill Switch and
+// Dry-Run Partition; installer parity for the --locked flag) ---
+
+func TestRenderLocked_OmitsFlagByDefault(t *testing.T) {
+	for _, platform := range Platforms() {
+		t.Run(platform, func(t *testing.T) {
+			unlocked, err := Render(platform, "/usr/local/bin/drup", nil)
+			if err != nil {
+				t.Fatalf("Render error: %v", err)
+			}
+			explicit, err := RenderLocked(platform, "/usr/local/bin/drup", false, nil)
+			if err != nil {
+				t.Fatalf("RenderLocked(locked=false) error: %v", err)
+			}
+			if unlocked["mcp.json"] != explicit["mcp.json"] {
+				t.Errorf("%s: Render and RenderLocked(false) must render mcp.json byte-identically\nRender:       %q\nRenderLocked: %q", platform, unlocked["mcp.json"], explicit["mcp.json"])
+			}
+			if strings.Contains(unlocked["mcp.json"], "--locked") {
+				t.Errorf("%s: mcp.json must omit --locked by default, got %q", platform, unlocked["mcp.json"])
+			}
+			if !json.Valid([]byte(unlocked["mcp.json"])) {
+				t.Errorf("%s: unlocked mcp.json is not valid JSON: %q", platform, unlocked["mcp.json"])
+			}
+		})
+	}
+}
+
+func TestRenderLocked_IncludesFlagWhenSelected(t *testing.T) {
+	for _, platform := range Platforms() {
+		t.Run(platform, func(t *testing.T) {
+			files, err := RenderLocked(platform, "/usr/local/bin/drup", true, nil)
+			if err != nil {
+				t.Fatalf("RenderLocked(locked=true) error: %v", err)
+			}
+			mcpJSON, ok := files["mcp.json"]
+			if !ok {
+				t.Fatalf("%s: missing mcp.json", platform)
+			}
+			if !strings.Contains(mcpJSON, "--locked") {
+				t.Errorf("%s: locked mcp.json must contain --locked, got %q", platform, mcpJSON)
+			}
+			if !json.Valid([]byte(mcpJSON)) {
+				t.Errorf("%s: locked mcp.json is not valid JSON: %q", platform, mcpJSON)
+			}
+		})
+	}
+}
+
+// TestRenderLocked_ParityAcrossPlatforms guards the parity requirement: all
+// three platforms must agree on whether --locked is present for a given
+// locked selection (mirrors TestSKILLMD_CrossPlatformIdentical's pattern).
+func TestRenderLocked_ParityAcrossPlatforms(t *testing.T) {
+	for _, locked := range []bool{false, true} {
+		var presence []bool
+		for _, platform := range Platforms() {
+			files, err := RenderLocked(platform, "/usr/local/bin/drup", locked, nil)
+			if err != nil {
+				t.Fatalf("RenderLocked(%v) error for %s: %v", locked, platform, err)
+			}
+			presence = append(presence, strings.Contains(files["mcp.json"], "--locked"))
+		}
+		for i := 1; i < len(presence); i++ {
+			if presence[i] != presence[0] {
+				t.Errorf("locked=%v: platform %s presence=%v disagrees with %s presence=%v", locked, Platforms()[i], presence[i], Platforms()[0], presence[0])
+			}
+		}
 	}
 }
 

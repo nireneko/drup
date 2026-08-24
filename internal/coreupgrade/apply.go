@@ -9,6 +9,7 @@ import (
 
 	drupexec "github.com/nireneko/drup/internal/exec"
 	"github.com/nireneko/drup/internal/gitops"
+	"github.com/nireneko/drup/internal/session"
 )
 
 // ApplyResult is returned by Apply.
@@ -23,19 +24,15 @@ type ApplyResult struct {
 	Stderr             string `json:"stderr,omitempty"`
 }
 
-// ValidateProjectPath enforces the same absolute-path, no-traversal guard
-// used elsewhere in drup (see internal/app upgrade_scan handler).
-func ValidateProjectPath(projectPath string) error {
-	if projectPath == "" {
-		return fmt.Errorf("project_path must not be empty")
-	}
-	if !filepath.IsAbs(projectPath) {
-		return fmt.Errorf("project_path must be an absolute path: %s", projectPath)
-	}
-	if strings.Contains(projectPath, "..") {
-		return fmt.Errorf("project_path must not contain '..' segments")
-	}
-	return nil
+// ValidateProjectPath resolves projectPath through the shared
+// session.ResolveSymlinks canonical-root helper (absolute, no traversal,
+// symlink-evaluated), returning the resolved path callers must use for every
+// subsequent file or git operation. This is the same helper CLI and MCP
+// entry points across the codebase share (see specs/agent-session's
+// "Canonical Root Resolution" requirement), so a symlinked and
+// non-symlinked call for the same project always resolve identically.
+func ValidateProjectPath(projectPath string) (string, error) {
+	return session.ResolveSymlinks(projectPath)
 }
 
 // Apply updates the drupal/core constraint(s) in composer.json at projectPath
@@ -53,9 +50,11 @@ func ValidateProjectPath(projectPath string) error {
 // was unusable at the end of a pipeline whose earlier stages leave changes
 // behind by design.
 func Apply(projectPath, targetVersion string, dryRun, allowDirty, force bool) (*ApplyResult, error) {
-	if err := ValidateProjectPath(projectPath); err != nil {
+	resolvedPath, err := ValidateProjectPath(projectPath)
+	if err != nil {
 		return nil, err
 	}
+	projectPath = resolvedPath
 	if targetVersion == "" {
 		return nil, fmt.Errorf("target_version must not be empty")
 	}

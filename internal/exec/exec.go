@@ -2,6 +2,8 @@ package exec
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"io"
 	"os/exec"
 	"sync"
@@ -141,4 +143,106 @@ var RunWithEnvInput = func(prefix []string, input io.Reader, cmd string, args ..
 	r := &realCmd{cmd: exec.Command(fullArgs[0], fullArgs[1:]...)}
 	r.cmd.Stdin = input
 	return r.Output()
+}
+
+// --- Bounded (context-aware) siblings ---
+//
+// A stuck drush or composer call previously blocked its caller forever —
+// there was no way to bound Run/RunWithEnv/RunWithEnvInput by a deadline.
+// RunCtx, RunWithEnvCtx, and RunWithEnvInputCtx race the underlying call
+// against ctx: if ctx is done first, whatever process the call just spawned
+// is identified via the existing process-group tracking (trackProcess /
+// untrackProcess / the running map) and sent SIGTERM, exactly like
+// KillChildren does on shutdown — but scoped to only the process this call
+// started, so a deadline on one call never touches an unrelated concurrent
+// one. The function then returns a timeout error immediately instead of
+// waiting for the (now-signalled) process to actually exit.
+//
+// Each *Ctx function calls through the corresponding package-level var
+// (Run, RunWithEnv, RunWithEnvInput) rather than reimplementing execution,
+// so existing test overrides of those vars keep working unchanged for
+// callers that switch to the Ctx sibling.
+
+// snapshotRunningPIDs returns the pids currently tracked as running child
+// processes, used as a "before" baseline to identify which new process a
+// bounded call spawns.
+func snapshotRunningPIDs() map[int]bool {
+	runningMu.Lock()
+	defer runningMu.Unlock()
+	pids := make(map[int]bool, len(running))
+	for pid := range running {
+		pids[pid] = true
+	}
+	return pids
+}
+
+// killNewProcessGroups sends SIGTERM to the process group of every tracked
+// pid that was not present in before.
+func killNewProcessGroups(before map[int]bool) {
+	runningMu.Lock()
+	var toKill []int
+	for pid := range running {
+		if !before[pid] {
+			toKill = append(toKill, pid)
+		}
+	}
+	runningMu.Unlock()
+	for _, pid := range toKill {
+		// Negative pid signals the whole process group, mirroring KillChildren.
+		_ = syscall.Kill(-pid, syscall.SIGTERM)
+	}
+}
+
+// boundedResult carries a (stdout, stderr, exitCode, err) tuple across the
+// goroutine boundary in runBounded.
+type boundedResult struct {
+	stdout, stderr string
+	exitCode       int
+	err            error
+}
+
+// runBounded races fn — a blocking call into Run/RunWithEnv/RunWithEnvInput
+// — against ctx. If fn finishes first, its result is returned unchanged. If
+// ctx is done first, the process fn just spawned is terminated and a
+// timeout error is returned without waiting for fn to actually return.
+func runBounded(ctx context.Context, fn func() (stdout, stderr string, exitCode int, err error)) (string, string, int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	before := snapshotRunningPIDs()
+	done := make(chan boundedResult, 1)
+	go func() {
+		so, se, ec, e := fn()
+		done <- boundedResult{so, se, ec, e}
+	}()
+
+	select {
+	case r := <-done:
+		return r.stdout, r.stderr, r.exitCode, r.err
+	case <-ctx.Done():
+		killNewProcessGroups(before)
+		return "", "", -1, fmt.Errorf("command timed out: %w", ctx.Err())
+	}
+}
+
+// RunCtx behaves like Run but bounds execution by ctx.
+var RunCtx = func(ctx context.Context, cmd string, args ...string) (stdout, stderr string, exitCode int, err error) {
+	return runBounded(ctx, func() (string, string, int, error) {
+		return Run(cmd, args...)
+	})
+}
+
+// RunWithEnvCtx behaves like RunWithEnv but bounds execution by ctx.
+var RunWithEnvCtx = func(ctx context.Context, dir string, prefix []string, cmd string, args ...string) (stdout, stderr string, exitCode int, err error) {
+	return runBounded(ctx, func() (string, string, int, error) {
+		return RunWithEnv(dir, prefix, cmd, args...)
+	})
+}
+
+// RunWithEnvInputCtx behaves like RunWithEnvInput but bounds execution by ctx.
+var RunWithEnvInputCtx = func(ctx context.Context, prefix []string, input io.Reader, cmd string, args ...string) (stdout, stderr string, exitCode int, err error) {
+	return runBounded(ctx, func() (string, string, int, error) {
+		return RunWithEnvInput(prefix, input, cmd, args...)
+	})
 }
