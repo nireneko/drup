@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,9 +33,18 @@ var allowedDomains = []string{
 // checkAllowedURL validates a URL against the allowlist. Package-level var for testability.
 var checkAllowedURL = defaultCheckAllowedURL
 
-func defaultCheckAllowedURL(url string) bool {
+func defaultCheckAllowedURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "https" {
+		return false
+	}
+
+	host := parsed.Hostname()
 	for _, domain := range allowedDomains {
-		if strings.Contains(url, domain) {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
 			return true
 		}
 	}

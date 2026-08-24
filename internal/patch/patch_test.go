@@ -100,6 +100,62 @@ index 5626abf..f9c9a4a 100644
 	}
 }
 
+// defaultCheckAllowedURL must parse the URL and match its host exactly (or as
+// a subdomain of an allowed domain), require https, and reject on parse
+// failure. strings.Contains substring matching is bypassable via host-as-path,
+// host-as-subdomain-of-attacker, and domain-in-query-string tricks.
+func TestDefaultCheckAllowedURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{
+			name: "accepts legitimate www.drupal.org URL",
+			url:  "https://www.drupal.org/files/issues/2024-01-01/token-1234.patch",
+			want: true,
+		},
+		{
+			name: "accepts legitimate git.drupal.org URL",
+			url:  "https://git.drupal.org/project/example.git",
+			want: true,
+		},
+		{
+			name: "rejects host-appended-as-path bypass",
+			url:  "https://evil.com/www.drupal.org/evil.patch",
+			want: false,
+		},
+		{
+			name: "rejects host-as-subdomain-of-attacker bypass",
+			url:  "https://drupal.org.evil.com/evil.patch",
+			want: false,
+		},
+		{
+			name: "rejects allowlist-domain-in-query-string bypass",
+			url:  "https://notdrupal.org/?x=git.drupal.org",
+			want: false,
+		},
+		{
+			name: "rejects non-https scheme",
+			url:  "http://drupal.org/files/issues/token-1234.patch",
+			want: false,
+		},
+		{
+			name: "rejects URL that fails to parse",
+			url:  "https://drupal.org/%gh",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := defaultCheckAllowedURL(tt.url); got != tt.want {
+				t.Errorf("defaultCheckAllowedURL(%q) = %v, want %v", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestApply_AllowlistViolation(t *testing.T) {
 	// Non-drupal.org URL should be rejected.
 	_, err := Apply("https://evil.com/malicious.patch", t.TempDir(), "drupal/test", "test")
