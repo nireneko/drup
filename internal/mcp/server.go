@@ -581,7 +581,27 @@ func (s *Server) handleToolCall(id interface{}, params json.RawMessage) error {
 		// Envelope marshal failure is a server bug, not a tool failure.
 		return s.sendError(id, -32603, fmt.Sprintf("envelope marshal: %v", marshalErr))
 	}
-	return s.sendResult(id, envelopeJSON)
+	// MCP clients consume tool output from content[]. Keep the project-specific
+	// envelope at the result level for existing agents, while also exposing it
+	// as standard MCP text content.
+	toolResult := struct {
+		Content []ContentBlock `json:"content"`
+		Envelope
+	}{
+		Content:  []ContentBlock{{Type: "text", Text: string(envelopeJSON)}},
+		Envelope: envelope,
+	}
+	toolResultJSON, marshalErr := json.Marshal(toolResult)
+	if marshalErr != nil {
+		return s.sendError(id, -32603, fmt.Sprintf("tool result marshal: %v", marshalErr))
+	}
+	return s.sendResult(id, toolResultJSON)
+}
+
+// ContentBlock is the standard MCP representation for tool output.
+type ContentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
 }
 
 // Envelope wraps every MCP tool response with a uniform status signal.

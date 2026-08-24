@@ -715,7 +715,10 @@ func curateReleases(rh *releaseHistoryFull, coreVersion string) *ReleaseInfoResu
 // Real transport/parse failures are returned as a Go error rather than
 // folded into a status string.
 func ModuleReleaseInfo(module, coreVersion string) (*ReleaseInfoResult, error) {
-	rh, err := FetchReleaseHistory(module, coreVersion)
+	// The versioned endpoint only exposes the historical 8.x/9.x branch for
+	// Drupal 10 and 11. Use the current feed, then apply the Composer
+	// compatibility constraint locally so ^10.3 || ^11 includes every 11.x.
+	rh, err := FetchReleaseHistory(module, "current")
 	if err != nil {
 		return nil, err
 	}
@@ -867,12 +870,39 @@ type ModuleMetadata struct {
 // apiD7NodeFull is the full node detail from api-d7. The endpoint answers with
 // a list of matching nodes, never a bare node.
 type apiD7NodeFull struct {
-	NID            string         `json:"nid"`
-	Title          string         `json:"title"`
-	FieldDownloads int            `json:"field_download_count"`
-	Author         maintainer     `json:"author"`
-	ProjectUsage   map[string]int `json:"project_usage"`
-	Maintainers    []maintainer   `json:"maintainers"`
+	NID            string       `json:"nid"`
+	Title          string       `json:"title"`
+	FieldDownloads int          `json:"field_download_count"`
+	Author         maintainer   `json:"author"`
+	ProjectUsage   projectUsage `json:"project_usage"`
+	Maintainers    []maintainer `json:"maintainers"`
+}
+
+// projectUsage is deliberately tolerant because api-d7 returns some usage
+// counts as JSON strings and others as JSON numbers in the same object.
+type projectUsage map[string]int
+
+func (p *projectUsage) UnmarshalJSON(data []byte) error {
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(data, &values); err != nil {
+		return nil
+	}
+
+	*p = make(projectUsage, len(values))
+	for key, raw := range values {
+		var count int
+		if json.Unmarshal(raw, &count) == nil {
+			(*p)[key] = count
+			continue
+		}
+		var text string
+		if json.Unmarshal(raw, &text) == nil {
+			if count, err := strconv.Atoi(strings.TrimSpace(text)); err == nil {
+				(*p)[key] = count
+			}
+		}
+	}
+	return nil
 }
 
 type apiD7NodeList struct {

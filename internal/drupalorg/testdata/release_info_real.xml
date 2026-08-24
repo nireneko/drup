@@ -16,7 +16,7 @@
       <tag>1.13.0</tag>
       <status>published</status>
       <date>1719800000</date>
-      <core_compatibility>^10.2 || ^11</core_compatibility>
+      <core_compatibility>^10.3 || ^11</core_compatibility>
       <security covered="1"></security>
       <terms>
         <term>
@@ -31,7 +31,7 @@
       <tag>1.12.0</tag>
       <status>published</status>
       <date>1700000000</date>
-      <core_compatibility>^10.2 || ^11</core_compatibility>
+      <core_compatibility>^10.3 || ^11</core_compatibility>
       <security covered="0"></security>
       <terms>
         <term>

@@ -383,6 +383,7 @@ func TestModuleInfo_FetchesMetadata(t *testing.T) {
 			"nid": "100",
 			"title": "Token",
 			"field_download_count": 15000000,
+			"project_usage": {"8.x-1.x": "12", "3.x": 7},
 			"maintainers": [{"name": "admin"}, {"name": "dev1"}]
 		}]
 	}`
@@ -429,8 +430,8 @@ func TestModuleInfo_FetchesMetadata(t *testing.T) {
 	if meta.Title != "Token" {
 		t.Errorf("Title = %q, want %q", meta.Title, "Token")
 	}
-	if meta.Downloads != 15000000 {
-		t.Errorf("Downloads = %d, want 15000000", meta.Downloads)
+	if meta.Downloads != 15000019 {
+		t.Errorf("Downloads = %d, want 15000019", meta.Downloads)
 	}
 	if len(meta.Maintainers) != 2 {
 		t.Errorf("len(Maintainers) = %d, want 2", len(meta.Maintainers))
@@ -982,7 +983,9 @@ func TestModuleReleaseInfo_MaintenanceAndFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var paths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
 		w.Header().Set("Content-Type", "application/xml")
 		w.Write(data)
 	}))
@@ -1012,17 +1015,22 @@ func TestModuleReleaseInfo_MaintenanceAndFilter(t *testing.T) {
 		t.Fatalf("len(Releases) = %d, want 2 (published only, excluding the unpublished release)", len(result.Releases))
 	}
 
-	// Filtered to major 11: both published releases carry "^10.2 || ^11", so
+	// Filtered to Drupal 11: both published releases carry "^10.3 || ^11", so
 	// the filter narrows nothing further beyond the always-on published gate.
-	filtered, err := ModuleReleaseInfo("pathauto", "11")
-	if err != nil {
-		t.Fatalf("ModuleReleaseInfo error: %v", err)
+	for _, coreVersion := range []string{"11", "11.0", "11.1", "11.2"} {
+		filtered, err := ModuleReleaseInfo("pathauto", coreVersion)
+		if err != nil {
+			t.Fatalf("ModuleReleaseInfo(%q) error: %v", coreVersion, err)
+		}
+		if len(filtered.Releases) != 2 {
+			t.Errorf("len(Releases) with filter %s = %d, want 2", coreVersion, len(filtered.Releases))
+		}
+		if filtered.CoreVersionFilter != coreVersion {
+			t.Errorf("CoreVersionFilter = %q, want %q", filtered.CoreVersionFilter, coreVersion)
+		}
 	}
-	if len(filtered.Releases) != 2 {
-		t.Errorf("len(Releases) with filter 11 = %d, want 2", len(filtered.Releases))
-	}
-	if filtered.CoreVersionFilter != "11" {
-		t.Errorf("CoreVersionFilter = %q, want %q", filtered.CoreVersionFilter, "11")
+	if got := paths[1]; got != "/release-history/pathauto/current" {
+		t.Errorf("filtered release-history path = %q, want current feed", got)
 	}
 
 	// Filtered to a major none of the published releases satisfy.

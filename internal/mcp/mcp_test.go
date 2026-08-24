@@ -570,6 +570,23 @@ func TestHandleToolCall_EnvelopeWrap_Success(t *testing.T) {
 	if payload["foo"] != "bar" {
 		t.Errorf("payload.foo = %v, want %q", payload["foo"], "bar")
 	}
+
+	var standardResult struct {
+		Content []ContentBlock `json:"content"`
+	}
+	if err := json.Unmarshal(resp.Result, &standardResult); err != nil {
+		t.Fatalf("invalid standard MCP result: %v", err)
+	}
+	if len(standardResult.Content) != 1 || standardResult.Content[0].Type != "text" {
+		t.Fatalf("content = %#v, want one text block", standardResult.Content)
+	}
+	var contentEnvelope Envelope
+	if err := json.Unmarshal([]byte(standardResult.Content[0].Text), &contentEnvelope); err != nil {
+		t.Fatalf("invalid envelope in content: %v", err)
+	}
+	if contentEnvelope.Status != "pass" {
+		t.Errorf("content status = %q, want %q", contentEnvelope.Status, "pass")
+	}
 }
 
 func TestHandleToolCall_EnvelopeWrap_Error(t *testing.T) {
