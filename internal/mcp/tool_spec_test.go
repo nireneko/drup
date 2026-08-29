@@ -39,3 +39,21 @@ func TestToolSpecsAreTheSingleCatalogForSchemasAndStubs(t *testing.T) {
 		}
 	}
 }
+
+func TestMutatingDescriptorsRequireRequestIDAndOnlyReadOnlyDescriptorsRetry(t *testing.T) {
+	for _, spec := range ToolSpecs() {
+		hasRequestID := false
+		for _, required := range spec.Required {
+			hasRequestID = hasRequestID || required == "request_id"
+		}
+		if spec.Effect == EffectMutating && !hasRequestID {
+			t.Errorf("mutating tool %s does not require request_id", spec.Name)
+		}
+		if spec.Effect == EffectReadOnly && hasRequestID {
+			t.Errorf("read-only tool %s unexpectedly requires request_id", spec.Name)
+		}
+		if spec.RetryEligible && spec.Effect != EffectReadOnly {
+			t.Errorf("mutating tool %s is retry eligible", spec.Name)
+		}
+	}
+}

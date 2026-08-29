@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nireneko/drup/internal/metrics"
+	"github.com/nireneko/drup/internal/operation"
 )
 
 func TestServer_HandleRequest_Scan(t *testing.T) {
@@ -40,6 +41,18 @@ func TestServer_HandleRequest_Scan(t *testing.T) {
 
 	if resp.Error != nil {
 		t.Errorf("unexpected error: %v", resp.Error)
+	}
+}
+
+func TestWrapInEnvelope_DistinguishesUnknownAndPayloadFailure(t *testing.T) {
+	unknown := wrapInEnvelope("generate_report", nil, operation.UnknownError(fmt.Errorf("context deadline exceeded")))
+	if unknown.Status != "unknown" || unknown.OperationState != "unknown" {
+		t.Fatalf("unknown envelope = %#v, want unknown operation state", unknown)
+	}
+
+	failed := wrapInEnvelope("generate_report", json.RawMessage(`{"success":false}`), nil)
+	if failed.Status != "fail" {
+		t.Fatalf("payload failure status = %q, want fail", failed.Status)
 	}
 }
 
@@ -172,8 +185,8 @@ func TestServer_ListTools(t *testing.T) {
 	if !ok {
 		t.Fatal("missing tools array in result")
 	}
-	if len(tools) != 28 {
-		t.Errorf("len(tools) = %d, want 28", len(tools))
+	if len(tools) != 29 {
+		t.Errorf("len(tools) = %d, want 29", len(tools))
 	}
 }
 
@@ -502,8 +515,8 @@ func TestServer_PostWireUpCountIs31(t *testing.T) {
 	if !ok {
 		t.Fatal("missing tools array in result")
 	}
-	if len(tools) != 32 {
-		t.Errorf("post-wire-up tool count = %d, want 32 (28 default + 4 backup)", len(tools))
+	if len(tools) != 33 {
+		t.Errorf("post-wire-up tool count = %d, want 33 (29 default + 4 backup)", len(tools))
 	}
 }
 
@@ -525,8 +538,8 @@ func TestServer_ListTools_ProjectPathAwareToolsAdvertiseIt(t *testing.T) {
 func TestServer_ToolCount(t *testing.T) {
 	var buf bytes.Buffer
 	server := NewServer(&buf, "test")
-	if got := server.ToolCount(); got != 28 {
-		t.Errorf("default ToolCount() = %d, want 28", got)
+	if got := server.ToolCount(); got != 29 {
+		t.Errorf("default ToolCount() = %d, want 29", got)
 	}
 
 	// Register 2 more tools.
@@ -535,8 +548,8 @@ func TestServer_ToolCount(t *testing.T) {
 	}
 	server.RegisterTool("extra_tool_1", dummy)
 	server.RegisterTool("extra_tool_2", dummy)
-	if got := server.ToolCount(); got != 30 {
-		t.Errorf("after adding 2 tools, ToolCount() = %d, want 30", got)
+	if got := server.ToolCount(); got != 31 {
+		t.Errorf("after adding 2 tools, ToolCount() = %d, want 31", got)
 	}
 }
 

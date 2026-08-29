@@ -106,6 +106,10 @@ type ToolSpec struct {
 	Stub           bool
 	SessionPolicy  SessionPolicy
 	RequiresBackup bool
+	RetryEligible  bool
+	// ReconcilesOperation marks the recovery endpoint. It persists observed
+	// evidence but does not itself invoke the guarded domain effect.
+	ReconcilesOperation bool
 }
 
 // toolSchema preserves the package-private name used by existing transport
@@ -382,6 +386,15 @@ var toolRegistry = map[string]toolSchema{
 		},
 		Required: []string{"project_path"},
 	},
+	"operation_reconcile": {
+		Description: "Resolve an unknown mutation only after verifying an observable filesystem artifact",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path":  {Type: "string", Description: "Absolute path to the Drupal project"},
+			"request_id":    {Type: "string", Description: "Request ID of the unknown operation"},
+			"evidence_path": {Type: "string", Description: "Project-relative path to the observed artifact"},
+		},
+		Required: []string{"project_path", "request_id", "evidence_path"},
+	},
 }
 
 // ToolSpecs returns a deterministic snapshot of the tool catalog. Returning
@@ -435,8 +448,18 @@ func init() {
 		spec.Preconditions = []string{"session", "backup", "mutation_cap"}
 		spec.SessionPolicy = SessionPolicyRefuse
 		spec.RequiresBackup = true
+		spec.Properties["request_id"] = jsonSchemaProperty{Type: "string", Description: "Stable client-generated ID used to deduplicate this mutation"}
+		spec.Required = append(spec.Required, "request_id")
 		toolRegistry[name] = spec
 	}
+	// Reconciliation changes only the authoritative operation ledger. Its
+	// request_id identifies the unknown operation being resolved, so it must
+	// not be recursively idempotency-wrapped as a new domain mutation.
+	spec := toolRegistry["operation_reconcile"]
+	spec.Effect = EffectMutating
+	spec.Role = "reconciler"
+	spec.ReconcilesOperation = true
+	toolRegistry["operation_reconcile"] = spec
 	for _, name := range []string{"core_upgrade_apply", "contrib_compat_patch", "contrib_allow_lenient", "custom_compat_fix"} {
 		spec := toolRegistry[name]
 		spec.SessionPolicy = SessionPolicyForceDryRun
@@ -451,10 +474,15 @@ func init() {
 		spec.Timeout = timeout
 		toolRegistry[name] = spec
 	}
+	for _, name := range []string{"scan", "upgrade_scan", "validate"} {
+		spec := toolRegistry[name]
+		spec.RetryEligible = true
+		toolRegistry[name] = spec
+	}
 
 	// The first backup establishes the prerequisite for later mutations, so it
 	// must be auditable but cannot require a pre-existing backup.
-	spec := toolRegistry["test_backup_create"]
+	spec = toolRegistry["test_backup_create"]
 	spec.Preconditions = []string{"session", "mutation_cap"}
 	spec.RequiresBackup = false
 	toolRegistry["test_backup_create"] = spec
@@ -692,10 +720,9 @@ func (s *Server) handleToolCall(id interface{}, params json.RawMessage) error {
 
 	var result json.RawMessage
 	var err error
-	switch p.Name {
-	case "scan", "upgrade_scan", "validate":
+	if spec, known := ToolSpecByName(p.Name); known && spec.RetryEligible {
 		result, err = s.retryLoop(p.Name, handler, p.Arguments)
-	default:
+	} else {
 		result, err = handler(p.Arguments)
 	}
 
@@ -732,24 +759,38 @@ type ContentBlock struct {
 
 // Envelope wraps every MCP tool response with a uniform status signal.
 type Envelope struct {
-	Status  string          `json:"status"`            // "pass" | "fail"
-	Summary string          `json:"summary"`           // human-readable one-liner
-	Payload json.RawMessage `json:"payload,omitempty"` // tool-specific response (only on pass)
+	Status         string          `json:"status"`            // "pass" | "fail" | "unknown"
+	Summary        string          `json:"summary"`           // human-readable one-liner
+	Payload        json.RawMessage `json:"payload,omitempty"` // tool-specific response (only on pass)
+	OperationState string          `json:"operation_state,omitempty"`
 }
 
 // wrapInEnvelope builds an Envelope from a handler outcome.
 func wrapInEnvelope(toolName string, result json.RawMessage, handlerErr error) Envelope {
 	if handlerErr != nil {
+		if stateErr, ok := handlerErr.(interface{ OperationState() string }); ok && stateErr.OperationState() == "unknown" {
+			return Envelope{Status: "unknown", Summary: handlerErr.Error(), OperationState: stateErr.OperationState()}
+		}
 		return Envelope{
 			Status:  "fail",
 			Summary: handlerErr.Error(),
 		}
+	}
+	if payloadHasSuccessFalse(result) {
+		return Envelope{Status: "fail", Summary: deriveSummary(toolName, result), Payload: result}
 	}
 	return Envelope{
 		Status:  "pass",
 		Summary: deriveSummary(toolName, result),
 		Payload: result,
 	}
+}
+
+func payloadHasSuccessFalse(payload json.RawMessage) bool {
+	var fields struct {
+		Success *bool `json:"success"`
+	}
+	return json.Unmarshal(payload, &fields) == nil && fields.Success != nil && !*fields.Success
 }
 
 // deriveSummary extracts a one-line summary from the tool payload.

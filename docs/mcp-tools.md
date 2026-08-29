@@ -1,8 +1,8 @@
 # drup MCP Tools — Agent Reference
 
-This document is an **agent-facing reference** for the 32 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
+This document is an **agent-facing reference** for the 33 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
 
-**Tooling totals at runtime:** the `ToolSpec` catalog derives 28 stub entries (including `session_open` and `pipeline_status`) plus 4 reverse-asymmetric backup tools = **32 total**. See [§1.1](#11-response-envelope-uniform-contract) for the uniform envelope that wraps every response.
+**Tooling totals at runtime:** the `ToolSpec` catalog derives 29 stub entries (including `session_open`, `pipeline_status`, and `operation_reconcile`) plus 4 reverse-asymmetric backup tools = **33 total**. See [§1.1](#11-response-envelope-uniform-contract) for the uniform envelope that wraps every response.
 
 For tool **schemas** (JSON Schema, required fields, types) call `tools/list` — do not hardcode them here. For tool **internals** (Go package, test coverage) read `internal/app/mcp_tools.go`.
 
@@ -12,10 +12,11 @@ For tool **schemas** (JSON Schema, required fields, types) call `tools/list` —
 
 1. **Pick the MCP tool, never shell out.** Every operation in the upgrade pipeline has a deterministic MCP tool. If you find yourself about to run drush, composer, git-apply, curl, or any patch operation via Bash — STOP and pick a tool. The blocker isn't a guideline; the tools do things Bash cannot (env auto-prefix, dry-run pre-check, drush blocklist, git checkpoint).
 2. **Use exact registry names.** Tools are registered as short names (`scan`, `validate`, `core_upgrade_apply`). Depending on host orchestrator they may appear prefixed (`drup_scan`, `drup_validate`). Call your named tool by whatever name it shows in your function-calling UI — never hardcode a prefix.
-3. **Read the response, do not pattern-match its shape.** Every tool returns the same uniform envelope (`{status, summary, payload}` — see [§4.1](#41-response-envelope-uniform-contract)). The payload field is the tool-specific response shape; read it for `success`, `total_errors`, `is_applied`, etc.
-4. **Errors are returned two ways.** (a) As a uniform envelope with `"status": "fail"` and `"summary": "<error message>"` in the **result** channel — the tool itself failed (bad arg, blocked command, unreachable, transient-after-retry-exhausted). (b) As a JSON-RPC error response (`"code": -32601`, `-32602`, `-32603`) — this is a **protocol-level** failure (malformed request, unknown tool name, marshal failure), NOT a tool failure. Always inspect `status` first; treat JSON-RPC errors as dispatch failures and stop.
+3. **Read the response, do not pattern-match its shape.** Every tool returns the same uniform envelope (`{status, summary, payload, operation_state?}` — see [§4.1](#11-response-envelope-uniform-contract)). The payload field is the tool-specific response shape; read it for `success`, `total_errors`, `is_applied`, etc.
+4. **Errors are returned two ways.** (a) As a uniform envelope with `"status": "fail"` or `"status": "unknown"` and `"summary": "<error message>"` in the **result** channel — the tool failed or its mutating outcome cannot be proven. `unknown` is a hard stop: do not retry the mutation; reconcile observable evidence first. (b) As a JSON-RPC error response (`"code": -32601`, `-32602`, `-32603`) — this is a **protocol-level** failure (malformed request, unknown tool name, marshal failure), NOT a tool failure. Always inspect `status` first; treat JSON-RPC errors as dispatch failures and stop.
 5. **Backup before mutations.** Any tool that mutates `composer.json`, the working tree, or drupal.org state (apply_patch, core_upgrade_apply, patch_rollback, composer_require without dry-run, create_patch) requires a `test_backup_create` recorded in run state. The orchestrator enforces this; sub-agents must read it before dispatching mutators.
-6. **`tools/list` advertises only what is in `s.tools`.** `internal/mcp.ToolSpec` is the canonical catalog for each name, schema, effect class, timeout, role, preconditions, and stub visibility. Stubs and production wiring are derived from it; a missing handler fails fast during wiring.
+6. **Give every mutator a stable `request_id`.** The server persists that identity before the effect. Repeating a completed ID returns its stored response without executing again; reusing it for a different operation is refused.
+7. **`tools/list` advertises only what is in `s.tools`.** `internal/mcp.ToolSpec` is the canonical catalog for each name, schema, effect class, timeout, role, preconditions, and stub visibility. Stubs and production wiring are derived from it; a missing handler fails fast during wiring.
 
 ### 1.1 Response Envelope (uniform contract)
 
@@ -23,19 +24,21 @@ Every MCP tool response (success OR tool-level error) is wrapped at the server l
 
 ```json
 {
-  "status": "pass | fail",
+  "status": "pass | fail | unknown",
   "summary": "one-line human-readable summary",
-  "payload": { /* original tool-specific response, only on pass */ }
+  "payload": { /* original tool-specific response, only on pass */ },
+  "operation_state": "unknown" /* present only for an ambiguous mutation */
 }
 ```
 
 - **`status: "pass"`** — the handler returned without error. `payload` contains the tool's original response shape.
 - **`status: "fail"`** — the handler returned an error. `summary` is the error message; `payload` is empty. **The error is sent in the `result` channel, NOT as a JSON-RPC error.** This is a deliberate protocol extension so the orchestrator model always gets a parseable signal.
+- **`status: "unknown"`** — a mutating handler timed out or was cancelled after its durable intent was recorded. The effect may have happened. Do not retry with this or a new equivalent request ID; use `operation_reconcile` after observing evidence below the project root.
 - **JSON-RPC errors** are reserved for **protocol-level** failures (malformed request, unknown tool name, marshal failure). They are not tool failures; the tool never ran.
 
 Sub-agents MUST read the tool-specific response from `payload`, not from the result directly. This is enforced by the grep test `TestSubAgentTemplates_ContainPayloadReference` over the 18 sub-agent templates.
 
-Transient errors (timeout, connection refused, broken pipe) are retried up to 2 times with 1s base exponential backoff before the final `{status: "fail"}` is returned. Retries are recorded via `metrics.Default().RecordRetry()`.
+Only descriptor-marked read-only tools retry transient errors, up to 2 times with 1s base exponential backoff. Mutators never auto-retry; their request IDs and durable outcomes control recovery. Retries are recorded via `metrics.Default().RecordRetry()`.
 
 ---
 
@@ -370,6 +373,14 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 - **Side-effects**: none — reads the audit ledger, never writes.
 - **Error signals**: a project with no ledger yet still returns zero counts and the full cap, never an error.
 - **Red flag**: assuming `remaining_cap` reflects a global cap — it is scoped to a session window when one is bound, otherwise to the current day.
+
+### 5.26 `operation_reconcile`
+
+- **Purpose**: Resolve a mutation with durable `unknown` outcome using an observable file already present below `project_path`.
+- **Inputs**: `project_path`, the original mutation's `request_id`, and a project-relative `evidence_path` to an existing regular file. A client-supplied success boolean is never accepted as evidence.
+- **Returns**: `{ success, request_id, operation_state: "completed", evidence }` when the unknown operation is reconciled.
+- **Side-effects**: records the observed evidence and confirmed response in `.drup/operations.v1.json`; it does not rerun the original mutation.
+- **Red flag**: guessing that a timeout failed. A timeout or cancellation can occur after the effect; inspect a real artifact first, then reconcile it. If evidence is absent, preserve `unknown` and stop.
 
 ---
 

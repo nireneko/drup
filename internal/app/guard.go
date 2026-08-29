@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"github.com/nireneko/drup/internal/audit"
 	"github.com/nireneko/drup/internal/backup"
 	"github.com/nireneko/drup/internal/mcp"
+	"github.com/nireneko/drup/internal/operation"
 	"github.com/nireneko/drup/internal/projectconfig"
 	"github.com/nireneko/drup/internal/session"
 )
@@ -98,13 +101,90 @@ func guardedCall(name string, args json.RawMessage, handler mcp.ToolHandler) (js
 	if !ok {
 		return nil, fmt.Errorf("missing tool descriptor: %s", name)
 	}
-	return guardedSpecCall(spec, args, handler)
+	// This helper exists for internal composed effects (notably upgrade_scan's
+	// install path) that have no client request identity of their own. External
+	// MCP dispatch, including Server.CallTool, always enters guardedSpecCall.
+	return guardedSpecCallLegacy(spec, args, handler)
 }
 
 // guardedSpecCall is the effect-bound guard implementation. Its behavior is
 // entirely determined by the descriptor passed from MCP wiring; the legacy
 // session name partitions are retained only for their direct package API.
 func guardedSpecCall(spec mcp.ToolSpec, args json.RawMessage, handler mcp.ToolHandler) (json.RawMessage, error) {
+	projectPath := resolveGuardProjectPath(args)
+	outcome := session.EvaluateGuardPolicy(spec.Name, projectPath, string(spec.SessionPolicy))
+	if !outcome.Allowed {
+		audit.Append(projectPath, spec.Name, args, audit.ResultFailure, "")
+		return nil, outcome.Err
+	}
+	// The operation identity is mandatory for every external mutation,
+	// including policies that force a dry-run. A dry-run may be retried by the
+	// caller, but it must not let a mutating contract bypass its identity.
+	// Session and safety-policy errors retain their established precedence.
+	requestID, err := requiredRequestID(args)
+	if err != nil {
+		return nil, err
+	}
+	if outcome.ForceDryRun {
+		return guardedSpecCallLegacy(spec, args, handler)
+	}
+
+	fingerprint, err := operation.Fingerprint(spec.Name, args)
+	if err != nil {
+		return nil, err
+	}
+	store := operation.NewStore(projectPath)
+	if existing, findErr := store.FindRequest(requestID); findErr == nil {
+		if existing.Tool != spec.Name || existing.Fingerprint != fingerprint {
+			return nil, operation.ErrIdentityMismatch
+		}
+		switch existing.State {
+		case operation.StateCompleted:
+			return existing.Response, nil
+		case operation.StateFailed:
+			if len(existing.Response) > 0 {
+				return existing.Response, nil
+			}
+			return nil, fmt.Errorf("previous operation failed: %s", existing.Error)
+		case operation.StateUnknown, operation.StateStarted:
+			return nil, operation.UnknownError(fmt.Errorf("operation %s is %s; reconcile observable evidence before retrying", requestID, existing.State))
+		}
+	} else if !errors.Is(findErr, operation.ErrNotFound) {
+		return nil, findErr
+	}
+
+	if _, err := store.Start(requestID, spec.Name, fingerprint); err != nil {
+		if errors.Is(err, operation.ErrEquivalentUnknown) {
+			return nil, operation.UnknownError(err)
+		}
+		return nil, err
+	}
+	result, err := guardedSpecCallLegacy(spec, args, handler)
+	if err != nil {
+		if isAmbiguousMutationError(err) {
+			if _, persistErr := store.Unknown(requestID, err.Error()); persistErr != nil {
+				return nil, persistErr
+			}
+			return nil, operation.UnknownError(err)
+		}
+		if _, persistErr := store.Fail(requestID, err.Error()); persistErr != nil {
+			return nil, persistErr
+		}
+		return nil, err
+	}
+	if payloadIndicatesFailure(result) {
+		if _, err := store.FailWithResponse(requestID, result, "handler returned success:false"); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
+	if _, err := store.Complete(requestID, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func guardedSpecCallLegacy(spec mcp.ToolSpec, args json.RawMessage, handler mcp.ToolHandler) (json.RawMessage, error) {
 	name := spec.Name
 	projectPath := resolveGuardProjectPath(args)
 
@@ -146,8 +226,36 @@ func guardedSpecCall(spec mcp.ToolSpec, args json.RawMessage, handler mcp.ToolHa
 		audit.Append(projectPath, name, args, audit.ResultFailure, "")
 		return nil, err
 	}
+	if payloadIndicatesFailure(result) {
+		audit.Append(projectPath, name, args, audit.ResultFailure, "")
+		return result, nil
+	}
 	audit.Append(projectPath, name, args, audit.ResultSuccess, extractCommitHash(result))
 	return result, nil
+}
+
+func requiredRequestID(args json.RawMessage) (string, error) {
+	var input struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return "", err
+	}
+	if input.RequestID == "" {
+		return "", fmt.Errorf("request_id is required for mutating tool calls")
+	}
+	return input.RequestID, nil
+}
+
+func isAmbiguousMutationError(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+}
+
+func payloadIndicatesFailure(result json.RawMessage) bool {
+	var payload struct {
+		Success *bool `json:"success"`
+	}
+	return json.Unmarshal(result, &payload) == nil && payload.Success != nil && !*payload.Success
 }
 
 // extractCommitHash looks for the handful of result field names the

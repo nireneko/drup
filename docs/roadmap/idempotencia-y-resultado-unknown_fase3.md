@@ -4,7 +4,7 @@
 
 ## Estado verificado
 
-Parcial. `internal/mcp/server.go` ya limita el retry automático a `scan`, `upgrade_scan` y `validate`. No existe ledger persistente por `request_id`, deduplicación de mutadores ni estado `unknown` reconciliable después de timeout.
+Completada. El catálogo de `ToolSpec` declara los retries exclusivamente para lecturas; todos los mutadores exigen `request_id`. Un ledger versionado y fail-closed en `.drup/operations.v1.json` conserva la identidad semántica, la respuesta confirmada y la evidencia de reconciliación. Timeouts y cancelaciones de mutaciones se exponen como `unknown` y bloquean el relanzamiento equivalente hasta observar evidencia.
 
 No se debe reimplementar ninguna capacidad indicada como existente: debe reutilizarse y probarse en integración. El estado se basa en `MEJORAS-PROPUESTAS.md`, el árbol actual y los cambios locales visibles; no presupone que esos cambios estén entregados.
 
@@ -58,10 +58,10 @@ Cada work unit incluye comportamiento, pruebas y documentación asociada; debe p
 
 ## Criterios de aceptación
 
-- [ ] El mismo request confirmado no repite la mutación.
-- [ ] `unknown` bloquea un nuevo request equivalente hasta reconciliarlo.
-- [ ] Retries read-only siguen funcionando sin consumir cap de mutación.
-- [ ] La reconciliación registra evidencia, no confianza en un booleano del cliente.
+- [x] El mismo request confirmado no repite la mutación.
+- [x] `unknown` bloquea un nuevo request equivalente hasta reconciliarlo.
+- [x] Retries read-only siguen funcionando sin consumir cap de mutación.
+- [x] La reconciliación registra evidencia, no confianza en un booleano del cliente.
 
 
 ## Verificación prevista
@@ -73,6 +73,18 @@ go test ./...
 
 Estos comandos son el plan de evidencia, no resultados ejecutados. En sandbox o sin dependencias disponibles, registrar la limitación y NO afirmar que la suite pasa. Añadir readback de artefactos y `git diff --check` antes de revisión.
 
+**Evidencia ejecutada (2026-08-29):**
+
+```bash
+GOCACHE=/tmp/drup-go-build go test ./internal/app -run 'TestGuardedCall_(RequiresRequestIDBeforeForcedDryRunPolicy|ConfirmedRequestIsDeduplicatedWithoutSecondAuditOrCapUse|RejectsRequestIDReusedForDifferentOperation|UnknownBlocksEquivalentUntilObservableReconciliation)|TestWireMCPTools_CallToolRequiresRequestIDBeforeGenerateReportEffect' -count=1
+GOCACHE=/tmp/drup-go-build go test ./internal/mcp -run 'Test(MutatingDescriptorsRequireRequestIDAndOnlyReadOnlyDescriptorsRetry|WrapInEnvelope_DistinguishesUnknownAndPayloadFailure)' -count=1
+GOCACHE=/tmp/drup-go-build go test ./internal/operation -count=1
+GOCACHE=/tmp/drup-go-build go test ./...
+git diff --check
+```
+
+Todos los comandos terminaron correctamente. La suite completa se ejecutó fuera del sandbox porque este bloquea listeners `httptest` IPv6.
+
 ## Riesgos, migración y rollback
 
 - **Compatibilidad:** versionar contratos persistidos/MCP; mantener compatibilidad read-only solo cuando no debilite invariantes.
@@ -82,11 +94,11 @@ Estos comandos son el plan de evidencia, no resultados ejecutados. En sandbox o 
 
 ## Definición de terminado
 
-- [ ] Todos los criterios tienen prueba enfocada y evidencia registrada.
-- [ ] Suite aplicable y `git diff --check` ejecutados con resultado explícito.
-- [ ] Contratos, docs y tres superficies MCP permanecen coherentes.
-- [ ] Migración y rollback han sido ensayados o declarados no aplicables con razón.
-- [ ] No quedan decisiones del workflow confiadas únicamente al prompt.
+- [x] Todos los criterios tienen prueba enfocada y evidencia registrada.
+- [x] Suite aplicable y `git diff --check` ejecutados con resultado explícito.
+- [x] Contratos, docs y tres superficies MCP permanecen coherentes.
+- [x] Migración no aplicable: se introduce un ledger nuevo versionado sin datos previos; rollback conserva el archivo y sólo retira el wiring, por lo que no se destruye evidencia.
+- [x] No quedan decisiones del workflow confiadas únicamente al prompt.
 
 ## Siguiente fase
 

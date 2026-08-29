@@ -20,6 +20,7 @@ import (
 	"github.com/nireneko/drup/internal/envdetect"
 	drupexec "github.com/nireneko/drup/internal/exec"
 	"github.com/nireneko/drup/internal/mcp"
+	"github.com/nireneko/drup/internal/operation"
 	"github.com/nireneko/drup/internal/patch"
 	"github.com/nireneko/drup/internal/patchreconcile"
 	"github.com/nireneko/drup/internal/report"
@@ -138,17 +139,63 @@ func WireMCPTools(s *mcp.Server) {
 		"module_release_info":    realHandleModuleReleaseInfo,
 		"session_open":           realHandleSessionOpen,
 		"pipeline_status":        realHandlePipelineStatus,
+		"operation_reconcile":    realHandleOperationReconcile,
 	}
 	for _, spec := range mcp.ToolSpecs() {
 		handler, ok := handlers[spec.Name]
 		if !ok {
 			panic("missing real handler for tool descriptor: " + spec.Name)
 		}
-		if spec.Effect == mcp.EffectMutating {
+		if spec.Effect == mcp.EffectMutating && !spec.ReconcilesOperation {
 			handler = guardHandler(spec, handler)
 		}
 		s.RegisterTool(spec.Name, handler)
 	}
+}
+
+// realHandleOperationReconcile resolves an unknown operation from observable
+// filesystem evidence. It accepts no client "success" boolean: the artifact
+// must exist below the canonical project root before it can be recorded.
+func realHandleOperationReconcile(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath  string `json:"project_path"`
+		RequestID    string `json:"request_id"`
+		EvidencePath string `json:"evidence_path"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if params.ProjectPath == "" || params.RequestID == "" || params.EvidencePath == "" {
+		return nil, fmt.Errorf("project_path, request_id, and evidence_path are required")
+	}
+	root, err := filepath.Abs(params.ProjectPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve project path: %w", err)
+	}
+	evidence := filepath.Clean(params.EvidencePath)
+	if filepath.IsAbs(evidence) || evidence == ".." || strings.HasPrefix(evidence, ".."+string(os.PathSeparator)) {
+		return nil, fmt.Errorf("evidence_path must stay inside project_path")
+	}
+	fullPath := filepath.Join(root, evidence)
+	info, err := os.Stat(fullPath)
+	if err != nil || info.IsDir() {
+		if err != nil {
+			return nil, fmt.Errorf("observable evidence unavailable: %w", err)
+		}
+		return nil, fmt.Errorf("observable evidence must be a file")
+	}
+
+	store := operation.NewStore(root)
+	op, err := store.Reconcile(params.RequestID, operation.Evidence{Kind: "filesystem_file", Value: evidence}, json.RawMessage(fmt.Sprintf(`{"success":true,"reconciled":true,"evidence_path":%q}`, evidence)))
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]interface{}{
+		"success":         true,
+		"request_id":      op.RequestID,
+		"operation_state": op.State,
+		"evidence":        op.Evidence,
+	})
 }
 
 // realHandlePrepareUpgradeStatus is the explicit mutating boundary for

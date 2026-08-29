@@ -58,7 +58,8 @@ func defaultTools() map[string]ToolHandler {
 		// Session binding.
 		"session_open": handleSessionOpen,
 		// Mutation audit ledger.
-		"pipeline_status": handlePipelineStatus,
+		"pipeline_status":     handlePipelineStatus,
+		"operation_reconcile": handleOperationReconcile,
 	}
 
 	tools := make(map[string]ToolHandler, len(handlers))
@@ -73,6 +74,23 @@ func defaultTools() map[string]ToolHandler {
 		tools[spec.Name] = handler
 	}
 	return tools
+}
+
+func handleOperationReconcile(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		RequestID    string `json:"request_id"`
+		EvidencePath string `json:"evidence_path"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]interface{}{
+		"success":         false,
+		"request_id":      params.RequestID,
+		"operation_state": "unknown",
+		"message":         "operation reconciliation requires production wiring",
+		"evidence_path":   params.EvidencePath,
+	})
 }
 
 func handlePipelineStatus(args json.RawMessage) (json.RawMessage, error) {

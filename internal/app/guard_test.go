@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,8 @@ import (
 	"time"
 
 	"github.com/nireneko/drup/internal/audit"
+	"github.com/nireneko/drup/internal/mcp"
+	"github.com/nireneko/drup/internal/operation"
 	"github.com/nireneko/drup/internal/session"
 )
 
@@ -32,6 +36,118 @@ func writeFreshBackupManifest(t *testing.T, projectDir string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), data, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGuardedCall_ConfirmedRequestIsDeduplicatedWithoutSecondAuditOrCapUse(t *testing.T) {
+	resetSessionForTest(t)
+	dir := newDrupalProjectDir(t)
+	writeFreshBackupManifest(t, dir)
+	if _, err := session.Open(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := 0
+	handler := func(json.RawMessage) (json.RawMessage, error) {
+		calls++
+		return json.RawMessage(`{"success":true,"report":"written"}`), nil
+	}
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"request_id":"request-1"}`)
+	spec, _ := mcp.ToolSpecByName("generate_report")
+	first, err := guardedSpecCall(spec, args, handler)
+	if err != nil {
+		t.Fatalf("first guardedCall() error = %v", err)
+	}
+	second, err := guardedSpecCall(spec, args, handler)
+	if err != nil {
+		t.Fatalf("second guardedCall() error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("handler calls = %d, want 1", calls)
+	}
+	if string(second) != string(first) {
+		t.Fatalf("second result = %s, want stored %s", second, first)
+	}
+	records, err := audit.ReadAll(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("audit records = %d, want 1", len(records))
+	}
+}
+
+func TestGuardedCall_RequiresRequestIDBeforeForcedDryRunPolicy(t *testing.T) {
+	resetSessionForTest(t)
+	dir := newDrupalProjectDir(t)
+	spec, ok := mcp.ToolSpecByName("core_upgrade_apply")
+	if !ok {
+		t.Fatal("missing core_upgrade_apply descriptor")
+	}
+	_, err := guardedSpecCall(spec, json.RawMessage(`{"project_path":`+jsonStr(dir)+`}`), func(json.RawMessage) (json.RawMessage, error) {
+		t.Fatal("handler must not run without request_id")
+		return nil, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "request_id is required") {
+		t.Fatalf("guardedSpecCall() error = %v, want missing request_id refusal", err)
+	}
+}
+
+func TestGuardedCall_RejectsRequestIDReusedForDifferentOperation(t *testing.T) {
+	resetSessionForTest(t)
+	dir := newDrupalProjectDir(t)
+	writeFreshBackupManifest(t, dir)
+	if _, err := session.Open(dir); err != nil {
+		t.Fatal(err)
+	}
+	handler := func(json.RawMessage) (json.RawMessage, error) { return json.RawMessage(`{"success":true}`), nil }
+	spec, _ := mcp.ToolSpecByName("generate_report")
+	if _, err := guardedSpecCall(spec, json.RawMessage(`{"project_path":`+jsonStr(dir)+`,"request_id":"request-1","report_type":"json"}`), handler); err != nil {
+		t.Fatal(err)
+	}
+	_, err := guardedSpecCall(spec, json.RawMessage(`{"project_path":`+jsonStr(dir)+`,"request_id":"request-1","report_type":"markdown"}`), handler)
+	if !errors.Is(err, operation.ErrIdentityMismatch) {
+		t.Fatalf("reused request error = %v, want ErrIdentityMismatch", err)
+	}
+}
+
+func TestGuardedCall_UnknownBlocksEquivalentUntilObservableReconciliation(t *testing.T) {
+	resetSessionForTest(t)
+	dir := newDrupalProjectDir(t)
+	writeFreshBackupManifest(t, dir)
+	if _, err := session.Open(dir); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	handler := func(json.RawMessage) (json.RawMessage, error) {
+		calls++
+		return nil, context.DeadlineExceeded
+	}
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"request_id":"request-1"}`)
+	spec, _ := mcp.ToolSpecByName("generate_report")
+	_, err := guardedSpecCall(spec, args, handler)
+	if !operation.IsUnknown(err) {
+		t.Fatalf("timeout error = %v, want unknown outcome", err)
+	}
+	_, err = guardedSpecCall(spec, json.RawMessage(`{"project_path":`+jsonStr(dir)+`,"request_id":"request-2"}`), handler)
+	if !errors.Is(err, operation.ErrEquivalentUnknown) {
+		t.Fatalf("equivalent retry error = %v, want ErrEquivalentUnknown", err)
+	}
+	if calls != 1 {
+		t.Fatalf("handler calls = %d, want 1", calls)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "drup-report.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := realHandleOperationReconcile(json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"request_id":"request-1","evidence_path":"drup-report.json"}`)); err != nil {
+		t.Fatalf("realHandleOperationReconcile() error = %v", err)
+	}
+	if _, err := guardedSpecCall(spec, json.RawMessage(`{"project_path":`+jsonStr(dir)+`,"request_id":"request-2"}`), func(json.RawMessage) (json.RawMessage, error) {
+		calls++
+		return json.RawMessage(`{"success":true}`), nil
+	}); err != nil {
+		t.Fatalf("retry after reconciliation error = %v", err)
 	}
 }
 

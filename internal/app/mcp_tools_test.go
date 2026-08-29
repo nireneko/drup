@@ -35,7 +35,7 @@ func TestWireMCPTools_AllToolsRegistered(t *testing.T) {
 	server := mcp.NewServer(&buf, "test")
 	WireMCPTools(server)
 
-	expected := 32
+	expected := 33
 	actual := server.ToolCount()
 	if actual != expected {
 		t.Errorf("expected %d tools, got %d", expected, actual)
@@ -556,7 +556,7 @@ func TestDetectEnv_ValidPath(t *testing.T) {
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, ".ddev"), 0o755)
 
-	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"request_id":"prepare-backup-refusal"}`)
 	result, err := realHandleDetectEnv(args)
 	if err != nil {
 		t.Fatalf("error: %v", err)
@@ -838,7 +838,7 @@ func TestCoreUpgradeCheck_RelativePathRejected(t *testing.T) {
 func TestCoreUpgradeCheck_UnsupportedEnvironment(t *testing.T) {
 	dir := t.TempDir() // no markers at all — envdetect reports EnvUnsupported
 
-	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"request_id":"prepare-cap-refusal"}`)
 	result, err := realHandleCoreUpgradeCheck(args)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1880,7 +1880,7 @@ func TestWireMCPTools_RefuseOnlyToolsRefuseWithoutSession(t *testing.T) {
 	dir := t.TempDir()
 	for name := range session.RefuseOnlyTools {
 		t.Run(name, func(t *testing.T) {
-			args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+			args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"request_id":"force-dry-run-` + name + `"}`)
 			_, err := server.CallTool(name, args)
 			if err == nil {
 				t.Fatalf("%s: expected refusal without a bound session", name)
@@ -1938,7 +1938,7 @@ func TestWireMCPTools_PrepareUpgradeStatusRequiresBackupAndAuditsRefusal(t *test
 	if _, err := session.Open(dir); err != nil {
 		t.Fatalf("session.Open error: %v", err)
 	}
-	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"request_id":"prepare-backup-refusal"}`)
 	_, err := server.CallTool("prepare_upgrade_status", args)
 	if err == nil || !strings.Contains(err.Error(), "test_backup_create") {
 		t.Fatalf("prepare_upgrade_status error = %v, want backup guidance", err)
@@ -1969,7 +1969,7 @@ func TestWireMCPTools_PrepareUpgradeStatusRefusesAtMutationCap(t *testing.T) {
 		t.Fatalf("session.Open error: %v", err)
 	}
 
-	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"request_id":"prepare-cap-refusal"}`)
 	audit.Append(dir, "apply_patch", args, audit.ResultSuccess, "")
 	_, err := server.CallTool("prepare_upgrade_status", args)
 	if err == nil || !strings.Contains(err.Error(), "mutation cap reached (1/1)") {
@@ -2026,7 +2026,7 @@ func TestWireMCPTools_CoreUpgradeApply_ForcesDryRunWithoutSession(t *testing.T) 
 
 	// No dry_run field in the request at all — without a bound session the
 	// guard must force it to true regardless.
-	args := json.RawMessage(fmt.Sprintf(`{"project_path":%s,"target_version":"11.0.9"}`, jsonStr(dir)))
+	args := json.RawMessage(fmt.Sprintf(`{"project_path":%s,"target_version":"11.0.9","request_id":"core-upgrade-dry-run"}`, jsonStr(dir)))
 	result, err := server.CallTool("core_upgrade_apply", args)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2058,13 +2058,32 @@ func TestWireMCPTools_MatchingSessionAllowsGuardedToolThrough(t *testing.T) {
 
 	// composer_require with project_path only (missing "package") must fail
 	// on the handler's own validation, never on the guard.
-	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"request_id":"composer-require-validation"}`)
 	_, err := server.CallTool("composer_require", args)
 	if err == nil {
 		t.Fatal("expected an error from composer_require's own validation (missing package)")
 	}
 	if strings.Contains(err.Error(), "session_open") || strings.Contains(err.Error(), "test_backup_create") {
 		t.Errorf("guard refused despite a matching bound session and fresh backup: %v", err)
+	}
+}
+
+func TestWireMCPTools_CallToolRequiresRequestIDBeforeGenerateReportEffect(t *testing.T) {
+	resetSessionForTest(t)
+	dir := newDrupalProjectDir(t)
+	writeFreshBackupManifest(t, dir)
+	if _, err := session.Open(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	server := mcp.NewServer(&bytes.Buffer{}, "test")
+	WireMCPTools(server)
+	_, err := server.CallTool("generate_report", json.RawMessage(`{"project_path":`+jsonStr(dir)+`,"report_type":"json"}`))
+	if err == nil || !strings.Contains(err.Error(), "request_id is required") {
+		t.Fatalf("CallTool error = %v, want missing request_id refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "drup-report.json")); !os.IsNotExist(err) {
+		t.Fatalf("generate_report effect ran without request_id, stat error = %v", err)
 	}
 }
 
