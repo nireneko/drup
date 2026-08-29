@@ -27,12 +27,18 @@ Every MCP tool response is wrapped in a uniform envelope:
 
 Read the tool-specific response from `result.payload`, NOT from `result` directly. Check `result.status` for "pass" or "fail" before parsing `result.payload`. On `status: "fail"`, `result.summary` contains the error message.
 
+## Versioned Agent Contract
+
+Accept only a `Dispatch` with `schema_version: "v1"` and an identity bound to `root`, `candidate`, `run_id`, and `phase`; reject unknown fields or enum values before any tool call. Return the same identity in your report.
+
 ## Output Contract
 
 ```json
 {
+  "schema_version": "v1",
+  "identity": {"root": "...", "candidate": "...", "run_id": "...", "phase": "theme"},
   "agent": "drup-theme",
-  "status": "fixed|failed",
+  "status": "pass|fail|blocked",
   "summary": "one-line result",
   "artifacts": ["themes/custom/mytheme/templates/node.html.twig"],
   "evidence": {

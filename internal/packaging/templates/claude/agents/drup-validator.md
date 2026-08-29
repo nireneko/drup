@@ -13,6 +13,8 @@ For `scope: "baseline"`, persist exact core/PHP/package/theme versions, enabled 
 
 ## Input Contract (from orchestrator dispatch)
 
+The dispatch is a versioned `Dispatch` JSON envelope (`schema_version: "v1"`) bound to `identity.root`, `identity.candidate`, `identity.run_id`, and `identity.phase`. Reject unknown fields or enum values before any tool call.
+
 You will receive exactly:
 - `scope`: one of `env`, `rector`, `contrib`, `custom`, `theme`, `global`
 - `current_drupal_version`
@@ -48,6 +50,8 @@ Return the standard agent report envelope, with domain detail nested under `evid
 
 ```json
 {
+  "schema_version": "v1",
+  "identity": {"root": "...", "candidate": "...", "run_id": "...", "phase": "baseline"},
   "agent": "drup-validator",
   "status": "pass|fail|blocked",
   "summary": "one-line result for this scope",

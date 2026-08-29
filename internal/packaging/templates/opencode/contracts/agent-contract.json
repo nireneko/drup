@@ -1,0 +1,208 @@
+{
+  "schema_version": "v1",
+  "identity": {
+    "required": [
+      "root",
+      "candidate",
+      "run_id",
+      "phase"
+    ],
+    "phases": [
+      "preflight",
+      "backup",
+      "baseline",
+      "rector",
+      "contrib",
+      "custom",
+      "theme",
+      "core",
+      "cleanup",
+      "final"
+    ]
+  },
+  "dispatch": {
+    "required": [
+      "schema_version",
+      "identity",
+      "agent",
+      "scope",
+      "payload"
+    ],
+    "agents": [
+      "drup-preflight",
+      "drup-rector",
+      "drup-contrib",
+      "drup-custom",
+      "drup-theme",
+      "drup-validator"
+    ],
+    "scopes": [
+      "env",
+      "backup",
+      "baseline",
+      "rector",
+      "contrib",
+      "custom",
+      "theme",
+      "core",
+      "global"
+    ]
+  },
+  "agent_report": {
+    "required": [
+      "schema_version",
+      "identity",
+      "agent",
+      "status",
+      "summary",
+      "artifacts",
+      "evidence",
+      "risks"
+    ],
+    "status": [
+      "pass",
+      "fail",
+      "blocked"
+    ]
+  },
+  "validation_evidence": {
+    "required": [
+      "schema_version",
+      "identity",
+      "checks"
+    ]
+  },
+  "checkpoint_evidence": {
+    "required": [
+      "schema_version",
+      "identity",
+      "checkpoint",
+      "status"
+    ]
+  },
+  "transcript": {
+    "scenarios": [
+      {
+        "name": "happy-path",
+        "outcome": "pass",
+        "trace": [
+          {
+            "tool": "scan",
+            "arguments": {
+              "project_path": "/project"
+            }
+          }
+        ]
+      },
+      {
+        "name": "dirty-tree",
+        "outcome": "blocked",
+        "trace": []
+      },
+      {
+        "name": "backup-failure",
+        "outcome": "blocked",
+        "trace": []
+      },
+      {
+        "name": "two-retries-then-success",
+        "outcome": "pass",
+        "trace": [
+          {
+            "tool": "scan",
+            "arguments": {
+              "project_path": "/project"
+            }
+          },
+          {
+            "tool": "scan",
+            "arguments": {
+              "project_path": "/project"
+            }
+          },
+          {
+            "tool": "scan",
+            "arguments": {
+              "project_path": "/project"
+            }
+          }
+        ]
+      },
+      {
+        "name": "retries-exhausted",
+        "outcome": "blocked",
+        "trace": [
+          {
+            "tool": "scan",
+            "arguments": {
+              "project_path": "/project"
+            }
+          },
+          {
+            "tool": "scan",
+            "arguments": {
+              "project_path": "/project"
+            }
+          },
+          {
+            "tool": "scan",
+            "arguments": {
+              "project_path": "/project"
+            }
+          }
+        ]
+      },
+      {
+        "name": "contrib-major-isolated",
+        "outcome": "pass",
+        "trace": [
+          {
+            "tool": "composer_require",
+            "arguments": {
+              "project_path": "/project",
+              "package": "drupal/example:^3"
+            }
+          }
+        ]
+      },
+      {
+        "name": "core-sequential",
+        "outcome": "pass",
+        "trace": [
+          {
+            "tool": "core_upgrade_apply",
+            "arguments": {
+              "project_path": "/project",
+              "target_major": 11
+            }
+          },
+          {
+            "tool": "core_upgrade_apply",
+            "arguments": {
+              "project_path": "/project",
+              "target_major": 12
+            }
+          }
+        ]
+      },
+      {
+        "name": "confirmation-rejected",
+        "outcome": "blocked",
+        "trace": []
+      },
+      {
+        "name": "ambiguous-restart-requires-recovery",
+        "outcome": "blocked",
+        "trace": [
+          {
+            "tool": "apply_patch",
+            "arguments": {
+              "project_path": "/project",
+              "composer_package": "drupal/example"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1236,6 +1236,12 @@ func Install(agents []AgentAdapter, binaryPath string, files map[string]string) 
 
 	for _, agent := range agents {
 		for path, content := range files {
+			// contracts/ is render-time metadata consumed by packaging tests. It is
+			// not an agent skill and must never be routed through the default
+			// skill-path fallback.
+			if strings.HasPrefix(path, "contracts/") {
+				continue
+			}
 			intended, err := computeIntendedContent(agent, path, content)
 			if err != nil {
 				return nil, fmt.Errorf("compute content for %s/%s: %w", agent.ID(), path, err)

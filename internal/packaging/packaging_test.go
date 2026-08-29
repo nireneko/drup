@@ -2,10 +2,12 @@ package packaging
 
 import (
 	"encoding/json"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/nireneko/drup/internal/multiharness"
 	"github.com/nireneko/drup/internal/state"
 )
 
@@ -642,4 +644,129 @@ func TestSubAgentTemplates_ContainPayloadReference(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRender_ExposesIdenticalMachineReadableAgentContract(t *testing.T) {
+	var baseline AgentContract
+	for _, platform := range Platforms() {
+		t.Run(platform, func(t *testing.T) {
+			files, err := Render(platform, "/usr/local/bin/drup", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			contract, err := RenderContract(files)
+			if err != nil {
+				t.Fatalf("RenderContract() error = %v", err)
+			}
+			if contract.SchemaVersion != "v1" {
+				t.Fatalf("schema version = %q", contract.SchemaVersion)
+			}
+			if len(contract.AgentReport.Status) != 3 {
+				t.Fatalf("agent report statuses = %#v", contract.AgentReport.Status)
+			}
+			if platform == Platforms()[0] {
+				baseline = contract
+			} else if !reflect.DeepEqual(baseline, contract) {
+				t.Fatalf("%s contract differs from %s", platform, Platforms()[0])
+			}
+		})
+	}
+}
+
+func TestRender_ExecutesSharedContractCorpusWithSameSemanticTrace(t *testing.T) {
+	var baseline []multiharness.SemanticCall
+	for _, platform := range Platforms() {
+		t.Run(platform, func(t *testing.T) {
+			files, err := Render(platform, "/usr/local/bin/drup", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			contract, err := RenderContract(files)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(contract.AgentReport.Status, []string{"pass", "fail", "blocked"}) {
+				t.Fatalf("agent report status contract = %#v", contract.AgentReport.Status)
+			}
+
+			raw := []byte(files["contracts/agent-contract.json"])
+			trace, runErr := multiharness.RunRenderedCorpus(raw)
+			if runErr != nil {
+				t.Fatalf("rendered contract corpus: %v", runErr)
+			}
+			semantic, semanticErr := trace.Semantic()
+			if semanticErr != nil {
+				t.Fatalf("canonical semantic trace: %v", semanticErr)
+			}
+			if platform == Platforms()[0] {
+				baseline = semantic
+			} else if !reflect.DeepEqual(baseline, semantic) {
+				t.Fatalf("canonical semantic trace differs from %s", Platforms()[0])
+			}
+		})
+	}
+}
+
+func TestRender_AgentTemplatesUseVersionedEnvelopeAndToolSchemas(t *testing.T) {
+	for _, platform := range Platforms() {
+		t.Run(platform, func(t *testing.T) {
+			files, err := Render(platform, "/usr/local/bin/drup", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			validator := files["agents/drup-validator.md"]
+			if validator == "" {
+				validator = files["agents/drup-validator.toml"]
+			}
+			if !strings.Contains(validator, "schema_version") || !strings.Contains(validator, "pass|fail|blocked") {
+				t.Fatalf("validator template lacks versioned standard report contract")
+			}
+			rector := files["agents/drup-rector.md"]
+			if rector == "" {
+				rector = files["agents/drup-rector.toml"]
+			}
+			if strings.Contains(rector, "autofix(project_path, target_paths)") || !strings.Contains(rector, "Never send `target_paths`") {
+				t.Fatalf("rector template does not match autofix schema")
+			}
+			contrib := files["agents/drup-contrib.md"]
+			if contrib == "" {
+				contrib = files["agents/drup-contrib.toml"]
+			}
+			for _, token := range []string{"composer_package", "description", "request_id", "pass|fail|blocked"} {
+				if !strings.Contains(contrib, token) {
+					t.Fatalf("contrib template lacks %q", token)
+				}
+			}
+		})
+	}
+}
+
+func TestRender_AllAgentReportsFollowTheSharedVersionedContract(t *testing.T) {
+	for _, platform := range Platforms() {
+		t.Run(platform, func(t *testing.T) {
+			files, err := Render(platform, "/usr/local/bin/drup", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, agent := range AgentNamesForTest(t, platform) {
+				path := "agents/" + agent + ".md"
+				if platform == "codex" {
+					path = "agents/" + agent + ".toml"
+				}
+				content := files[path]
+				if !strings.Contains(content, `"schema_version": "v1"`) || !strings.Contains(content, `"status": "pass|fail|blocked"`) {
+					t.Errorf("%s lacks the shared versioned AgentReport contract", path)
+				}
+			}
+		})
+	}
+}
+
+func AgentNamesForTest(t *testing.T, platform string) []string {
+	t.Helper()
+	names, err := AgentNames(platform)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return names
 }

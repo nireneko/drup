@@ -1923,3 +1923,17 @@ func TestCodexAdapter_RemoveMCPConfig_DropsEmptyFile(t *testing.T) {
 		t.Error("empty config.toml left behind after uninstall")
 	}
 }
+
+func TestInstall_SkipsRenderOnlyContractMetadata(t *testing.T) {
+	home := t.TempDir()
+	adapter := &ClaudeAdapter{HomeDir: home}
+	_, err := Install([]AgentAdapter{adapter}, "/bin/drup", map[string]string{
+		"contracts/agent-contract.json": `{"schema_version":"v1"}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "skills", "contracts")); !os.IsNotExist(err) {
+		t.Fatalf("render-only contract was installed as a skill, stat error = %v", err)
+	}
+}

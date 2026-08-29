@@ -162,7 +162,7 @@ var toolRegistry = map[string]toolSchema{
 			"composer_package": {Type: "string", Description: "Package the patch belongs to, e.g. drupal/devel. Required for module and theme patches so paths resolve from the package root"},
 			"description":      {Type: "string", Description: "Patch description recorded in composer.json extra.patches"},
 		},
-		Required: []string{"patch_url", "project_path"},
+		Required: []string{"patch_url", "project_path", "composer_package", "description"},
 	},
 	"validate": {
 		Description: "Re-run scan and return error state",
