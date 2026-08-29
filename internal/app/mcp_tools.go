@@ -31,30 +31,27 @@ import (
 // defaultEnvDetector is the shared environment detector.
 var defaultEnvDetector envdetect.Detector = envdetect.NewDetector()
 
-// defaultExecTimeout bounds every subprocess invocation that has no more
-// specific entry in execTimeoutOverride. Without a deadline a hanging
+// defaultExecTimeout bounds subprocess invocations whose descriptor has no
+// explicit timeout. Without a deadline a hanging
 // drush/composer call blocks its MCP request forever — the stdio server
 // handles requests synchronously, so one stuck call stalls every
 // subsequent tool call too.
 var defaultExecTimeout = 5 * time.Minute
 
-// execTimeoutOverride raises the deadline for tools whose underlying
-// command legitimately runs longer than the 5-minute default: a full
-// composer install, a core upgrade apply, or an upgrade_status re-scan.
-var execTimeoutOverride = map[string]time.Duration{
-	"composer_require":   10 * time.Minute,
-	"core_upgrade_apply": 15 * time.Minute,
-	"upgrade_scan":       10 * time.Minute,
-}
-
-// resolveExecTimeout returns the configured deadline for toolName, falling
-// back to defaultExecTimeout when no override is set.
-func resolveExecTimeout(toolName string) time.Duration {
-	if d, ok := execTimeoutOverride[toolName]; ok {
-		return d
+// resolveExecTimeout returns the timeout carried by the canonical ToolSpec.
+// Keeping it in the descriptor prevents the retry/execution boundary from
+// silently drifting away from the MCP catalog.
+func toolSpecTimeout(toolName string) time.Duration {
+	if spec, ok := mcp.ToolSpecByName(toolName); ok && spec.Timeout > 0 {
+		return spec.Timeout
 	}
 	return defaultExecTimeout
 }
+
+// resolveExecTimeout is a test seam over the descriptor lookup. Production
+// code always uses toolSpecTimeout; tests can shorten one handler deadline
+// without mutating the global catalog.
+var resolveExecTimeout = toolSpecTimeout
 
 // drushBlocklist contains the canonical drush command names that must not be
 // executed via drush_exec. Evaluated after normalizeDrushCommand resolves
@@ -104,49 +101,54 @@ var composerPackagePattern = regexp.MustCompile(`^[a-z0-9]([_.\-]?[a-z0-9]+)*/[a
 // moduleNamePattern validates Drupal module machine names.
 var moduleNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
-// WireMCPTools registers real tool handlers on the MCP server, replacing
-// placeholders. Every tool in session.GuardedTools() (the force-dry-run and
-// refuse-only partitions from specs/agent-session's Guard Middleware
-// Enforcement requirement) is wrapped with guardHandler at this single
-// registration point. upgrade_scan is deliberately NOT wrapped here — its
-// only mutation (the nested drupal/upgrade_status composer install) bypasses
-// s.tools entirely, so it is guarded inline inside realHandleUpgradeScan via
-// the same guardedCall helper the middleware uses, applied directly to that
-// nested composer_require call.
+// WireMCPTools registers real handlers from the MCP descriptor catalog. The
+// descriptor, rather than a second hand-maintained registration list, decides
+// which tools cross the mutating guard boundary.
 func WireMCPTools(s *mcp.Server) {
-	s.RegisterTool("scan", realHandleScan)
-	s.RegisterTool("prepare_upgrade_status", guardHandler("prepare_upgrade_status", realHandlePrepareUpgradeStatus))
-	s.RegisterTool("autofix", realHandleAutofix)
-	s.RegisterTool("contrib_check", realHandleContribCheck)
-	s.RegisterTool("issue_patches", realHandleIssuePatches)
-	s.RegisterTool("apply_patch", guardHandler("apply_patch", realHandleApplyPatch))
-	s.RegisterTool("validate", realHandleValidate)
-	s.RegisterTool("create_patch", guardHandler("create_patch", realHandleCreatePatch))
-	// New tools.
-	s.RegisterTool("detect_env", realHandleDetectEnv)
-	s.RegisterTool("composer_require", guardHandler("composer_require", realHandleComposerRequire))
-	s.RegisterTool("drush_exec", realHandleDrushExec)
-	s.RegisterTool("contrib_upgrade_path", realHandleContribUpgradePath)
-	s.RegisterTool("upgrade_scan", realHandleUpgradeScan)
-	s.RegisterTool("patch_status", realHandlePatchStatus)
-	s.RegisterTool("patch_rollback", guardHandler("patch_rollback", realHandlePatchRollback))
-	s.RegisterTool("generate_report", realHandleGenerateReport)
-	s.RegisterTool("module_info", realHandleModuleInfo)
-	s.RegisterTool("drupal_version_matrix", realHandleDrupalVersionMatrix)
-	s.RegisterTool("core_upgrade_check", realHandleCoreUpgradeCheck)
-	s.RegisterTool("core_upgrade_apply", guardHandler("core_upgrade_apply", realHandleCoreUpgradeApply))
-	s.RegisterTool("patch_reconcile", realHandlePatchReconcile)
-	s.RegisterTool("cleanup", guardHandler("cleanup", realHandleCleanup))
-	s.RegisterTool("custom_compat_fix", guardHandler("custom_compat_fix", realHandleCustomCompatFix))
-	s.RegisterTool("contrib_allow_lenient", guardHandler("contrib_allow_lenient", realHandleContribAllowLenient))
-	s.RegisterTool("contrib_compat_patch", guardHandler("contrib_compat_patch", realHandleContribCompatPatch))
-	s.RegisterTool("test_backup_create", realHandleTestBackupCreate)
-	s.RegisterTool("test_backup_list", realHandleTestBackupList)
-	s.RegisterTool("test_backup_restore", guardHandler("test_backup_restore", realHandleTestBackupRestore))
-	s.RegisterTool("test_backup_delete", guardHandler("test_backup_delete", realHandleTestBackupDelete))
-	s.RegisterTool("module_release_info", realHandleModuleReleaseInfo)
-	s.RegisterTool("session_open", realHandleSessionOpen)
-	s.RegisterTool("pipeline_status", realHandlePipelineStatus)
+	handlers := map[string]mcp.ToolHandler{
+		"scan":                   realHandleScan,
+		"prepare_upgrade_status": realHandlePrepareUpgradeStatus,
+		"autofix":                realHandleAutofix,
+		"contrib_check":          realHandleContribCheck,
+		"issue_patches":          realHandleIssuePatches,
+		"apply_patch":            realHandleApplyPatch,
+		"validate":               realHandleValidate,
+		"create_patch":           realHandleCreatePatch,
+		"detect_env":             realHandleDetectEnv,
+		"composer_require":       realHandleComposerRequire,
+		"drush_exec":             realHandleDrushExec,
+		"contrib_upgrade_path":   realHandleContribUpgradePath,
+		"upgrade_scan":           realHandleUpgradeScan,
+		"patch_status":           realHandlePatchStatus,
+		"patch_rollback":         realHandlePatchRollback,
+		"generate_report":        realHandleGenerateReport,
+		"module_info":            realHandleModuleInfo,
+		"drupal_version_matrix":  realHandleDrupalVersionMatrix,
+		"core_upgrade_check":     realHandleCoreUpgradeCheck,
+		"core_upgrade_apply":     realHandleCoreUpgradeApply,
+		"patch_reconcile":        realHandlePatchReconcile,
+		"cleanup":                realHandleCleanup,
+		"custom_compat_fix":      realHandleCustomCompatFix,
+		"contrib_allow_lenient":  realHandleContribAllowLenient,
+		"contrib_compat_patch":   realHandleContribCompatPatch,
+		"test_backup_create":     realHandleTestBackupCreate,
+		"test_backup_list":       realHandleTestBackupList,
+		"test_backup_restore":    realHandleTestBackupRestore,
+		"test_backup_delete":     realHandleTestBackupDelete,
+		"module_release_info":    realHandleModuleReleaseInfo,
+		"session_open":           realHandleSessionOpen,
+		"pipeline_status":        realHandlePipelineStatus,
+	}
+	for _, spec := range mcp.ToolSpecs() {
+		handler, ok := handlers[spec.Name]
+		if !ok {
+			panic("missing real handler for tool descriptor: " + spec.Name)
+		}
+		if spec.Effect == mcp.EffectMutating {
+			handler = guardHandler(spec, handler)
+		}
+		s.RegisterTool(spec.Name, handler)
+	}
 }
 
 // realHandlePrepareUpgradeStatus is the explicit mutating boundary for

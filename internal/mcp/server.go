@@ -70,12 +70,47 @@ type jsonSchemaProperty struct {
 	Description string `json:"description"`
 }
 
-// toolSchema defines the schema for a tool's input parameters.
-type toolSchema struct {
-	Description string                        `json:"description"`
-	Properties  map[string]jsonSchemaProperty `json:"properties"`
-	Required    []string                      `json:"required"`
+// ToolEffect declares whether a tool may change project or workflow state.
+// The class is consumed by both MCP wiring and the app guard; callers must
+// never infer it from a tool name or its description.
+type ToolEffect string
+
+const (
+	EffectReadOnly ToolEffect = "read_only"
+	EffectMutating ToolEffect = "mutating"
+)
+
+// SessionPolicy controls how a mutating tool behaves without a matching
+// bound session. It is separate from Effect because a dry-run capable tool
+// may still mutate when a session is valid.
+type SessionPolicy string
+
+const (
+	SessionPolicyNone        SessionPolicy = "none"
+	SessionPolicyRefuse      SessionPolicy = "refuse"
+	SessionPolicyForceDryRun SessionPolicy = "force_dry_run"
+)
+
+// ToolSpec is the single descriptor for an MCP tool. The same descriptor
+// supplies tools/list schema data, stub visibility, and effect policy used by
+// production wiring. Handler implementations remain in their owning package.
+type ToolSpec struct {
+	Name           string
+	Description    string                        `json:"description"`
+	Properties     map[string]jsonSchemaProperty `json:"properties"`
+	Required       []string                      `json:"required"`
+	Effect         ToolEffect
+	Timeout        time.Duration
+	Role           string
+	Preconditions  []string
+	Stub           bool
+	SessionPolicy  SessionPolicy
+	RequiresBackup bool
 }
+
+// toolSchema preserves the package-private name used by existing transport
+// tests while making every registry entry a complete ToolSpec.
+type toolSchema = ToolSpec
 
 // toolRegistry maps tool names to their schemas.
 var toolRegistry = map[string]toolSchema{
@@ -347,6 +382,82 @@ var toolRegistry = map[string]toolSchema{
 		},
 		Required: []string{"project_path"},
 	},
+}
+
+// ToolSpecs returns a deterministic snapshot of the tool catalog. Returning
+// values prevents callers from mutating the registry that tools/list uses.
+func ToolSpecs() []ToolSpec {
+	names := make([]string, 0, len(toolRegistry))
+	for name := range toolRegistry {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	specs := make([]ToolSpec, 0, len(names))
+	for _, name := range names {
+		spec := toolRegistry[name]
+		spec.Name = name
+		specs = append(specs, spec)
+	}
+	return specs
+}
+
+// ToolSpecByName returns the descriptor for a registered MCP tool.
+func ToolSpecByName(name string) (ToolSpec, bool) {
+	spec, ok := toolRegistry[name]
+	if !ok {
+		return ToolSpec{}, false
+	}
+	spec.Name = name
+	return spec, true
+}
+
+func init() {
+	for name, spec := range toolRegistry {
+		spec.Name = name
+		spec.Effect = EffectReadOnly
+		spec.Timeout = 5 * time.Minute
+		spec.Role = "validator"
+		spec.Stub = !strings.HasPrefix(name, "test_backup_")
+		spec.SessionPolicy = SessionPolicyNone
+		toolRegistry[name] = spec
+	}
+
+	for _, name := range []string{
+		"prepare_upgrade_status", "autofix", "apply_patch", "create_patch",
+		"composer_require", "drush_exec", "patch_rollback", "core_upgrade_apply",
+		"cleanup", "custom_compat_fix", "contrib_allow_lenient", "contrib_compat_patch", "generate_report",
+		"test_backup_create", "test_backup_restore", "test_backup_delete",
+	} {
+		spec := toolRegistry[name]
+		spec.Effect = EffectMutating
+		spec.Role = "executor"
+		spec.Preconditions = []string{"session", "backup", "mutation_cap"}
+		spec.SessionPolicy = SessionPolicyRefuse
+		spec.RequiresBackup = true
+		toolRegistry[name] = spec
+	}
+	for _, name := range []string{"core_upgrade_apply", "contrib_compat_patch", "contrib_allow_lenient", "custom_compat_fix"} {
+		spec := toolRegistry[name]
+		spec.SessionPolicy = SessionPolicyForceDryRun
+		toolRegistry[name] = spec
+	}
+	for name, timeout := range map[string]time.Duration{
+		"composer_require":   10 * time.Minute,
+		"core_upgrade_apply": 15 * time.Minute,
+		"upgrade_scan":       10 * time.Minute,
+	} {
+		spec := toolRegistry[name]
+		spec.Timeout = timeout
+		toolRegistry[name] = spec
+	}
+
+	// The first backup establishes the prerequisite for later mutations, so it
+	// must be auditable but cannot require a pre-existing backup.
+	spec := toolRegistry["test_backup_create"]
+	spec.Preconditions = []string{"session", "mutation_cap"}
+	spec.RequiresBackup = false
+	toolRegistry["test_backup_create"] = spec
 }
 
 // NewServer creates a new MCP server writing to out.

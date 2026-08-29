@@ -48,6 +48,27 @@ func TestWireMCPTools_AllToolsRegistered(t *testing.T) {
 	}
 }
 
+func TestWireMCPTools_DescriptorRefuseToolsCannotBypassSessionGuard(t *testing.T) {
+	resetSessionForTest(t)
+
+	var buf bytes.Buffer
+	server := mcp.NewServer(&buf, "test")
+	WireMCPTools(server)
+	projectPath := t.TempDir()
+
+	for _, spec := range mcp.ToolSpecs() {
+		if spec.Effect != mcp.EffectMutating || spec.SessionPolicy != mcp.SessionPolicyRefuse {
+			continue
+		}
+		t.Run(spec.Name, func(t *testing.T) {
+			_, err := server.CallTool(spec.Name, json.RawMessage(`{"project_path":`+jsonStr(projectPath)+`}`))
+			if err == nil || !strings.Contains(err.Error(), "session_open") {
+				t.Fatalf("%s error = %v, want descriptor-driven session refusal", spec.Name, err)
+			}
+		})
+	}
+}
+
 func TestRealHandleContribCheck_InvalidJSON(t *testing.T) {
 	_, err := realHandleContribCheck(json.RawMessage(`{invalid`))
 	if err == nil {
@@ -622,18 +643,25 @@ func preparedValidateProject(t *testing.T) string {
 
 // --- PR2: D2 bounded subprocess execution wired into MCP handlers ---
 
-// TestResolveExecTimeout_UsesOverrideOrDefault guards the exec-timeout
-// lookup table: tools with a configured override get it, everything else
-// falls back to defaultExecTimeout.
+// TestResolveExecTimeout_UsesDescriptorOrDefault guards the descriptor-driven
+// timeout lookup: catalogued tools carry their own limit, unknown tools fall
+// back to defaultExecTimeout.
 func TestResolveExecTimeout_UsesOverrideOrDefault(t *testing.T) {
+	timeoutOf := func(name string) time.Duration {
+		spec, ok := mcp.ToolSpecByName(name)
+		if !ok {
+			t.Fatalf("%s is missing from the tool catalog", name)
+		}
+		return spec.Timeout
+	}
 	tests := []struct {
 		tool string
 		want time.Duration
 	}{
-		{"composer_require", execTimeoutOverride["composer_require"]},
-		{"core_upgrade_apply", execTimeoutOverride["core_upgrade_apply"]},
-		{"upgrade_scan", execTimeoutOverride["upgrade_scan"]},
-		{"drush_exec", defaultExecTimeout},
+		{"composer_require", timeoutOf("composer_require")},
+		{"core_upgrade_apply", timeoutOf("core_upgrade_apply")},
+		{"upgrade_scan", timeoutOf("upgrade_scan")},
+		{"drush_exec", timeoutOf("drush_exec")},
 		{"some_unknown_tool", defaultExecTimeout},
 	}
 	for _, tt := range tests {
@@ -644,12 +672,16 @@ func TestResolveExecTimeout_UsesOverrideOrDefault(t *testing.T) {
 }
 
 // TestResolveExecTimeout_OverridesAreLongerThanDefault documents why the 3
-// overridden tools exist: their underlying commands legitimately run longer
-// than a typical drush/composer call.
+// descriptors carry longer timeouts: their underlying commands legitimately
+// run longer than a typical drush/composer call.
 func TestResolveExecTimeout_OverridesAreLongerThanDefault(t *testing.T) {
 	for _, tool := range []string{"composer_require", "core_upgrade_apply", "upgrade_scan"} {
-		if execTimeoutOverride[tool] <= defaultExecTimeout {
-			t.Errorf("execTimeoutOverride[%q] = %v, want it longer than defaultExecTimeout %v", tool, execTimeoutOverride[tool], defaultExecTimeout)
+		spec, ok := mcp.ToolSpecByName(tool)
+		if !ok {
+			t.Fatalf("%s is missing from the tool catalog", tool)
+		}
+		if spec.Timeout <= defaultExecTimeout {
+			t.Errorf("ToolSpec(%q).Timeout = %v, want it longer than defaultExecTimeout %v", tool, spec.Timeout, defaultExecTimeout)
 		}
 	}
 }
@@ -662,11 +694,14 @@ func TestComposerRequire_ExecTimeout_ReturnsErrorPromptly(t *testing.T) {
 	defaultEnvDetector = &mockEnvDetectorDirect{}
 	defer func() { defaultEnvDetector = origDetector }()
 
-	// composer_require has its own execTimeoutOverride entry, so it must be
-	// shrunk directly — changing defaultExecTimeout alone would not affect it.
-	origOverride := execTimeoutOverride["composer_require"]
-	execTimeoutOverride["composer_require"] = 50 * time.Millisecond
-	defer func() { execTimeoutOverride["composer_require"] = origOverride }()
+	origTimeout := resolveExecTimeout
+	resolveExecTimeout = func(tool string) time.Duration {
+		if tool == "composer_require" {
+			return 50 * time.Millisecond
+		}
+		return origTimeout(tool)
+	}
+	defer func() { resolveExecTimeout = origTimeout }()
 
 	origRunWithEnv := drupexec.RunWithEnv
 	drupexec.RunWithEnv = func(_ string, _ []string, cmd string, args ...string) (string, string, int, error) {
@@ -697,9 +732,14 @@ func TestDrushExec_ExecTimeout_ReturnsErrorPromptly(t *testing.T) {
 	defaultEnvDetector = &mockEnvDetectorDirect{}
 	defer func() { defaultEnvDetector = origDetector }()
 
-	origTimeout := defaultExecTimeout
-	defaultExecTimeout = 50 * time.Millisecond
-	defer func() { defaultExecTimeout = origTimeout }()
+	origTimeout := resolveExecTimeout
+	resolveExecTimeout = func(tool string) time.Duration {
+		if tool == "drush_exec" {
+			return 50 * time.Millisecond
+		}
+		return origTimeout(tool)
+	}
+	defer func() { resolveExecTimeout = origTimeout }()
 
 	origRunWithEnv := drupexec.RunWithEnv
 	drupexec.RunWithEnv = func(_ string, _ []string, cmd string, args ...string) (string, string, int, error) {
@@ -727,11 +767,14 @@ func TestUpgradeScan_ExecTimeout_ReturnsErrorPromptly(t *testing.T) {
 	defaultEnvDetector = &mockEnvDetector{}
 	defer func() { defaultEnvDetector = origDetector }()
 
-	// upgrade_scan has its own execTimeoutOverride entry, so it must be
-	// shrunk directly — changing defaultExecTimeout alone would not affect it.
-	origOverride := execTimeoutOverride["upgrade_scan"]
-	execTimeoutOverride["upgrade_scan"] = 50 * time.Millisecond
-	defer func() { execTimeoutOverride["upgrade_scan"] = origOverride }()
+	origTimeout := resolveExecTimeout
+	resolveExecTimeout = func(tool string) time.Duration {
+		if tool == "upgrade_scan" {
+			return 50 * time.Millisecond
+		}
+		return origTimeout(tool)
+	}
+	defer func() { resolveExecTimeout = origTimeout }()
 
 	origRunWithEnv := drupexec.RunWithEnv
 	drupexec.RunWithEnv = func(_ string, _ []string, cmd string, args ...string) (string, string, int, error) {

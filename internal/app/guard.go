@@ -44,17 +44,13 @@ type guardProjectPath struct {
 	ProjectPath string `json:"project_path"`
 }
 
-// guardHandler wraps a mutating tool's real handler with the registration-
-// time session guard (session/backup-freshness/mutation-cap, per
-// specs/agent-session and specs/mutation-audit) via guardedCall. This is
-// the middleware half of the guard placement design decision — the other
-// half is the nested composer_require call inside realHandleUpgradeScan,
-// which bypasses this wrapper entirely (it calls straight into
-// realHandleComposerRequire) and so re-enters the same guardedCall path
-// explicitly at its own call site instead.
-func guardHandler(name string, handler mcp.ToolHandler) mcp.ToolHandler {
+// guardHandler wraps a mutating descriptor's real handler with the
+// session/backup-freshness/mutation-cap guard. WireMCPTools calls it solely
+// from ToolSpec.Effect, so adding a mutating tool cannot accidentally bypass
+// the guard by being omitted from a second registration list.
+func guardHandler(spec mcp.ToolSpec, handler mcp.ToolHandler) mcp.ToolHandler {
 	return func(args json.RawMessage) (json.RawMessage, error) {
-		return guardedCall(name, args, handler)
+		return guardedSpecCall(spec, args, handler)
 	}
 }
 
@@ -98,9 +94,21 @@ func newestBackupManifest(projectPath string) (time.Time, bool) {
 // composer-install call site route through, so both get identical
 // guarding and auditing.
 func guardedCall(name string, args json.RawMessage, handler mcp.ToolHandler) (json.RawMessage, error) {
+	spec, ok := mcp.ToolSpecByName(name)
+	if !ok {
+		return nil, fmt.Errorf("missing tool descriptor: %s", name)
+	}
+	return guardedSpecCall(spec, args, handler)
+}
+
+// guardedSpecCall is the effect-bound guard implementation. Its behavior is
+// entirely determined by the descriptor passed from MCP wiring; the legacy
+// session name partitions are retained only for their direct package API.
+func guardedSpecCall(spec mcp.ToolSpec, args json.RawMessage, handler mcp.ToolHandler) (json.RawMessage, error) {
+	name := spec.Name
 	projectPath := resolveGuardProjectPath(args)
 
-	outcome := session.EvaluateGuard(name, projectPath)
+	outcome := session.EvaluateGuardPolicy(name, projectPath, string(spec.SessionPolicy))
 	if !outcome.Allowed {
 		audit.Append(projectPath, name, args, audit.ResultFailure, "")
 		return nil, outcome.Err
@@ -110,10 +118,12 @@ func guardedCall(name string, args json.RawMessage, handler mcp.ToolHandler) (js
 		sess, _ := session.Current()
 		cfg := projectconfig.Load(projectPath)
 
-		newestAt, found := newestBackupManifest(projectPath)
-		if bfOutcome := session.EvaluateBackupFreshness(name, newestAt, found, sess.OpenedAt, cfg.BackupFreshnessWindow); !bfOutcome.Allowed {
-			audit.Append(projectPath, name, args, audit.ResultFailure, "")
-			return nil, bfOutcome.Err
+		if spec.RequiresBackup {
+			newestAt, found := newestBackupManifest(projectPath)
+			if bfOutcome := session.EvaluateBackupFreshnessPolicy(name, newestAt, found, sess.OpenedAt, cfg.BackupFreshnessWindow, true); !bfOutcome.Allowed {
+				audit.Append(projectPath, name, args, audit.ResultFailure, "")
+				return nil, bfOutcome.Err
+			}
 		}
 
 		if allowed, count, capN, err := audit.CheckCap(projectPath, true, sess.OpenedAt); err == nil && !allowed {

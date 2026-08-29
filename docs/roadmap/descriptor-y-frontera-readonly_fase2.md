@@ -4,7 +4,7 @@
 
 ## Estado verificado
 
-Parcial. Existe `prepare_upgrade_status`; `scan` y `upgrade_scan` se describen como read-only y el guard separa preparación. Persisten tres fuentes de definición (`toolRegistry`, `defaultTools`, `WireMCPTools`) y falta una clase de efecto única que gobierne registro, guard, retry y documentación.
+Completado. `internal/mcp.ToolSpec` es el catálogo canónico de nombre, schema, efecto, timeout, rol, precondiciones y visibilidad de stub. `defaultTools()` y `WireMCPTools()` se derivan de ese catálogo; el guard consume su política de sesión y backup. `scan`, `upgrade_scan` y `validate` permanecen en la frontera read-only, mientras que `prepare_upgrade_status` conserva la preparación auditada y protegida.
 
 No se debe reimplementar ninguna capacidad indicada como existente: debe reutilizarse y probarse en integración. El estado se basa en `MEJORAS-PROPUESTAS.md`, el árbol actual y los cambios locales visibles; no presupone que esos cambios estén entregados.
 
@@ -58,10 +58,10 @@ Cada work unit incluye comportamiento, pruebas y documentación asociada; debe p
 
 ## Criterios de aceptación
 
-- [ ] Cada herramienta tiene exactamente una clase de efecto.
-- [ ] Las tools read-only no escriben Composer, configuración ni worktree.
-- [ ] Preparación es auditada, protegida por backup/cap y ajena al validador.
-- [ ] Rector no produce una validación que pueda pasar por gate independiente.
+- [x] Cada herramienta tiene exactamente una clase de efecto.
+- [x] Las tools read-only no escriben Composer, configuración ni worktree.
+- [x] Preparación es auditada, protegida por backup/cap y ajena al validador.
+- [x] Rector no produce una validación que pueda pasar por gate independiente.
 
 
 ## Verificación prevista
@@ -82,11 +82,11 @@ Estos comandos son el plan de evidencia, no resultados ejecutados. En sandbox o 
 
 ## Definición de terminado
 
-- [ ] Todos los criterios tienen prueba enfocada y evidencia registrada.
-- [ ] Suite aplicable y `git diff --check` ejecutados con resultado explícito.
-- [ ] Contratos, docs y tres superficies MCP permanecen coherentes.
-- [ ] Migración y rollback han sido ensayados o declarados no aplicables con razón.
-- [ ] No quedan decisiones del workflow confiadas únicamente al prompt.
+- [x] Todos los criterios tienen prueba enfocada y evidencia registrada.
+- [x] Suite aplicable y `git diff --check` ejecutados con resultado explícito: `go test ./...` pasa fuera del sandbox (el sandbox bloquea los listeners IPv6 de `httptest`).
+- [x] Contratos, docs y tres superficies MCP permanecen coherentes.
+- [x] Migración y rollback no aplican: no se persiste un formato nuevo; revertir el wiring restituye el catálogo anterior sin eliminar evidencia existente.
+- [x] No quedan decisiones del workflow confiadas únicamente al prompt.
 
 ## Siguiente fase
 

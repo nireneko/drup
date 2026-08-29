@@ -254,7 +254,20 @@ func allowUnsafeActive() bool {
 // from both ForceDryRunTools and RefuseOnlyTools is not part of the guarded
 // set and always resolves to Allowed with no dry-run change.
 func EvaluateGuard(toolName, projectPath string) GuardOutcome {
-	guarded := ForceDryRunTools[toolName] || RefuseOnlyTools[toolName]
+	policy := "none"
+	if ForceDryRunTools[toolName] {
+		policy = "force_dry_run"
+	} else if RefuseOnlyTools[toolName] {
+		policy = "refuse"
+	}
+	return EvaluateGuardPolicy(toolName, projectPath, policy)
+}
+
+// EvaluateGuardPolicy evaluates the policy carried by an MCP ToolSpec.
+// Keeping policy as data means registration, guard behavior, and retry
+// semantics share one descriptor instead of re-classifying names in app.
+func EvaluateGuardPolicy(toolName, projectPath, policy string) GuardOutcome {
+	guarded := policy != "none"
 
 	if allowUnsafeActive() {
 		if guarded {
@@ -273,10 +286,10 @@ func EvaluateGuard(toolName, projectPath string) GuardOutcome {
 		}
 	}
 
-	if ForceDryRunTools[toolName] {
+	if policy == "force_dry_run" {
 		return GuardOutcome{Allowed: true, ForceDryRun: true}
 	}
-	if RefuseOnlyTools[toolName] {
+	if policy == "refuse" {
 		return GuardOutcome{Allowed: false, Err: fmt.Errorf("%s: %s", toolName, sessionOpenHint)}
 	}
 	return GuardOutcome{Allowed: true}
@@ -310,7 +323,12 @@ func BackupFreshnessOK(manifestCreatedAt time.Time, found bool, sessionOpenedAt 
 // would cycle — so callers (internal/app) look up the newest manifest and
 // pass its timestamp/found flag in.
 func EvaluateBackupFreshness(toolName string, newestBackup time.Time, found bool, sessionOpenedAt time.Time, window time.Duration) GuardOutcome {
-	if !(ForceDryRunTools[toolName] || RefuseOnlyTools[toolName]) {
+	return EvaluateBackupFreshnessPolicy(toolName, newestBackup, found, sessionOpenedAt, window, ForceDryRunTools[toolName] || RefuseOnlyTools[toolName])
+}
+
+// EvaluateBackupFreshnessPolicy applies the descriptor's backup requirement.
+func EvaluateBackupFreshnessPolicy(toolName string, newestBackup time.Time, found bool, sessionOpenedAt time.Time, window time.Duration, required bool) GuardOutcome {
+	if !required {
 		return GuardOutcome{Allowed: true}
 	}
 	if BackupFreshnessOK(newestBackup, found, sessionOpenedAt, window) {

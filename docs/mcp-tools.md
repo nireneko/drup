@@ -1,8 +1,8 @@
 # drup MCP Tools — Agent Reference
 
-This document is an **agent-facing reference** for the 31 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
+This document is an **agent-facing reference** for the 32 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
 
-**Tooling totals at runtime:** `defaultTools()` registers 27 stub entries (see §5, including `session_open` §5.24 and `pipeline_status` §5.25) + 4 reverse-asymmetric backup tools (§6, not in `defaultTools()`) = **31 total**. This is the exact count locked by `TestServer_PostWireUpCountIs31` in `internal/mcp/mcp_test.go`. See [§1.1](#11-response-envelope-uniform-contract) for the uniform envelope that wraps every response.
+**Tooling totals at runtime:** the `ToolSpec` catalog derives 28 stub entries (including `session_open` and `pipeline_status`) plus 4 reverse-asymmetric backup tools = **32 total**. See [§1.1](#11-response-envelope-uniform-contract) for the uniform envelope that wraps every response.
 
 For tool **schemas** (JSON Schema, required fields, types) call `tools/list` — do not hardcode them here. For tool **internals** (Go package, test coverage) read `internal/app/mcp_tools.go`.
 
@@ -15,7 +15,7 @@ For tool **schemas** (JSON Schema, required fields, types) call `tools/list` —
 3. **Read the response, do not pattern-match its shape.** Every tool returns the same uniform envelope (`{status, summary, payload}` — see [§4.1](#41-response-envelope-uniform-contract)). The payload field is the tool-specific response shape; read it for `success`, `total_errors`, `is_applied`, etc.
 4. **Errors are returned two ways.** (a) As a uniform envelope with `"status": "fail"` and `"summary": "<error message>"` in the **result** channel — the tool itself failed (bad arg, blocked command, unreachable, transient-after-retry-exhausted). (b) As a JSON-RPC error response (`"code": -32601`, `-32602`, `-32603`) — this is a **protocol-level** failure (malformed request, unknown tool name, marshal failure), NOT a tool failure. Always inspect `status` first; treat JSON-RPC errors as dispatch failures and stop.
 5. **Backup before mutations.** Any tool that mutates `composer.json`, the working tree, or drupal.org state (apply_patch, core_upgrade_apply, patch_rollback, composer_require without dry-run, create_patch) requires a `test_backup_create` recorded in run state. The orchestrator enforces this; sub-agents must read it before dispatching mutators.
-6. **`tasks/list` advertises only what is in `s.tools`.** If a tool is in code but missing from `defaultTools()` AND missing from `toolRegistry`, clients see it with an empty `inputSchema` and may break. Verify the wiring is symmetric (defaultTools entry ↔ toolRegistry entry ↔ real handler ↔ doc entry) before dispatching.
+6. **`tools/list` advertises only what is in `s.tools`.** `internal/mcp.ToolSpec` is the canonical catalog for each name, schema, effect class, timeout, role, preconditions, and stub visibility. Stubs and production wiring are derived from it; a missing handler fails fast during wiring.
 
 ### 1.1 Response Envelope (uniform contract)
 
@@ -260,8 +260,8 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 
 ### 5.14 `autofix`
 
-- **Purpose**: Run `drupal-rector process` on `/modules/custom` and `/themes` only. Re-scans to report remaining errors.
-- **Returns**: `{ rector_summary, remaining_errors }`
+- **Purpose**: Run `drupal-rector process` on `/modules/custom` and `/themes` only. It does not re-scan; an independent validator owns the next read-only check.
+- **Returns**: `{ rector_summary }`
 - **Prerequisites**: project must contain at least one of `modules/custom` or `themes`. `drupal-rector` must be installed in `vendor/bin/`.
 - **Side-effects**: **mutates files** in `modules/custom` and `themes`. Requires a backup.
 - **Red flag**: running it on the whole project — rector on contrib without a patch to capture changes is a maintenance hazard.
@@ -376,7 +376,7 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 ## 6. Backup Tools (additional)
 > **Policy enforcement**: the reverse asymmetry described above (backup tools are intentionally NOT in `defaultTools()`) is enforced by `TestServer_WiringSymmetryOnlyBackupToolsAreReverseAsymmetric` in `internal/mcp/mcp_test.go`. Adding a new tool that is not in `defaultTools()` without the `test_backup_` prefix fails that test. Adding a new backup-style tool fails it too if you forget to also register the schema in `toolRegistry` or skip the `project_path` requirement. Update both the code and this section in lockstep when changing the policy.
 
-Not part of the 27 categorized tools in §5, but mandatory in the pipeline.
+Not part of the 28 categorized tools in §5, but mandatory in the pipeline.
 
 ### `test_backup_create`, `test_backup_list`, `test_backup_restore`, `test_backup_delete`
 
@@ -389,19 +389,19 @@ Not part of the 27 categorized tools in §5, but mandatory in the pipeline.
 ## 7. Architecture & Implementation Reference
 
 ```
-internal/mcp/                         (transport only — stubs + JSON-RPC)
-├── server.go         transport, toolRegistry (schemas), handleToolCall dispatch
+internal/mcp/                         (transport only — descriptors + JSON-RPC)
+├── server.go         transport, ToolSpec catalog, handleToolCall dispatch
 └── tools.go          placeholder stubs (overridden in production)
 
-internal/app/mcp_tools.go              (real handlers + WireMCPTools)
-└── WireMCPTools(s)   registers realHandle* into server.tools — must be called before Run
+internal/app/mcp_tools.go              (real handlers + descriptor-driven WireMCPTools)
+└── WireMCPTools(s)   resolves real handlers from ToolSpec and applies the effect guard before Run
 ```
 
 - In production: `app.go` calls `WireMCPTools(server)` before `server.Run()`. All tool calls go through real handlers.
 - In tests where `WireMCPTools` is NOT called, the stubs in `internal/mcp/tools.go` keep the server crash-free so `tools/list` returns a valid catalog of names + schemas. Tool calls return shape-valid empty responses — never errors.
-- **Wiring symmetry rule**: every tool that gets registered by `WireMCPTools` MUST also appear in both `defaultTools()` (for the stub) and `toolRegistry` (for the schema). If a name is in only one of those three places, MCP clients will receive it broken or not at all. The `cleanup` tool is one of the symmetric entries.
+- **Wiring rule**: every descriptor must resolve to a real handler; stub-visible descriptors must also resolve to a stub handler. The four `test_backup_*` descriptors intentionally omit stubs but remain visible once production wiring runs.
 
-> **Forward symmetry** is enforced by `TestServer_WiringSymmetryEveryDefaultToolHasSchema`; reverse asymmetry for backup tools by `TestServer_WiringSymmetryOnlyBackupToolsAreReverseAsymmetric`.
+> Descriptor completeness and stub parity are enforced by `TestToolSpecsAreTheSingleCatalogForSchemasAndStubs`; reverse asymmetry for backup tools remains enforced by `TestServer_WiringSymmetryOnlyBackupToolsAreReverseAsymmetric`.
 
 ## 8. Security Model (one-screen summary)
 

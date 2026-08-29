@@ -21,7 +21,7 @@ import (
 // registered as a real handler by WireMCPTools; mirror the list in
 // docs/mcp-tools.md "Tool Dictionary".
 func defaultTools() map[string]ToolHandler {
-	return map[string]ToolHandler{
+	handlers := map[string]ToolHandler{
 		// Core pipeline tools.
 		"scan":                   handleScan,
 		"prepare_upgrade_status": handlePrepareUpgradeStatus,
@@ -60,6 +60,19 @@ func defaultTools() map[string]ToolHandler {
 		// Mutation audit ledger.
 		"pipeline_status": handlePipelineStatus,
 	}
+
+	tools := make(map[string]ToolHandler, len(handlers))
+	for _, spec := range ToolSpecs() {
+		if !spec.Stub {
+			continue
+		}
+		handler, ok := handlers[spec.Name]
+		if !ok {
+			panic("missing stub handler for tool descriptor: " + spec.Name)
+		}
+		tools[spec.Name] = handler
+	}
+	return tools
 }
 
 func handlePipelineStatus(args json.RawMessage) (json.RawMessage, error) {
