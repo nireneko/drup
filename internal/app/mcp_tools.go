@@ -115,6 +115,7 @@ var moduleNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 // nested composer_require call.
 func WireMCPTools(s *mcp.Server) {
 	s.RegisterTool("scan", realHandleScan)
+	s.RegisterTool("prepare_upgrade_status", guardHandler("prepare_upgrade_status", realHandlePrepareUpgradeStatus))
 	s.RegisterTool("autofix", realHandleAutofix)
 	s.RegisterTool("contrib_check", realHandleContribCheck)
 	s.RegisterTool("issue_patches", realHandleIssuePatches)
@@ -146,6 +147,46 @@ func WireMCPTools(s *mcp.Server) {
 	s.RegisterTool("module_release_info", realHandleModuleReleaseInfo)
 	s.RegisterTool("session_open", realHandleSessionOpen)
 	s.RegisterTool("pipeline_status", realHandlePipelineStatus)
+}
+
+// realHandlePrepareUpgradeStatus is the explicit mutating boundary for
+// installing and enabling Upgrade Status before read-only analysis.
+func realHandlePrepareUpgradeStatus(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath string `json:"project_path"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if params.ProjectPath == "" {
+		return nil, fmt.Errorf("project_path is required")
+	}
+
+	composerPath := filepath.Join(params.ProjectPath, "composer.json")
+	composerData, err := os.ReadFile(composerPath)
+	if err != nil {
+		return nil, fmt.Errorf("read composer.json: %w", err)
+	}
+	var composerJSON map[string]interface{}
+	if err := json.Unmarshal(composerData, &composerJSON); err != nil {
+		return nil, fmt.Errorf("parse composer.json: %w", err)
+	}
+	if !hasPackage(composerJSON, "drupal/upgrade_status") {
+		result, requireErr := realHandleComposerRequire(json.RawMessage(fmt.Sprintf(`{"project_path":%q,"package":"drupal/upgrade_status","dev":true}`, params.ProjectPath)))
+		if requireErr != nil {
+			return nil, fmt.Errorf("install upgrade_status: %w", requireErr)
+		}
+		var response struct {
+			Success bool `json:"success"`
+		}
+		if err := json.Unmarshal(result, &response); err != nil || !response.Success {
+			return nil, fmt.Errorf("install upgrade_status failed")
+		}
+	}
+	if err := ensureUpgradeStatusEnabled(params.ProjectPath, resolveExecTimeout("prepare_upgrade_status")); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]bool{"prepared": true})
 }
 
 // realHandlePipelineStatus summarizes the project's mutation ledger
@@ -273,8 +314,7 @@ func realHandleScan(args json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 
-	// Ensure upgrade_status is enabled before running the scan.
-	if err := ensureUpgradeStatusEnabled(params.ProjectPath, resolveExecTimeout("scan")); err != nil {
+	if err := requirePreparedUpgradeStatus(params.ProjectPath, resolveExecTimeout("scan")); err != nil {
 		return nil, err
 	}
 
@@ -340,21 +380,8 @@ func realHandleAutofix(args json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("rector exited %d: %s%.500s", rectorExit, rectorStderr, stdout)
 	}
 
-	// Re-scan to get remaining errors. A rescan that cannot be parsed must not
-	// be reported as zero remaining errors.
-	scanStdout, scanStderr, scanExit, _ := cliRun(params.ProjectPath, "drush", "upgrade_status:analyze", "--all", "--format=checkstyle", "--root="+params.ProjectPath)
-	if !isScanExitOK(scanExit) {
-		return nil, drushExecError("drush", []string{"upgrade_status:analyze", "--all", "--format=checkstyle"}, scanExit, scanStderr, scanStdout)
-	}
-	rescan, err := scan.ParseCheckstyle(strings.NewReader(scanStdout))
-	if err != nil {
-		return nil, fmt.Errorf("parse rescan after rector: %w", err)
-	}
-	remaining := rescan.TotalErrs
-
 	response := map[string]interface{}{
-		"rector_summary":   stdout,
-		"remaining_errors": remaining,
+		"rector_summary": stdout,
 	}
 	return json.Marshal(response)
 }
@@ -433,11 +460,14 @@ func realHandleValidate(args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectPath  string `json:"project_path"`
 		Scope        string `json:"scope,omitempty"`
-		Module       string `json:"module,omitempty"`
+		Module       string `json:"module_name,omitempty"`
 		File         string `json:"file,omitempty"`
 		ExpectedHash string `json:"expected_hash,omitempty"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if err := requirePreparedUpgradeStatus(params.ProjectPath, resolveExecTimeout("validate")); err != nil {
 		return nil, err
 	}
 
@@ -935,48 +965,14 @@ func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("project_path must not contain '..' segments")
 	}
 
-	// Get environment prefix.
+	upgradeScanTimeout := resolveExecTimeout("upgrade_scan")
+	if err := requirePreparedUpgradeStatus(params.ProjectPath, upgradeScanTimeout); err != nil {
+		return nil, err
+	}
 	detection, err := defaultEnvDetector.Detect(params.ProjectPath, false)
 	if err != nil {
 		return nil, err
 	}
-
-	// Check if upgrade_status is in composer.json.
-	composerPath := filepath.Join(params.ProjectPath, "composer.json")
-	composerData, err := os.ReadFile(composerPath)
-	if err != nil {
-		return nil, fmt.Errorf("read composer.json: %w", err)
-	}
-
-	var composerJSON map[string]interface{}
-	if err := json.Unmarshal(composerData, &composerJSON); err != nil {
-		return nil, fmt.Errorf("parse composer.json: %w", err)
-	}
-
-	upgradeStatusInstalled := hasPackage(composerJSON, "drupal/upgrade_status")
-
-	upgradeScanTimeout := resolveExecTimeout("upgrade_scan")
-
-	// Install if needed. This calls straight into realHandleComposerRequire,
-	// bypassing s.tools and the registration-time guardHandler wrapping
-	// composer_require entirely, so it re-enters the exact same guardedCall
-	// path inline instead — the same session/backup-freshness/mutation-cap
-	// partition and audit trail a direct composer_require call would get.
-	if !upgradeStatusInstalled {
-		reqArgs := json.RawMessage(fmt.Sprintf(`{"project_path":%q,"package":"drupal/upgrade_status","dev":true}`, params.ProjectPath))
-		if _, reqErr := guardedCall("composer_require", reqArgs, realHandleComposerRequire); reqErr != nil {
-			return nil, fmt.Errorf("install upgrade_status: %w", reqErr)
-		}
-	}
-
-	// Ensure upgrade_status is enabled (shared helper — also used by
-	// realHandleScan for DRY compliance). Uses upgradeScanTimeout, not the
-	// flat default, so the "upgrade_scan" exec-timeout override still governs
-	// every drush call this handler makes, not just the final analyze call.
-	if err := ensureUpgradeStatusEnabled(params.ProjectPath, upgradeScanTimeout); err != nil {
-		return nil, err
-	}
-	upgradeStatusEnabled := true
 
 	// Run analysis. "--all" is a flag; passing a bare "all" makes
 	// upgrade_status look for a project by that name and report nothing.
@@ -1026,7 +1022,7 @@ func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 			"total_errors":             0,
 			"modules":                  modules,
 			"upgrade_status_installed": true,
-			"upgrade_status_enabled":   upgradeStatusEnabled,
+			"upgrade_status_enabled":   true,
 			"warning":                  "partial results: " + analyzeStderr,
 		}
 		return json.Marshal(result)
@@ -1036,7 +1032,7 @@ func realHandleUpgradeScan(args json.RawMessage) (json.RawMessage, error) {
 		"total_errors":             totalErrors,
 		"modules":                  modules,
 		"upgrade_status_installed": true,
-		"upgrade_status_enabled":   upgradeStatusEnabled,
+		"upgrade_status_enabled":   true,
 	}
 	return json.Marshal(result)
 }
@@ -1050,6 +1046,41 @@ func hasPackage(composerJSON map[string]interface{}, pkg string) bool {
 		}
 	}
 	return false
+}
+
+func requirePreparedUpgradeStatus(projectPath string, timeout time.Duration) error {
+	if _, err := os.Stat(projectPath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("project path not found: %s", projectPath)
+		}
+		return err
+	}
+	composerData, err := os.ReadFile(filepath.Join(projectPath, "composer.json"))
+	if err != nil {
+		return fmt.Errorf("run prepare_upgrade_status before analysis: read composer.json: %w", err)
+	}
+	var composerJSON map[string]interface{}
+	if err := json.Unmarshal(composerData, &composerJSON); err != nil {
+		return fmt.Errorf("run prepare_upgrade_status before analysis: parse composer.json: %w", err)
+	}
+	if !hasPackage(composerJSON, "drupal/upgrade_status") {
+		return fmt.Errorf("Upgrade Status is not installed; run prepare_upgrade_status before analysis")
+	}
+	detection, err := defaultEnvDetector.Detect(projectPath, false)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	stdout, _, exitCode, err := drupexec.RunWithEnvCtx(ctx, projectPath, detection.CommandPrefix, "drush", "pm:list", "--status=enabled", "--format=json", "--root="+projectPath)
+	if err != nil || exitCode != 0 {
+		return fmt.Errorf("Upgrade Status is not enabled; run prepare_upgrade_status before analysis")
+	}
+	var enabled map[string]interface{}
+	if json.Unmarshal([]byte(stdout), &enabled) != nil || enabled["upgrade_status"] == nil {
+		return fmt.Errorf("Upgrade Status is not enabled; run prepare_upgrade_status before analysis")
+	}
+	return nil
 }
 
 // ensureUpgradeStatusEnabled checks if upgrade_status is enabled and enables it
@@ -1749,6 +1780,7 @@ func realHandleDrupalVersionMatrix(args json.RawMessage) (json.RawMessage, error
 		}
 		// Find the latest Drupal version compatible with this PHP version.
 		var latestVersion string
+		var latestParsed semver.Version
 		var latestEntry struct {
 			PHPMin         string
 			PHPRecommended string
@@ -1756,9 +1788,14 @@ func realHandleDrupalVersionMatrix(args json.RawMessage) (json.RawMessage, error
 			NextMajor      string
 		}
 		for ver, entry := range versionMatrixData {
+			parsedVersion, parseErr := semver.Parse(ver)
+			if parseErr != nil {
+				return nil, fmt.Errorf("parse Drupal matrix version %q: %w", ver, parseErr)
+			}
 			if isPHPCompatible(params.PHPVersion, entry.PHPMin, entry.PHPRecommended) {
-				if ver > latestVersion {
+				if latestVersion == "" || parsedVersion.Compare(latestParsed) > 0 {
 					latestVersion = ver
+					latestParsed = parsedVersion
 					latestEntry = struct {
 						PHPMin         string
 						PHPRecommended string
@@ -1816,6 +1853,7 @@ func isPHPCompatible(phpVer, phpMin, phpRecommended string) bool {
 func realHandleCoreUpgradeCheck(args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectPath string `json:"project_path"`
+		TargetMajor int    `json:"target_major,omitempty"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, err
@@ -1848,6 +1886,16 @@ func realHandleCoreUpgradeCheck(args json.RawMessage) (json.RawMessage, error) {
 	check, err := coreupgrade.NextMajor(currentVersion)
 	if err != nil {
 		return nil, err
+	}
+	if check.Available {
+		if _, err := buildCoreUpgradePlan(params.ProjectPath, check.NextVersion); err != nil {
+			return nil, fmt.Errorf("plan core upgrade: %w", err)
+		}
+	}
+	if params.TargetMajor != 0 {
+		if _, err := buildCoreUpgradePlan(params.ProjectPath, fmt.Sprintf("%d", params.TargetMajor)); err != nil {
+			return nil, fmt.Errorf("plan requested core upgrade: %w", err)
+		}
 	}
 
 	preview := ""
@@ -1917,6 +1965,7 @@ func realHandleCoreUpgradeApply(args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectPath   string `json:"project_path"`
 		TargetVersion string `json:"target_version"`
+		TargetMajor   int    `json:"target_major,omitempty"`
 		DryRun        bool   `json:"dry_run"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
@@ -1925,15 +1974,34 @@ func realHandleCoreUpgradeApply(args json.RawMessage) (json.RawMessage, error) {
 	if params.ProjectPath == "" {
 		return nil, fmt.Errorf("project_path is required")
 	}
+	if params.TargetMajor < 0 {
+		return nil, fmt.Errorf("target_major must be positive")
+	}
+	if params.TargetMajor != 0 {
+		if params.TargetVersion != "" {
+			versionMajor, err := coreupgrade.MajorVersion(params.TargetVersion)
+			if err != nil {
+				return nil, fmt.Errorf("parse target_version: %w", err)
+			}
+			if versionMajor != params.TargetMajor {
+				return nil, fmt.Errorf("target_version major %d does not match target_major %d", versionMajor, params.TargetMajor)
+			}
+		}
+		params.TargetVersion = fmt.Sprintf("%d", params.TargetMajor)
+	}
 	if params.TargetVersion == "" {
-		return nil, fmt.Errorf("target_version is required")
+		return nil, fmt.Errorf("target_version or target_major is required")
 	}
 
 	// allow_dirty is CLI-only (drup upgrade-core --allow-dirty per proposal
 	// decision 3); the MCP surface never accepts a dirty-tree override, so
 	// allowDirty is always false here regardless of what the caller sends —
 	// closing the schema-undocumented-argument backdoor (G4/G5/S2).
-	result, err := coreupgrade.Apply(params.ProjectPath, params.TargetVersion, params.DryRun, false, false)
+	plan, err := buildCoreUpgradePlan(params.ProjectPath, params.TargetVersion)
+	if err != nil {
+		return nil, fmt.Errorf("plan core upgrade: %w", err)
+	}
+	result, err := coreupgrade.ApplyPlan(params.ProjectPath, plan, params.DryRun, false, false)
 	if err != nil {
 		return nil, err
 	}

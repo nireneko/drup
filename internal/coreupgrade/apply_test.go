@@ -126,8 +126,8 @@ func TestApply_ChecksClean_CreatesCheckpoint_AndMutates(t *testing.T) {
 	if err := json.Unmarshal(after, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if doc.Require["drupal/core-recommended"] != "^11.0" {
-		t.Errorf("drupal/core-recommended = %q, want %q", doc.Require["drupal/core-recommended"], "^11.0")
+	if doc.Require["drupal/core-recommended"] != "^11" {
+		t.Errorf("drupal/core-recommended = %q, want %q", doc.Require["drupal/core-recommended"], "^11")
 	}
 
 	// The checkpoint commit must exist and predate the mutation.
@@ -201,8 +201,8 @@ func TestApply_ResolvesSymlinkedProjectPath(t *testing.T) {
 	if err := json.Unmarshal(after, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if doc.Require["drupal/core-recommended"] != "^11.0" {
-		t.Errorf("drupal/core-recommended = %q, want %q", doc.Require["drupal/core-recommended"], "^11.0")
+	if doc.Require["drupal/core-recommended"] != "^11" {
+		t.Errorf("drupal/core-recommended = %q, want %q", doc.Require["drupal/core-recommended"], "^11")
 	}
 }
 
@@ -219,10 +219,64 @@ func TestApply_NoChangeReported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply error: %v", err)
 	}
-	if result.Success {
-		t.Error("expected Success=false when already at target constraint")
+	if !result.Success {
+		t.Error("expected Success=true when already at target constraint")
+	}
+	if !strings.Contains(result.Report, "already at target") {
+		t.Errorf("Report = %q, want already-at-target guidance", result.Report)
 	}
 	if result.RollbackCheckpoint != "" {
 		t.Error("expected no checkpoint created when there is nothing to change")
+	}
+}
+
+func TestApply_RejectsUnsafeTargetsAndNoOpsAtCurrentMajor(t *testing.T) {
+	requireGit(t)
+	tests := []struct {
+		name        string
+		fixture     string
+		target      string
+		wantSuccess bool
+		wantError   string
+	}{
+		{name: "equal target is a successful no-op", fixture: "composer_d11.json", target: "11", wantSuccess: true},
+		{name: "lower target is rejected", fixture: "composer_d11.json", target: "10", wantError: "lower"},
+		{name: "target without every required catalog is rejected", fixture: "composer_d10.json", target: "12", wantError: "missing compatibility metadata for Drupal 11-to-12"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			initGitRepo(t, dir)
+			before := readTestdata(t, tt.fixture)
+			if err := os.WriteFile(filepath.Join(dir, "composer.json"), before, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, dir, "add", ".")
+			runGit(t, dir, "commit", "-m", "initial")
+			commitsBefore := runGit(t, dir, "rev-list", "--count", "HEAD")
+
+			result, err := Apply(dir, tt.target, false, false, false)
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("Apply error = %v, want it to contain %q", err, tt.wantError)
+				}
+			} else if err != nil {
+				t.Fatalf("Apply error: %v", err)
+			} else if result.Success != tt.wantSuccess || !strings.Contains(result.Report, "already at target") {
+				t.Fatalf("Apply result = %#v, want successful already-at-target no-op", result)
+			}
+
+			after, readErr := os.ReadFile(filepath.Join(dir, "composer.json"))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(after) != string(before) {
+				t.Fatal("unsafe or no-op target modified composer.json")
+			}
+			if commitsAfter := runGit(t, dir, "rev-list", "--count", "HEAD"); commitsAfter != commitsBefore {
+				t.Fatalf("unsafe or no-op target created a checkpoint: before %s, after %s", commitsBefore, commitsAfter)
+			}
+		})
 	}
 }

@@ -151,13 +151,14 @@ var ForceDryRunTools = map[string]bool{
 // valid session bound to the tool's target root, the guard middleware
 // refuses the call outright.
 var RefuseOnlyTools = map[string]bool{
-	"apply_patch":         true,
-	"composer_require":    true,
-	"patch_rollback":      true,
-	"cleanup":             true,
-	"create_patch":        true,
-	"test_backup_restore": true,
-	"test_backup_delete":  true,
+	"apply_patch":            true,
+	"composer_require":       true,
+	"prepare_upgrade_status": true,
+	"patch_rollback":         true,
+	"cleanup":                true,
+	"create_patch":           true,
+	"test_backup_restore":    true,
+	"test_backup_delete":     true,
 }
 
 // GuardedTools returns the union of ForceDryRunTools and RefuseOnlyTools:

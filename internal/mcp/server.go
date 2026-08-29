@@ -80,7 +80,14 @@ type toolSchema struct {
 // toolRegistry maps tool names to their schemas.
 var toolRegistry = map[string]toolSchema{
 	"scan": {
-		Description: "Run upgrade_status:analyze on a Drupal project",
+		Description: "Run read-only upgrade_status:analyze on a prepared Drupal project",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+		},
+		Required: []string{"project_path"},
+	},
+	"prepare_upgrade_status": {
+		Description: "Install and enable Upgrade Status before read-only analysis",
 		Properties: map[string]jsonSchemaProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 		},
@@ -123,7 +130,7 @@ var toolRegistry = map[string]toolSchema{
 		Properties: map[string]jsonSchemaProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"scope":        {Type: "string", Description: "Scope filter: custom, contrib, theme, core or all (default all)"},
-			"module":       {Type: "string", Description: "Module name filter (optional)"},
+			"module_name":  {Type: "string", Description: "Module name filter (optional)"},
 			"file":         {Type: "string", Description: "File path filter (optional)"},
 		},
 		Required: []string{"project_path"},
@@ -175,7 +182,7 @@ var toolRegistry = map[string]toolSchema{
 		Required: []string{"module_machine_name", "current_drupal_version", "target_drupal_version"},
 	},
 	"upgrade_scan": {
-		Description: "Run upgrade scan with environment setup",
+		Description: "Run read-only upgrade scan on a prepared project",
 		Properties: map[string]jsonSchemaProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"scope":        {Type: "string", Description: "Scope filter: custom, contrib, theme, core or all (default all)"},
@@ -232,17 +239,19 @@ var toolRegistry = map[string]toolSchema{
 		Description: "Check if core upgrade is available",
 		Properties: map[string]jsonSchemaProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+			"target_major": {Type: "integer", Description: "Optional requested Drupal target major; must have exact compatibility metadata"},
 		},
 		Required: []string{"project_path"},
 	},
 	"core_upgrade_apply": {
-		Description: "Apply core upgrade",
+		Description: "Apply one planned core upgrade step",
 		Properties: map[string]jsonSchemaProperty{
 			"project_path":   {Type: "string", Description: "Absolute path to the Drupal project"},
-			"target_version": {Type: "string", Description: "Target Drupal version"},
+			"target_version": {Type: "string", Description: "Deprecated compatibility alias for target_major"},
+			"target_major":   {Type: "integer", Description: "Target Drupal major with an exact compatibility catalog"},
 			"dry_run":        {Type: "boolean", Description: "Dry run mode"},
 		},
-		Required: []string{"project_path", "target_version"},
+		Required: []string{"project_path"},
 	},
 	"patch_reconcile": {
 		Description: "Reconcile patches with upstream",
@@ -570,8 +579,14 @@ func (s *Server) handleToolCall(id interface{}, params json.RawMessage) error {
 		return s.sendError(id, -32601, fmt.Sprintf("Tool not found: %s", p.Name))
 	}
 
-	// Retry loop wraps the handler call for transient errors.
-	result, err := s.retryLoop(p.Name, handler, p.Arguments)
+	var result json.RawMessage
+	var err error
+	switch p.Name {
+	case "scan", "upgrade_scan", "validate":
+		result, err = s.retryLoop(p.Name, handler, p.Arguments)
+	default:
+		result, err = handler(p.Arguments)
+	}
 
 	// Wrap ALL tool outcomes (success and error) in a uniform envelope.
 	// Tool errors become {status:"fail"} in the result channel, NOT JSON-RPC errors.

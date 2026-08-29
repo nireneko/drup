@@ -448,23 +448,9 @@ func RunMCP(args []string) error {
 	return server.Run()
 }
 
-// DoValidate runs upgrade_status:checkstyle and returns parsed results.
+// DoValidate runs read-only Upgrade Status analysis and returns parsed results.
 // Shared between CLI and MCP handlers.
-// For Drupal >= 11.x, uses drush updb/cr/status as primary gates.
 func DoValidate(projectPath, module string) (*scan.ScanResult, []scan.DepError, error) {
-	// Detect core version to determine gate strategy.
-	coreVersion := detectDrupalVersion(projectPath)
-	isPostD11 := false
-	if coreVersion != "" {
-		v, err := semver.Parse(coreVersion)
-		if err == nil && v.Major >= 11 {
-			isPostD11 = true
-		}
-	}
-
-	if isPostD11 {
-		return doValidatePostD11(projectPath, module)
-	}
 	return doValidatePreD11(projectPath, module)
 }
 
@@ -943,12 +929,19 @@ func categorize(results []PreflightResult) (environmentFailures, readinessFailur
 func RunPreflight(args []string) error {
 	cwd := ""
 	allowDirty := false
+	targetMajor := 11
 	for _, arg := range args {
 		switch {
 		case arg == "--allow-dirty":
 			allowDirty = true
+		case strings.HasPrefix(arg, "--target-major="):
+			parsed, err := coreupgrade.MajorVersion(strings.TrimPrefix(arg, "--target-major="))
+			if err != nil {
+				return fmt.Errorf("invalid --target-major: %w", err)
+			}
+			targetMajor = parsed
 		case strings.HasPrefix(arg, "-"):
-			return fmt.Errorf("unknown option %q — usage: drup preflight [path] [--allow-dirty]", arg)
+			return fmt.Errorf("unknown option %q — usage: drup preflight [path] [--target-major=N] [--allow-dirty]", arg)
 		default:
 			cwd = arg
 		}
@@ -1179,7 +1172,7 @@ func RunPreflight(args []string) error {
 	}
 
 	// 7. Core readiness check.
-	coreResults, _ := checkCoreReadiness(cwd)
+	coreResults, _ := checkCoreReadinessForMajor(cwd, targetMajor)
 	for _, cr := range coreResults {
 		results = append(results, cr)
 		if !cr.Pass {
@@ -1240,10 +1233,20 @@ func detectDrupalVersion(projectPath string) string {
 	return ""
 }
 
-// checkCoreReadiness verifies that composer.json constraints and custom module/theme
-// core_version_requirement values allow Drupal 11.
+// checkCoreReadiness preserves the Drupal 11 default for callers that do not
+// yet carry a target major. New workflow paths must call
+// checkCoreReadinessForMajor explicitly.
 func checkCoreReadiness(projectPath string) ([]PreflightResult, error) {
+	return checkCoreReadinessForMajor(projectPath, 11)
+}
+
+// checkCoreReadinessForMajor verifies that composer.json constraints and
+// custom module/theme core_version_requirement values allow targetMajor.
+func checkCoreReadinessForMajor(projectPath string, targetMajor int) ([]PreflightResult, error) {
 	var results []PreflightResult
+	if targetMajor < 1 {
+		return nil, fmt.Errorf("target Drupal major must be positive, got %d", targetMajor)
+	}
 
 	// 1. Check composer.json drupal/core constraint.
 	composerPath := filepath.Join(projectPath, "composer.json")
@@ -1285,19 +1288,19 @@ func checkCoreReadiness(projectPath string) ([]PreflightResult, error) {
 		return results, nil
 	}
 
-	// Check if constraint allows Drupal 11.
-	d11Version, _ := semver.Parse("11.0.0")
-	if semver.Satisfies(d11Version, coreConstraint) {
+	// Check whether the exact requested major is permitted.
+	targetVersion, _ := semver.Parse(fmt.Sprintf("%d.0.0", targetMajor))
+	if semver.Satisfies(targetVersion, coreConstraint) {
 		results = append(results, PreflightResult{
 			Check:   "core_composer_constraint",
 			Pass:    true,
-			Message: fmt.Sprintf("composer.json constraint %q allows Drupal 11", coreConstraint),
+			Message: fmt.Sprintf("composer.json constraint %q allows Drupal %d", coreConstraint, targetMajor),
 		})
 	} else {
 		results = append(results, PreflightResult{
 			Check:   "core_composer_constraint",
 			Pass:    false,
-			Message: fmt.Sprintf("composer.json constraint %s does not permit Drupal 11", coreConstraint),
+			Message: fmt.Sprintf("composer.json constraint %s does not permit Drupal %d", coreConstraint, targetMajor),
 		})
 	}
 
@@ -1328,7 +1331,7 @@ func checkCoreReadiness(projectPath string) ([]PreflightResult, error) {
 		if constraint == "" {
 			continue
 		}
-		if !semver.Satisfies(d11Version, constraint) {
+		if !semver.Satisfies(targetVersion, constraint) {
 			// Extract module/theme name from path.
 			name := filepath.Base(filepath.Dir(infoFile))
 			blockers = append(blockers, fmt.Sprintf("%s (constraint: %s)", name, constraint))
@@ -1345,7 +1348,7 @@ func checkCoreReadiness(projectPath string) ([]PreflightResult, error) {
 		results = append(results, PreflightResult{
 			Check:   "core_module_compat",
 			Pass:    true,
-			Message: fmt.Sprintf("all %d custom modules/themes allow Drupal 11", len(infoFiles)),
+			Message: fmt.Sprintf("all %d custom modules/themes allow Drupal %d", len(infoFiles), targetMajor),
 		})
 	}
 
@@ -1467,7 +1470,11 @@ func RunUpgradeCore(args []string) error {
 		}
 	}
 
-	targetMajor, _ := coreupgrade.MajorVersion(targetVersion)
+	plan, err := buildCoreUpgradePlan(cwd, targetVersion)
+	if err != nil {
+		return fmt.Errorf("plan core upgrade: %w", err)
+	}
+	targetMajor := int(plan.Target)
 	targetConstraint := fmt.Sprintf("^%d.0", targetMajor)
 
 	result := &UpgradeCoreResult{
@@ -1475,28 +1482,17 @@ func RunUpgradeCore(args []string) error {
 		TargetConstraint:  targetConstraint,
 		DryRun:            dryRun,
 	}
-
-	// Check if already at target.
-	forceResolve := false
-	// A matching constraint is not an upgrade. After a failed resolution the
-	// constraint sits at the target while the lock and the installed code stay
-	// on the old major, and reading only the constraint reported that state as
-	// a success.
-	if currentConstraint == targetConstraint {
-		installed := detectDrupalVersion(cwd)
-		installedMajor := majorOf(installed)
-		// With no lock there is nothing installed to contradict the
-		// constraint; only a readable mismatch means the upgrade is unfinished.
-		if installedMajor == "" || installedMajor == majorOf(targetVersion) {
-			result.AlreadyAtTarget = true
-			result.Success = true
-			data, _ := json.MarshalIndent(result, "", "  ")
-			fmt.Println("already at target version")
-			fmt.Println(string(data))
-			return nil
-		}
-		fmt.Printf("composer.json already requires %s but the installed core is %s — resolving\n", targetConstraint, installed)
-		forceResolve = true
+	// The typed planner is authoritative for the declared Composer state. A
+	// no-op must return before every effect, including clean-tree checks,
+	// backups, Composer and Drush. String spelling (for example ^11 versus
+	// ^11.0) is deliberately irrelevant because the plan compares majors.
+	if plan.NoOp() {
+		result.AlreadyAtTarget = true
+		result.Success = true
+		data, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println("already at target version")
+		fmt.Println(string(data))
+		return nil
 	}
 
 	// Check for clean working tree (unless dry-run).
@@ -1517,7 +1513,7 @@ func RunUpgradeCore(args []string) error {
 	}
 
 	// Call coreupgrade.Apply for the composer.json mutation.
-	applyResult, err := coreupgrade.Apply(cwd, targetVersion, dryRun, allowDirty, forceResolve)
+	applyResult, err := coreupgrade.ApplyPlan(cwd, plan, dryRun, allowDirty, false)
 	if err != nil {
 		return fmt.Errorf("core upgrade apply: %w", err)
 	}

@@ -335,8 +335,8 @@ Codex ─────────┘
 
 | Tool | Input | Output | Purpose |
 |---|---|---|---|
-| `core_upgrade_check` | `project_path` | `{ current_version, next_version, composer_patch_preview, supported }` | Read-only: next major version + composer.json patch preview |
-| `core_upgrade_apply` | `project_path, target_version, dry_run` | `{ success, report, rollback_checkpoint, stderr }` | Requires a clean git tree; `dry_run` previews only; on apply, commits a git checkpoint before mutating `composer.json` |
+| `core_upgrade_check` | `project_path, target_major?` | `{ current_version, next_version, composer_patch_preview, supported }` | Read-only: next major version + composer.json patch preview |
+| `core_upgrade_apply` | `project_path, target_major` (`target_version` legacy), `dry_run` | `{ success, report, rollback_checkpoint, stderr }` | Requires a clean git tree and exact per-step compatibility metadata; missing target metadata blocks the apply |
 | `patch_reconcile` | `module_machine_name, current_patch_url` | `{ newer_patches[], is_still_needed, recommendation }` | Analysis-only: is an already-applied patch obsolete, still needed, or superseded? |
 
 ### Post-pipeline / Backup Lifecycle (6 added)

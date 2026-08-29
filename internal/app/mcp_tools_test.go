@@ -35,7 +35,7 @@ func TestWireMCPTools_AllToolsRegistered(t *testing.T) {
 	server := mcp.NewServer(&buf, "test")
 	WireMCPTools(server)
 
-	expected := 31
+	expected := 32
 	actual := server.ToolCount()
 	if actual != expected {
 		t.Errorf("expected %d tools, got %d", expected, actual)
@@ -465,6 +465,33 @@ func TestDrupalVersionMatrix_LookupByPHPVersion(t *testing.T) {
 	}
 }
 
+func TestDrupalVersionMatrix_SelectsHighestNumericMajorForPHP84(t *testing.T) {
+	tests := []struct {
+		phpVersion    string
+		wantDrupalVer string
+	}{
+		{phpVersion: "8.2", wantDrupalVer: "10"},
+		{phpVersion: "8.4", wantDrupalVer: "11"},
+	}
+	for _, tt := range tests {
+		t.Run("PHP "+tt.phpVersion, func(t *testing.T) {
+			result, err := realHandleDrupalVersionMatrix(json.RawMessage(`{"php_version":"` + tt.phpVersion + `"}`))
+			if err != nil {
+				t.Fatalf("realHandleDrupalVersionMatrix error: %v", err)
+			}
+			var response struct {
+				DrupalVersion string `json:"drupal_version"`
+			}
+			if err := json.Unmarshal(result, &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.DrupalVersion != tt.wantDrupalVer {
+				t.Errorf("drupal_version = %q, want %q", response.DrupalVersion, tt.wantDrupalVer)
+			}
+		})
+	}
+}
+
 func TestDrupalVersionMatrix_FullMatrix(t *testing.T) {
 	args := json.RawMessage(`{}`)
 	result, err := realHandleDrupalVersionMatrix(args)
@@ -485,8 +512,8 @@ func TestDrupalVersionMatrix_FullMatrix(t *testing.T) {
 func TestDrupalVersionMatrix_UnknownVersion(t *testing.T) {
 	args := json.RawMessage(`{"drupal_version":"99"}`)
 	_, err := realHandleDrupalVersionMatrix(args)
-	if err == nil {
-		t.Error("expected error for unknown Drupal version, got nil")
+	if err == nil || err.Error() != "unknown Drupal version: 99" {
+		t.Errorf("error = %v, want unknown Drupal version: 99", err)
 	}
 }
 
@@ -582,6 +609,15 @@ func TestGenerateReport_WritesFiles(t *testing.T) {
 func jsonStr(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+func preparedValidateProject(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/upgrade_status":"^4"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 // --- PR2: D2 bounded subprocess execution wired into MCP handlers ---
@@ -798,6 +834,16 @@ func TestCoreUpgradeApply_MissingTargetVersion(t *testing.T) {
 	}
 }
 
+func TestCoreUpgradeApply_TargetMajorRequiresItsOwnCatalog(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/core-recommended":"^11"}}`), 0o644)
+
+	_, err := realHandleCoreUpgradeApply(json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"target_major":12,"dry_run":true}`))
+	if err == nil || !strings.Contains(err.Error(), "missing compatibility metadata for Drupal 11-to-12") {
+		t.Errorf("error = %v, want missing 11-to-12 metadata", err)
+	}
+}
+
 func TestCoreUpgradeApply_DryRunPreview(t *testing.T) {
 	requireGitForApp(t)
 	dir := t.TempDir()
@@ -946,7 +992,13 @@ func TestRealHandleScan_PassesAllFlag(t *testing.T) {
 	origRun := drupexec.RunWithEnv
 	var capturedArgs []string
 	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" && len(args) > 0 && args[0] == "pm:list" {
+			return `{"upgrade_status":{}}`, "", 0, nil
+		}
 		if cmd == "drush" {
+			if len(args) > 0 && args[0] == "pm:list" {
+				return `{"upgrade_status":{}}`, "", 0, nil
+			}
 			capturedArgs = args
 			return "", "", 0, nil // empty plain text = zero errors
 		}
@@ -1009,8 +1061,8 @@ func TestRealHandleAutofix_RemainingErrors(t *testing.T) {
 
 	var resp map[string]interface{}
 	json.Unmarshal(result, &resp)
-	if resp["remaining_errors"].(float64) != 2 {
-		t.Errorf("remaining_errors = %v, want 2", resp["remaining_errors"])
+	if _, ok := resp["remaining_errors"]; ok {
+		t.Errorf("autofix must not return rescan results: %v", resp)
 	}
 }
 
@@ -1024,6 +1076,9 @@ func TestRealHandleScan_PlainText(t *testing.T) {
 
 	origRun := drupexec.RunWithEnv
 	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" && len(args) > 0 && args[0] == "pm:list" {
+			return `{"upgrade_status":{}}`, "", 0, nil
+		}
 		if cmd == "drush" {
 			return `<?xml version="1.0"?><checkstyle><file name="modules/contrib/token/token.module"><error line="42" message="Call to deprecated function foo()." severity="error"/></file></checkstyle>`, "", 0, nil
 		}
@@ -1056,6 +1111,9 @@ func TestRealHandleScan_NoFormatJSON(t *testing.T) {
 	origRun := drupexec.RunWithEnv
 	var capturedArgs []string
 	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" && len(args) > 0 && args[0] == "pm:list" {
+			return `{"upgrade_status":{}}`, "", 0, nil
+		}
 		if cmd == "drush" {
 			capturedArgs = args
 			return "", "", 0, nil
@@ -1109,22 +1167,13 @@ func TestRealHandleAutofix_PassesAllFlagInRescan(t *testing.T) {
 		t.Fatalf("realHandleAutofix error: %v", err)
 	}
 
-	// Find the drush upgrade_status:analyze call (re-scan after rector).
-	foundAll := false
-	for _, drushArgs := range capturedDrushArgs {
-		for _, arg := range drushArgs {
-			if arg == "--all" {
-				foundAll = true
-				break
-			}
-		}
-	}
-	if !foundAll {
-		t.Errorf("drush re-scan args = %v, want --all flag present", capturedDrushArgs)
+	if len(capturedDrushArgs) != 0 {
+		t.Errorf("autofix must not rescan: %v", capturedDrushArgs)
 	}
 }
 
 func TestRealHandleValidate_PassesAllFlagWhenNoModule(t *testing.T) {
+	dir := preparedValidateProject(t)
 	origDetector := defaultEnvDetector
 	defaultEnvDetector = &mockEnvDetector{}
 	defer func() { defaultEnvDetector = origDetector }()
@@ -1132,6 +1181,9 @@ func TestRealHandleValidate_PassesAllFlagWhenNoModule(t *testing.T) {
 	origRun := drupexec.RunWithEnv
 	var capturedArgs []string
 	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" && len(args) > 0 && args[0] == "pm:list" {
+			return `{"upgrade_status":{}}`, "", 0, nil
+		}
 		if cmd == "drush" {
 			capturedArgs = args
 			return "", "", 0, nil
@@ -1140,7 +1192,7 @@ func TestRealHandleValidate_PassesAllFlagWhenNoModule(t *testing.T) {
 	}
 	defer func() { drupexec.RunWithEnv = origRun }()
 
-	args := json.RawMessage(`{"project_path":"/tmp/test-project"}`)
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
 	_, err := realHandleValidate(args)
 	if err != nil {
 		t.Fatalf("realHandleValidate error: %v", err)
@@ -1158,7 +1210,8 @@ func TestRealHandleValidate_PassesAllFlagWhenNoModule(t *testing.T) {
 	}
 }
 
-func TestRealHandleValidate_PassesModuleNameWhenSet(t *testing.T) {
+func TestRealHandleValidate_AcceptsModuleNameWhenSet(t *testing.T) {
+	dir := preparedValidateProject(t)
 	origDetector := defaultEnvDetector
 	defaultEnvDetector = &mockEnvDetector{}
 	defer func() { defaultEnvDetector = origDetector }()
@@ -1166,6 +1219,9 @@ func TestRealHandleValidate_PassesModuleNameWhenSet(t *testing.T) {
 	origRun := drupexec.RunWithEnv
 	var capturedArgs []string
 	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" && len(args) > 0 && args[0] == "pm:list" {
+			return `{"upgrade_status":{}}`, "", 0, nil
+		}
 		if cmd == "drush" {
 			capturedArgs = args
 			return "", "", 0, nil
@@ -1174,7 +1230,7 @@ func TestRealHandleValidate_PassesModuleNameWhenSet(t *testing.T) {
 	}
 	defer func() { drupexec.RunWithEnv = origRun }()
 
-	args := json.RawMessage(`{"project_path":"/tmp/test-project","module":"mymodule"}`)
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"module_name":"mymodule"}`)
 	_, err := realHandleValidate(args)
 	if err != nil {
 		t.Fatalf("realHandleValidate error: %v", err)
@@ -1200,12 +1256,16 @@ func TestRealHandleValidate_PassesModuleNameWhenSet(t *testing.T) {
 }
 
 func TestRealHandleValidate_PlainText(t *testing.T) {
+	dir := preparedValidateProject(t)
 	origDetector := defaultEnvDetector
 	defaultEnvDetector = &mockEnvDetector{}
 	defer func() { defaultEnvDetector = origDetector }()
 
 	origRun := drupexec.RunWithEnv
 	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" && len(args) > 0 && args[0] == "pm:list" {
+			return `{"upgrade_status":{}}`, "", 0, nil
+		}
 		if cmd == "drush" {
 			return `<?xml version="1.0"?><checkstyle><file name="modules/custom/mymod/mymod.module"><error line="5" message="Deprecated function foo()." severity="error"/></file></checkstyle>`, "", 0, nil
 		}
@@ -1213,7 +1273,7 @@ func TestRealHandleValidate_PlainText(t *testing.T) {
 	}
 	defer func() { drupexec.RunWithEnv = origRun }()
 
-	args := json.RawMessage(`{"project_path":"/tmp/test-project","module":"mymod"}`)
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"module":"mymod"}`)
 	result, err := realHandleValidate(args)
 	if err != nil {
 		t.Fatalf("realHandleValidate error: %v", err)
@@ -1238,6 +1298,9 @@ func realHandleValidateWithMockedDrush(t *testing.T, xml string) (json.RawMessag
 
 	origRun := drupexec.RunWithEnv
 	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" && len(args) > 0 && args[0] == "pm:list" {
+			return `{"upgrade_status":{}}`, "", 0, nil
+		}
 		if cmd == "drush" {
 			return xml, "", 0, nil
 		}
@@ -1245,7 +1308,7 @@ func realHandleValidateWithMockedDrush(t *testing.T, xml string) (json.RawMessag
 	}
 	t.Cleanup(func() { drupexec.RunWithEnv = origRun })
 
-	args := json.RawMessage(`{"project_path":"/tmp/test-project","module":"mymod"}`)
+	args := json.RawMessage(`{"project_path":` + jsonStr(preparedValidateProject(t)) + `,"module":"mymod"}`)
 	return realHandleValidate(args)
 }
 
@@ -1283,6 +1346,9 @@ func TestRealHandleValidate_MatchingExpectedHash_ProceedsWithNormalGating(t *tes
 	defer func() { defaultEnvDetector = origDetector }()
 	origRun := drupexec.RunWithEnv
 	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" && len(args) > 0 && args[0] == "pm:list" {
+			return `{"upgrade_status":{}}`, "", 0, nil
+		}
 		if cmd == "drush" {
 			return validateChecklistXML, "", 0, nil
 		}
@@ -1290,7 +1356,7 @@ func TestRealHandleValidate_MatchingExpectedHash_ProceedsWithNormalGating(t *tes
 	}
 	defer func() { drupexec.RunWithEnv = origRun }()
 
-	args := json.RawMessage(fmt.Sprintf(`{"project_path":"/tmp/test-project","module":"mymod","expected_hash":%q}`, hash))
+	args := json.RawMessage(fmt.Sprintf(`{"project_path":%s,"module":"mymod","expected_hash":%q}`, jsonStr(preparedValidateProject(t)), hash))
 	result, err := realHandleValidate(args)
 	if err != nil {
 		t.Fatalf("realHandleValidate error with matching expected_hash: %v", err)
@@ -1310,6 +1376,9 @@ func TestRealHandleValidate_MismatchedExpectedHash_FailsClosedRegardlessOfTotalE
 
 	origRun := drupexec.RunWithEnv
 	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" && len(args) > 0 && args[0] == "pm:list" {
+			return `{"upgrade_status":{}}`, "", 0, nil
+		}
 		if cmd == "drush" {
 			// Zero findings — even so, a stale expected_hash must fail
 			// closed rather than reporting total_errors == 0 as trustworthy.
@@ -1320,7 +1389,7 @@ func TestRealHandleValidate_MismatchedExpectedHash_FailsClosedRegardlessOfTotalE
 	defer func() { drupexec.RunWithEnv = origRun }()
 
 	staleHash := "0000000000000000000000000000000000000000000000000000000000stale"
-	args := json.RawMessage(fmt.Sprintf(`{"project_path":"/tmp/test-project","module":"mymod","expected_hash":%q}`, staleHash))
+	args := json.RawMessage(fmt.Sprintf(`{"project_path":%s,"module":"mymod","expected_hash":%q}`, jsonStr(preparedValidateProject(t)), staleHash))
 	_, err := realHandleValidate(args)
 	if err == nil {
 		t.Fatal("expected error for mismatched expected_hash, got nil")
@@ -1332,56 +1401,14 @@ func TestRealHandleValidate_MismatchedExpectedHash_FailsClosedRegardlessOfTotalE
 
 // --- Phase 5: RED test for config conflict in realHandleUpgradeScan ---
 
-func TestRealHandleUpgradeScan_DeletesUpdateSettingsBeforeEnable(t *testing.T) {
-	// Override environment detector to return empty prefix.
-	origDetector := defaultEnvDetector
-	defaultEnvDetector = &mockEnvDetector{}
-	defer func() { defaultEnvDetector = origDetector }()
-
-	// Override RunWithEnv to capture drush calls.
-	origRunWithEnv := drupexec.RunWithEnv
-	var drushCalls [][]string
-	drupexec.RunWithEnv = func(_ string, prefix []string, cmd string, args ...string) (string, string, int, error) {
-		if cmd == "drush" {
-			drushCalls = append(drushCalls, args)
-		}
-		return "", "", 0, nil
-	}
-	defer func() { drupexec.RunWithEnv = origRunWithEnv }()
-
-	// Create a minimal project structure.
+func TestRealHandleUpgradeScan_RequiresPreparationBeforeConfigMutation(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/upgrade_status":"*"}}`), 0o644)
 
 	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
 	_, err := realHandleUpgradeScan(args)
-	if err != nil {
-		t.Fatalf("realHandleUpgradeScan error: %v", err)
-	}
-
-	// Find the config:delete and en calls.
-	configDeleteIdx := -1
-	enIdx := -1
-	for i, drushArgs := range drushCalls {
-		for _, arg := range drushArgs {
-			if arg == "config:delete" {
-				configDeleteIdx = i
-			}
-			if arg == "en" {
-				enIdx = i
-			}
-		}
-	}
-
-	// Verify config:delete was called before en.
-	if configDeleteIdx == -1 {
-		t.Error("drush config:delete was not called")
-	}
-	if enIdx == -1 {
-		t.Error("drush en was not called")
-	}
-	if configDeleteIdx >= 0 && enIdx >= 0 && configDeleteIdx >= enIdx {
-		t.Errorf("drush config:delete (idx %d) should be called before drush en (idx %d)", configDeleteIdx, enIdx)
+	if err == nil || !strings.Contains(err.Error(), "prepare_upgrade_status") {
+		t.Fatalf("unprepared upgrade_scan error = %v", err)
 	}
 }
 
@@ -1695,7 +1722,7 @@ func TestEnsureUpgradeStatusEnabled_NotInstalled(t *testing.T) {
 	}
 }
 
-func TestRealHandleScan_AutoEnablesUpgradeStatus(t *testing.T) {
+func TestRealHandleScan_RequiresPreparationBeforeMutation(t *testing.T) {
 	dir := t.TempDir()
 	composerJSON := `{"require": {"drupal/upgrade_status": "^4.0"}}`
 	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(composerJSON), 0o644)
@@ -1724,25 +1751,11 @@ func TestRealHandleScan_AutoEnablesUpgradeStatus(t *testing.T) {
 
 	args := json.RawMessage(fmt.Sprintf(`{"project_path": %q}`, dir))
 	_, err := realHandleScan(args)
-	if err != nil {
-		t.Fatalf("realHandleScan error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "prepare_upgrade_status") {
+		t.Fatalf("unprepared scan error = %v", err)
 	}
-	// Verify auto-enable sequence was called before analyze.
-	foundEnable := false
-	foundAnalyze := false
-	for _, c := range calls {
-		if c == "en" {
-			foundEnable = true
-		}
-		if c == "upgrade_status:analyze" {
-			foundAnalyze = true
-		}
-	}
-	if !foundEnable {
-		t.Error("realHandleScan did not call drush en (auto-enable)")
-	}
-	if !foundAnalyze {
-		t.Error("realHandleScan did not call upgrade_status:analyze")
+	if strings.Join(calls, ",") != "pm:list" {
+		t.Errorf("unprepared scan calls = %v, want only pm:list", calls)
 	}
 }
 
@@ -1833,6 +1846,99 @@ func TestWireMCPTools_RefuseOnlyToolsRefuseWithoutSession(t *testing.T) {
 				t.Errorf("%s: error %q does not name the session_open flow", name, err.Error())
 			}
 		})
+	}
+}
+
+func TestWireMCPTools_PrepareUpgradeStatusRefusesWithoutSession(t *testing.T) {
+	resetSessionForTest(t)
+
+	var buf bytes.Buffer
+	server := mcp.NewServer(&buf, "test")
+	WireMCPTools(server)
+
+	dir := newDrupalProjectDir(t)
+	_, err := server.CallTool("prepare_upgrade_status", json.RawMessage(`{"project_path":`+jsonStr(dir)+`}`))
+	if err == nil {
+		t.Fatal("prepare_upgrade_status must refuse without a bound session")
+	}
+	if !strings.Contains(err.Error(), "session_open") {
+		t.Errorf("prepare_upgrade_status error = %q, want session_open guidance", err)
+	}
+}
+
+func TestWireMCPTools_PrepareUpgradeStatusHonorsKillSwitch(t *testing.T) {
+	resetSessionForTest(t)
+	t.Setenv("DRUP_DISABLE_MUTATIONS", "1")
+
+	var buf bytes.Buffer
+	server := mcp.NewServer(&buf, "test")
+	WireMCPTools(server)
+
+	dir := newDrupalProjectDir(t)
+	_, err := server.CallTool("prepare_upgrade_status", json.RawMessage(`{"project_path":`+jsonStr(dir)+`}`))
+	if err == nil {
+		t.Fatal("prepare_upgrade_status must refuse while mutations are disabled")
+	}
+	if !strings.Contains(err.Error(), "DRUP_DISABLE_MUTATIONS") {
+		t.Errorf("prepare_upgrade_status error = %q, want kill-switch guidance", err)
+	}
+}
+
+func TestWireMCPTools_PrepareUpgradeStatusRequiresBackupAndAuditsRefusal(t *testing.T) {
+	resetSessionForTest(t)
+
+	var buf bytes.Buffer
+	server := mcp.NewServer(&buf, "test")
+	WireMCPTools(server)
+
+	dir := newDrupalProjectDir(t)
+	if _, err := session.Open(dir); err != nil {
+		t.Fatalf("session.Open error: %v", err)
+	}
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	_, err := server.CallTool("prepare_upgrade_status", args)
+	if err == nil || !strings.Contains(err.Error(), "test_backup_create") {
+		t.Fatalf("prepare_upgrade_status error = %v, want backup guidance", err)
+	}
+
+	records, err := audit.ReadAll(dir)
+	if err != nil {
+		t.Fatalf("audit.ReadAll error: %v", err)
+	}
+	if len(records) != 1 || records[0].Tool != "prepare_upgrade_status" || records[0].Result != audit.ResultFailure {
+		t.Errorf("audit records = %+v, want one prepare_upgrade_status failure", records)
+	}
+}
+
+func TestWireMCPTools_PrepareUpgradeStatusRefusesAtMutationCap(t *testing.T) {
+	resetSessionForTest(t)
+
+	var buf bytes.Buffer
+	server := mcp.NewServer(&buf, "test")
+	WireMCPTools(server)
+
+	dir := newDrupalProjectDir(t)
+	writeFreshBackupManifest(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, ".drup", "config.json"), []byte(`{"mutation_cap_per_session":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Open(dir); err != nil {
+		t.Fatalf("session.Open error: %v", err)
+	}
+
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
+	audit.Append(dir, "apply_patch", args, audit.ResultSuccess, "")
+	_, err := server.CallTool("prepare_upgrade_status", args)
+	if err == nil || !strings.Contains(err.Error(), "mutation cap reached (1/1)") {
+		t.Fatalf("prepare_upgrade_status error = %v, want mutation-cap refusal", err)
+	}
+
+	records, err := audit.ReadAll(dir)
+	if err != nil {
+		t.Fatalf("audit.ReadAll error: %v", err)
+	}
+	if len(records) != 2 || records[1].Tool != "prepare_upgrade_status" || records[1].Result != audit.ResultFailure {
+		t.Errorf("audit records = %+v, want cap refusal recorded for prepare_upgrade_status", records)
 	}
 }
 
@@ -1941,8 +2047,8 @@ func TestRealHandleUpgradeScan_NestedInstallPathGuardedWithoutSession(t *testing
 	if err == nil {
 		t.Fatal("expected the nested composer-install path to be refused without a bound session")
 	}
-	if !strings.Contains(err.Error(), "session_open") {
-		t.Errorf("error = %q, want it to name the session_open flow", err.Error())
+	if !strings.Contains(err.Error(), "prepare_upgrade_status") {
+		t.Errorf("error = %q, want preparation guidance", err.Error())
 	}
 }
 
@@ -2046,7 +2152,209 @@ func TestRealHandleUpgradeScan_NestedInstallPathAllowedWithMatchingSession(t *te
 	}
 
 	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)
-	if _, err := realHandleUpgradeScan(args); err != nil {
-		t.Fatalf("unexpected error with a matching session bound: %v", err)
+	if _, err := realHandleUpgradeScan(args); err == nil || !strings.Contains(err.Error(), "prepare_upgrade_status") {
+		t.Fatalf("unprepared upgrade_scan error = %v", err)
+	}
+}
+
+func TestRealHandlePrepareUpgradeStatus(t *testing.T) {
+	tests := []struct {
+		name         string
+		composer     string
+		pmList       string
+		wantCommands []string
+		wantComposer bool
+	}{
+		{"uninstalled", `{"require":{}}`, `{}`, []string{"pm:list", "config:delete", "en", "cr"}, true},
+		{"disabled with conflict", `{"require":{"drupal/upgrade_status":"^4"}}`, `{}`, []string{"pm:list", "config:delete", "en", "cr"}, false},
+		{"already enabled", `{"require":{"drupal/upgrade_status":"^4"}}`, `{"upgrade_status":{}}`, []string{"pm:list"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "composer.json"), []byte(tt.composer), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			origDetector, origRun := defaultEnvDetector, drupexec.RunWithEnv
+			defaultEnvDetector = &mockEnvDetectorDirect{}
+			var commands []string
+			drupexec.RunWithEnv = func(_ string, _ []string, cmd string, args ...string) (string, string, int, error) {
+				if cmd == "composer" {
+					if tt.wantComposer {
+						if err := os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/upgrade_status":"^4"}}`), 0o644); err != nil {
+							t.Fatal(err)
+						}
+					}
+					return "", "", 0, nil
+				}
+				if cmd == "drush" && len(args) > 0 {
+					commands = append(commands, args[0])
+					if args[0] == "pm:list" {
+						return tt.pmList, "", 0, nil
+					}
+				}
+				return "", "", 0, nil
+			}
+			t.Cleanup(func() { defaultEnvDetector, drupexec.RunWithEnv = origDetector, origRun })
+
+			if _, err := realHandlePrepareUpgradeStatus(json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`)); err != nil {
+				t.Fatalf("prepare_upgrade_status error: %v", err)
+			}
+			if strings.Join(commands, ",") != strings.Join(tt.wantCommands, ",") {
+				t.Errorf("drush commands = %v, want %v", commands, tt.wantCommands)
+			}
+		})
+	}
+}
+
+func TestReadOnlyScansRequirePreparedUpgradeStatus(t *testing.T) {
+	tests := []struct {
+		name     string
+		composer string
+		pmList   string
+		handler  func(json.RawMessage) (json.RawMessage, error)
+		wantRun  bool
+	}{
+		{"scan prepared", `{"require":{"drupal/upgrade_status":"^4"}}`, `{"upgrade_status":{}}`, realHandleScan, true},
+		{"scan disabled", `{"require":{"drupal/upgrade_status":"^4"}}`, `{}`, realHandleScan, false},
+		{"scan missing", `{"require":{}}`, `{}`, realHandleScan, false},
+		{"upgrade scan prepared", `{"require":{"drupal/upgrade_status":"^4"}}`, `{"upgrade_status":{}}`, realHandleUpgradeScan, true},
+		{"upgrade scan conflict", `{"require":{"drupal/upgrade_status":"^4"}}`, `{}`, realHandleUpgradeScan, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "composer.json"), []byte(tt.composer), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			origDetector, origRun := defaultEnvDetector, drupexec.RunWithEnv
+			defaultEnvDetector = &mockEnvDetectorDirect{}
+			var calls []string
+			drupexec.RunWithEnv = func(_ string, _ []string, cmd string, args ...string) (string, string, int, error) {
+				if cmd == "composer" || (cmd == "drush" && len(args) > 0 && (args[0] == "config:delete" || args[0] == "en" || args[0] == "cr")) {
+					t.Errorf("read-only handler executed mutation: %s %v", cmd, args)
+				}
+				if cmd == "drush" && len(args) > 0 {
+					calls = append(calls, args[0])
+					if args[0] == "pm:list" {
+						return tt.pmList, "", 0, nil
+					}
+					if args[0] == "upgrade_status:analyze" {
+						return `<?xml version="1.0"?><checkstyle/>`, "", 0, nil
+					}
+				}
+				return "", "", 0, nil
+			}
+			t.Cleanup(func() { defaultEnvDetector, drupexec.RunWithEnv = origDetector, origRun })
+
+			_, err := tt.handler(json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`))
+			if tt.wantRun && err != nil {
+				t.Fatalf("prepared scan error: %v", err)
+			}
+			if !tt.wantRun {
+				if err == nil || !strings.Contains(err.Error(), "prepare_upgrade_status") {
+					t.Fatalf("unprepared error = %v, want preparation guidance", err)
+				}
+				if tt.name == "scan missing" && len(calls) != 0 {
+					t.Errorf("missing-module calls = %v, want none", calls)
+				}
+				if tt.name != "scan missing" && (len(calls) != 1 || calls[0] != "pm:list") {
+					t.Errorf("unprepared calls = %v, want only pm:list", calls)
+				}
+			}
+		})
+	}
+	_, err := realHandleScan(json.RawMessage(`{"project_path":"/nonexistent"}`))
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("invalid scan path error = %v, want path-not-found", err)
+	}
+}
+
+func TestValidateIsReadOnlyAndRequiresPreparedUpgradeStatus(t *testing.T) {
+	tests := []struct {
+		name    string
+		pmList  string
+		module  string
+		xml     string
+		wantErr bool
+		wantN   int
+	}{
+		{"zero findings", `{"upgrade_status":{}}`, "", `<?xml version="1.0"?><checkstyle/>`, false, 0},
+		{"all findings", `{"upgrade_status":{}}`, "", `<?xml version="1.0"?><checkstyle><file name="modules/custom/mymodule/a.module"><error line="1" message="Deprecated" severity="error"/></file></checkstyle>`, false, 1},
+		{"module findings", `{"upgrade_status":{}}`, "mymodule", `<?xml version="1.0"?><checkstyle><file name="modules/custom/mymodule/a.module"><error line="1" message="Deprecated" severity="error"/></file></checkstyle>`, false, 1},
+		{"unprepared", `{}`, "", `<?xml version="1.0"?><checkstyle/>`, true, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/upgrade_status":"^4"}}`), 0o644)
+			os.WriteFile(filepath.Join(dir, "composer.lock"), []byte(`{"packages":[{"name":"drupal/core","version":"11.0.0"}]}`), 0o644)
+			origDetector, origRun := defaultEnvDetector, drupexec.RunWithEnv
+			defaultEnvDetector = &mockEnvDetectorDirect{}
+			var calls []string
+			drupexec.RunWithEnv = func(_ string, _ []string, cmd string, args ...string) (string, string, int, error) {
+				if cmd == "drush" && len(args) > 0 {
+					calls = append(calls, args[0])
+					if args[0] == "pm:list" {
+						return tt.pmList, "", 0, nil
+					}
+					if args[0] == "upgrade_status:analyze" {
+						return tt.xml, "", 0, nil
+					}
+				}
+				return "", "", 0, nil
+			}
+			t.Cleanup(func() { defaultEnvDetector, drupexec.RunWithEnv = origDetector, origRun })
+
+			result, err := realHandleValidate(json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"module_name":` + jsonStr(tt.module) + `}`))
+			if tt.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "prepare_upgrade_status") {
+					t.Fatalf("unprepared validate error = %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validate error: %v", err)
+			}
+			var response struct {
+				TotalErrors  int    `json:"total_errors"`
+				EvidenceHash string `json:"evidence_hash"`
+			}
+			json.Unmarshal(result, &response)
+			if response.TotalErrors != tt.wantN || response.EvidenceHash == "" {
+				t.Errorf("response = %+v, want errors=%d and evidence hash", response, tt.wantN)
+			}
+			for _, call := range calls {
+				if call == "updb" || call == "cr" || call == "en" || call == "config:delete" {
+					t.Errorf("validate executed mutation: %s", call)
+				}
+			}
+		})
+	}
+}
+
+func TestAutofixDoesNotRescan(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "modules", "custom"), 0o755)
+	origDetector, origRun := defaultEnvDetector, drupexec.RunWithEnvCtx
+	defaultEnvDetector = &mockEnvDetectorDirect{}
+	drushCalled := false
+	drupexec.RunWithEnvCtx = func(_ context.Context, _ string, _ []string, cmd string, args ...string) (string, string, int, error) {
+		if cmd == "drush" {
+			drushCalled = true
+		}
+		return "rector summary", "", 0, nil
+	}
+	t.Cleanup(func() { defaultEnvDetector, drupexec.RunWithEnvCtx = origDetector, origRun })
+
+	result, err := realHandleAutofix(json.RawMessage(`{"project_path":` + jsonStr(dir) + `}`))
+	if err != nil {
+		t.Fatalf("autofix error: %v", err)
+	}
+	if drushCalled {
+		t.Fatal("autofix ran a forbidden analysis command")
+	}
+	if !strings.Contains(string(result), "rector summary") || strings.Contains(string(result), "remaining_errors") {
+		t.Errorf("autofix result = %s, want rector summary without rescan result", result)
 	}
 }

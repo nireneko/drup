@@ -8,10 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/nireneko/drup/internal/drupalorg"
+	"github.com/nireneko/drup/internal/upgradeplan"
 )
 
 // drupalCorePackage is the composer package name drup uses to look up the
@@ -56,6 +56,9 @@ func NextMajor(currentVersion string) (*CheckResult, error) {
 
 	result := &CheckResult{CurrentVersion: currentVersion}
 	if latestMajor > currentMajor {
+		if latestMajor != currentMajor+1 {
+			return nil, fmt.Errorf("immediate next Drupal major %d is unavailable; upgrade to %d before checking for %d", currentMajor+1, currentMajor+1, latestMajor)
+		}
 		result.NextVersion = info.Latest
 		result.Available = true
 		result.Constraint = fmt.Sprintf("^%d.0", latestMajor)
@@ -66,13 +69,11 @@ func NextMajor(currentVersion string) (*CheckResult, error) {
 // MajorVersion extracts the leading major version number from a semver-like
 // or composer-constraint-like string (e.g. "10.1.5" -> 10, "^11.0" -> 11).
 func MajorVersion(version string) (int, error) {
-	version = strings.TrimPrefix(version, "^")
-	version = strings.TrimPrefix(version, "~")
-	if version == "" {
-		return 0, fmt.Errorf("empty version")
+	major, err := upgradeplan.ParseMajor(version)
+	if err != nil {
+		return 0, err
 	}
-	parts := strings.SplitN(version, ".", 2)
-	return strconv.Atoi(parts[0])
+	return int(major), nil
 }
 
 // PreviewComposerPatch computes the exact composer.json changes an Apply call

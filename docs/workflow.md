@@ -136,12 +136,20 @@ after the exact file scope passes. Failed files are retried with concrete valida
 
 ### Stage 6: Core Upgrade
 
-`core_upgrade_check` previews the next major version. `core_upgrade_apply` then updates the
-Composer constraints, resolves dependencies, runs `drush updb`, and verifies the result.
-The real core mutation requires a clean tree, an existing backup, and an explicit user gate.
+`core_upgrade_check` previews the next major version and can validate an explicit
+`target_major`. The numeric planner constructs only consecutive steps and requires exact,
+per-jump compatibility metadata for every step. Missing metadata blocks the request; the
+shipped `10-to-11` catalog is never treated as `11-to-12` metadata.
 
-The current prompt has a single target-version operation. It does not yet orchestrate a
-complete `9 -> 10 -> 11` or `10 -> 11` loop with a full validation boundary for every major.
+`core_upgrade_apply` consumes one validated step at a time, then updates Composer constraints,
+resolves dependencies, runs `drush updb`, and verifies the result. A typed plan no-op returns
+before clean-tree checks, backups, Composer, or Drush. A real mutation requires a clean tree,
+an existing backup, and an explicit user gate.
+
+Planning supports an ordered route such as `9 -> 10 -> 11` when callers provide metadata for
+both jumps. Execution remains deliberately single-step: this workflow does not persist or resume
+a whole multi-major run, nor does it automatically schedule the validation boundary between
+steps. Re-plan and validate after each executed step before requesting the next one.
 
 ### Stage 7: Final Validation And Report
 

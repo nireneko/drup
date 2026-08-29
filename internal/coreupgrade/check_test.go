@@ -60,6 +60,42 @@ func TestNextMajor_Available(t *testing.T) {
 	}
 }
 
+func TestNextMajor_OnlyOffersImmediateNextMajor(t *testing.T) {
+	tests := []struct {
+		name    string
+		current string
+		latest  string
+		wantErr string
+	}{
+		{
+			name:    "later release cannot skip the immediate major",
+			current: "10.3.0",
+			latest:  "12.0.0",
+			wantErr: "immediate next Drupal major 11 is unavailable; upgrade to 11 before checking for 12",
+		},
+		{
+			name:    "multiple later majors still require the next one",
+			current: "11.2.0",
+			latest:  "13.0.0",
+			wantErr: "immediate next Drupal major 12 is unavailable; upgrade to 12 before checking for 13",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stubCheckRelease(t, &drupalorg.ReleaseInfo{Module: "drupal/core", Latest: tt.latest})
+
+			result, err := NextMajor(tt.current)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("NextMajor error = %v, want it to contain %q", err, tt.wantErr)
+			}
+			if result != nil {
+				t.Fatalf("NextMajor result = %#v, want nil when the immediate major is unavailable", result)
+			}
+		})
+	}
+}
+
 func TestNextMajor_AlreadyOnLatest(t *testing.T) {
 	stubCheckRelease(t, &drupalorg.ReleaseInfo{Module: "drupal/core", Latest: "11.0.9", HasD11: true})
 

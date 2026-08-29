@@ -407,6 +407,44 @@ func TestRunUpgradeCore_AlreadyAtTarget(t *testing.T) {
 	}
 }
 
+func TestRunUpgradeCore_TypedPlanNoOpHasZeroSideEffects(t *testing.T) {
+	dir := t.TempDir()
+	origGetwd, origRunWithEnv := getwdFn, drupexec.RunWithEnv
+	getwdFn = func() (string, error) { return dir, nil }
+	var commandCalls int
+	drupexec.RunWithEnv = func(_ string, _ []string, _ string, _ ...string) (string, string, int, error) {
+		commandCalls++
+		return "", "unexpected command", 1, nil
+	}
+	defer func() {
+		getwdFn = origGetwd
+		drupexec.RunWithEnv = origRunWithEnv
+	}()
+
+	composerPath := filepath.Join(dir, "composer.json")
+	before := []byte(`{"require":{"drupal/core-recommended":"^11"}}`)
+	if err := os.WriteFile(composerPath, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RunUpgradeCore([]string{"11"}); err != nil {
+		t.Fatalf("RunUpgradeCore error: %v", err)
+	}
+	if commandCalls != 0 {
+		t.Errorf("external command calls = %d, want 0 for a plan no-op", commandCalls)
+	}
+	after, err := os.ReadFile(composerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("composer.json changed during no-op: got %s, want %s", after, before)
+	}
+	if _, err := os.Stat(composerPath + ".bak"); !os.IsNotExist(err) {
+		t.Errorf("no-op created composer backup: stat error = %v", err)
+	}
+}
+
 func TestRunUpgradeCore_DryRunOutput(t *testing.T) {
 	dir := t.TempDir()
 	origGetwd := getwdFn
@@ -1529,7 +1567,7 @@ func TestRunScan_CustomModulesExist_ProceedsNormally(t *testing.T) {
 
 // Task 3.8: Post-D11 validation gate swap tests.
 
-func TestDoValidate_PostD11_UsesDrushGates(t *testing.T) {
+func TestDoValidate_PostD11_UsesReadOnlyUpgradeStatus(t *testing.T) {
 	dir := t.TempDir()
 	// Create composer.lock with Drupal 11.
 	os.MkdirAll(dir, 0o755)
@@ -1559,29 +1597,17 @@ func TestDoValidate_PostD11_UsesDrushGates(t *testing.T) {
 		t.Fatalf("DoValidate error: %v", err)
 	}
 
-	// Verify post-D11 gates were called.
-	updbFound := false
-	crFound := false
-	statusFound := false
+	analyzeFound := false
 	for _, cmd := range drushCommands {
-		if cmd == "updb" {
-			updbFound = true
+		if cmd == "upgrade_status:analyze" {
+			analyzeFound = true
 		}
-		if cmd == "cr" || cmd == "cache:rebuild" {
-			crFound = true
-		}
-		if cmd == "status" {
-			statusFound = true
+		if cmd == "updb" || cmd == "cr" || cmd == "cache:rebuild" || cmd == "status" {
+			t.Errorf("DoValidate executed mutation or status gate: %s", cmd)
 		}
 	}
-	if !updbFound {
-		t.Errorf("drush updb should be called for post-D11 validation, got: %v", drushCommands)
-	}
-	if !crFound {
-		t.Errorf("drush cr should be called for post-D11 validation, got: %v", drushCommands)
-	}
-	if !statusFound {
-		t.Errorf("drush status should be called for post-D11 validation, got: %v", drushCommands)
+	if !analyzeFound {
+		t.Errorf("DoValidate must analyze Upgrade Status, got: %v", drushCommands)
 	}
 }
 
@@ -1622,7 +1648,7 @@ func TestDo_validate_PreD11_UsesUpgradeStatus(t *testing.T) {
 	}
 }
 
-func TestDoValidate_PostD11_DrushStatusFails(t *testing.T) {
+func TestDoValidate_PostD11_DoesNotRunDrushStatus(t *testing.T) {
 	dir := t.TempDir()
 	lockJSON := `{"packages":[{"name":"drupal/core","version":"11.0.0"}]}`
 	os.WriteFile(filepath.Join(dir, "composer.lock"), []byte(lockJSON), 0o644)
@@ -1640,12 +1666,8 @@ func TestDoValidate_PostD11_DrushStatusFails(t *testing.T) {
 	}
 	defer func() { drupexec.RunWithEnv = origRunWithEnv }()
 
-	_, _, err := DoValidate(dir, "")
-	if err == nil {
-		t.Fatal("expected error when drush status fails post-D11, got nil")
-	}
-	if !strings.Contains(err.Error(), "bootstrap") || !strings.Contains(err.Error(), "failed") {
-		t.Errorf("error = %q, want site bootstrap failure", err.Error())
+	if _, _, err := DoValidate(dir, ""); err != nil {
+		t.Fatalf("DoValidate must not invoke failing status: %v", err)
 	}
 }
 
@@ -2313,9 +2335,9 @@ func TestInstallLockedRequested(t *testing.T) {
 	}
 }
 
-// A failed resolution leaves the constraint at the target and the lock on the
-// old major. That is an unfinished upgrade, not a completed one.
-func TestRunUpgradeCore_ConstraintAtTargetButOldCoreInstalled(t *testing.T) {
+// The typed plan is based on the declared Composer major, not the lockfile.
+// A matching major is a no-op even when an older lockfile remains.
+func TestRunUpgradeCore_ConstraintAtTargetButOldCoreInstalledIsPlanNoOp(t *testing.T) {
 	dir := t.TempDir()
 	origGetwd, origIsClean := getwdFn, isCleanFn
 	getwdFn = func() (string, error) { return dir, nil }
@@ -2335,7 +2357,10 @@ func TestRunUpgradeCore_ConstraintAtTargetButOldCoreInstalled(t *testing.T) {
 	var buf bytes.Buffer
 	io.Copy(&buf, r)
 
-	if err == nil && strings.Contains(buf.String(), `"already_at_target": true`) {
-		t.Error("a half-upgraded project was reported as already at target")
+	if err != nil {
+		t.Fatalf("RunUpgradeCore error: %v", err)
+	}
+	if !strings.Contains(buf.String(), `"already_at_target": true`) {
+		t.Errorf("output = %s, want typed plan no-op", buf.String())
 	}
 }

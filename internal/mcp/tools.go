@@ -23,13 +23,14 @@ import (
 func defaultTools() map[string]ToolHandler {
 	return map[string]ToolHandler{
 		// Core pipeline tools.
-		"scan":          handleScan,
-		"autofix":       handleAutofix,
-		"contrib_check": handleContribCheck,
-		"issue_patches": handleIssuePatches,
-		"apply_patch":   handleApplyPatch,
-		"validate":      handleValidate,
-		"create_patch":  handleCreatePatch,
+		"scan":                   handleScan,
+		"prepare_upgrade_status": handlePrepareUpgradeStatus,
+		"autofix":                handleAutofix,
+		"contrib_check":          handleContribCheck,
+		"issue_patches":          handleIssuePatches,
+		"apply_patch":            handleApplyPatch,
+		"validate":               handleValidate,
+		"create_patch":           handleCreatePatch,
 		// Foundation tools.
 		"detect_env":       handleDetectEnv,
 		"composer_require": handleComposerRequire,
@@ -181,6 +182,16 @@ func handleScan(args json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(result)
 }
 
+func handlePrepareUpgradeStatus(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath string `json:"project_path"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]interface{}{"project_path": params.ProjectPath, "prepared": false})
+}
+
 func handleAutofix(args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectPath string `json:"project_path"`
@@ -250,7 +261,7 @@ func handleValidate(args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectPath string `json:"project_path"`
 		Scope       string `json:"scope,omitempty"`
-		Module      string `json:"module,omitempty"`
+		Module      string `json:"module_name,omitempty"`
 		File        string `json:"file,omitempty"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
@@ -467,6 +478,7 @@ func handleDrupalVersionMatrix(args json.RawMessage) (json.RawMessage, error) {
 func handleCoreUpgradeCheck(args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectPath string `json:"project_path"`
+		TargetMajor int    `json:"target_major,omitempty"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, err
@@ -484,6 +496,7 @@ func handleCoreUpgradeApply(args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectPath   string `json:"project_path"`
 		TargetVersion string `json:"target_version"`
+		TargetMajor   int    `json:"target_major,omitempty"`
 		DryRun        bool   `json:"dry_run"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {

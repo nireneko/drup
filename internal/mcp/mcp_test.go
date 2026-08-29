@@ -172,8 +172,8 @@ func TestServer_ListTools(t *testing.T) {
 	if !ok {
 		t.Fatal("missing tools array in result")
 	}
-	if len(tools) != 27 {
-		t.Errorf("len(tools) = %d, want 27", len(tools))
+	if len(tools) != 28 {
+		t.Errorf("len(tools) = %d, want 28", len(tools))
 	}
 }
 
@@ -402,6 +402,23 @@ func TestToolRegistry_CoreUpgradeApplyHasNoAllowDirty(t *testing.T) {
 	}
 }
 
+func TestToolRegistry_CoreUpgradeToolsExposeTargetMajor(t *testing.T) {
+	for _, name := range []string{"core_upgrade_check", "core_upgrade_apply"} {
+		schema, ok := toolRegistry[name]
+		if !ok {
+			t.Fatalf("%s is missing from toolRegistry", name)
+		}
+		property, ok := schema.Properties["target_major"]
+		if !ok {
+			t.Errorf("%s schema is missing target_major", name)
+			continue
+		}
+		if property.Type != "integer" {
+			t.Errorf("%s target_major type = %q, want integer", name, property.Type)
+		}
+	}
+}
+
 // TestServer_WiringSymmetryCleanupToolIsSymmetric guards the fix that
 // re-introduced `cleanup` to defaultTools() and toolRegistry. Both must stay
 // in sync; if either is dropped, this test fails.
@@ -485,8 +502,8 @@ func TestServer_PostWireUpCountIs31(t *testing.T) {
 	if !ok {
 		t.Fatal("missing tools array in result")
 	}
-	if len(tools) != 31 {
-		t.Errorf("post-wire-up tool count = %d, want 31 (27 default + 4 backup)", len(tools))
+	if len(tools) != 32 {
+		t.Errorf("post-wire-up tool count = %d, want 32 (28 default + 4 backup)", len(tools))
 	}
 }
 
@@ -508,10 +525,8 @@ func TestServer_ListTools_ProjectPathAwareToolsAdvertiseIt(t *testing.T) {
 func TestServer_ToolCount(t *testing.T) {
 	var buf bytes.Buffer
 	server := NewServer(&buf, "test")
-	// defaultTools() returns 27 tools (25 original + session_open added in
-	// PR4 + pipeline_status added in PR6).
-	if got := server.ToolCount(); got != 27 {
-		t.Errorf("default ToolCount() = %d, want 27", got)
+	if got := server.ToolCount(); got != 28 {
+		t.Errorf("default ToolCount() = %d, want 28", got)
 	}
 
 	// Register 2 more tools.
@@ -520,8 +535,34 @@ func TestServer_ToolCount(t *testing.T) {
 	}
 	server.RegisterTool("extra_tool_1", dummy)
 	server.RegisterTool("extra_tool_2", dummy)
-	if got := server.ToolCount(); got != 29 {
-		t.Errorf("after adding 2 tools, ToolCount() = %d, want 29", got)
+	if got := server.ToolCount(); got != 30 {
+		t.Errorf("after adding 2 tools, ToolCount() = %d, want 30", got)
+	}
+}
+
+func TestPrepareUpgradeStatusHasSchemaAndStub(t *testing.T) {
+	if _, ok := defaultTools()["prepare_upgrade_status"]; !ok {
+		t.Fatal("prepare_upgrade_status is missing from default tool stubs")
+	}
+	schema, ok := toolRegistry["prepare_upgrade_status"]
+	if !ok {
+		t.Fatal("prepare_upgrade_status is missing from tool schemas")
+	}
+	if _, ok := schema.Properties["project_path"]; !ok {
+		t.Error("prepare_upgrade_status schema is missing project_path")
+	}
+}
+
+func TestValidateSchema_ExposesModuleName(t *testing.T) {
+	schema, ok := toolRegistry["validate"]
+	if !ok {
+		t.Fatal("validate is missing from tool schemas")
+	}
+	if _, ok := schema.Properties["module_name"]; !ok {
+		t.Error("validate schema is missing module_name")
+	}
+	if _, ok := schema.Properties["module"]; ok {
+		t.Error("validate schema exposes module instead of module_name")
 	}
 }
 
@@ -774,26 +815,12 @@ func TestRetryLoop_TransientThenSuccess(t *testing.T) {
 		return json.RawMessage(`{"result":"ok"}`), nil
 	})
 
-	req := JSONRPCRequest{
-		JSONRPC: "2.0",
-		ID:      1,
-		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"flaky_tool","arguments":{}}`),
+	result, err := server.retryLoop("flaky_tool", server.tools["flaky_tool"], json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("retryLoop error: %v", err)
 	}
-	if err := server.handleRequest(req); err != nil {
-		t.Fatalf("handleRequest error: %v", err)
-	}
-
-	var resp JSONRPCResponse
-	json.Unmarshal(buf.Bytes(), &resp)
-	if resp.Error != nil {
-		t.Fatalf("unexpected JSON-RPC error: %v", resp.Error)
-	}
-
-	var envelope Envelope
-	json.Unmarshal(resp.Result, &envelope)
-	if envelope.Status != "pass" {
-		t.Errorf("status = %q, want %q", envelope.Status, "pass")
+	if string(result) != `{"result":"ok"}` {
+		t.Errorf("result = %s, want {\"result\":\"ok\"}", result)
 	}
 	if callCount != 3 {
 		t.Errorf("handler called %d times, want 3", callCount)
@@ -808,8 +835,7 @@ func TestRetryLoop_NoRetryOnRealError(t *testing.T) {
 	retryBaseDelay = 1 * time.Millisecond
 	defer func() { retryBaseDelay = origDelay }()
 
-	var buf bytes.Buffer
-	server := NewServer(&buf, "test")
+	server := NewServer(&bytes.Buffer{}, "test")
 
 	callCount := 0
 	server.RegisterTool("broken_tool", func(args json.RawMessage) (json.RawMessage, error) {
@@ -817,26 +843,9 @@ func TestRetryLoop_NoRetryOnRealError(t *testing.T) {
 		return nil, fmt.Errorf("command not found")
 	})
 
-	req := JSONRPCRequest{
-		JSONRPC: "2.0",
-		ID:      1,
-		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"broken_tool","arguments":{}}`),
-	}
-	if err := server.handleRequest(req); err != nil {
-		t.Fatalf("handleRequest error: %v", err)
-	}
-
-	var resp JSONRPCResponse
-	json.Unmarshal(buf.Bytes(), &resp)
-	if resp.Error != nil {
-		t.Fatalf("unexpected JSON-RPC error: %v", resp.Error)
-	}
-
-	var envelope Envelope
-	json.Unmarshal(resp.Result, &envelope)
-	if envelope.Status != "fail" {
-		t.Errorf("status = %q, want %q", envelope.Status, "fail")
+	_, err := server.retryLoop("broken_tool", server.tools["broken_tool"], json.RawMessage(`{}`))
+	if err == nil || err.Error() != "command not found" {
+		t.Errorf("retryLoop error = %v, want command not found", err)
 	}
 	if callCount != 1 {
 		t.Errorf("handler called %d times, want 1 (no retry on real error)", callCount)
@@ -857,32 +866,113 @@ func TestRetryLoop_Exhausted(t *testing.T) {
 		return nil, fmt.Errorf("i/o timeout")
 	})
 
-	req := JSONRPCRequest{
-		JSONRPC: "2.0",
-		ID:      1,
-		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"always_timeout","arguments":{}}`),
-	}
-	if err := server.handleRequest(req); err != nil {
-		t.Fatalf("handleRequest error: %v", err)
-	}
-
-	var resp JSONRPCResponse
-	json.Unmarshal(buf.Bytes(), &resp)
-	if resp.Error != nil {
-		t.Fatalf("unexpected JSON-RPC error: %v", resp.Error)
-	}
-
-	var envelope Envelope
-	json.Unmarshal(resp.Result, &envelope)
-	if envelope.Status != "fail" {
-		t.Errorf("status = %q, want %q", envelope.Status, "fail")
-	}
-	if !strings.Contains(envelope.Summary, "after 3 attempts") {
-		t.Errorf("summary = %q, want it to contain 'after 3 attempts'", envelope.Summary)
+	_, err := server.retryLoop("always_timeout", server.tools["always_timeout"], json.RawMessage(`{}`))
+	if err == nil || !strings.Contains(err.Error(), "after 3 attempts") {
+		t.Errorf("retryLoop error = %v, want it to contain 'after 3 attempts'", err)
 	}
 	if callCount != 3 {
 		t.Errorf("handler called %d times, want 3", callCount)
+	}
+}
+
+func TestHandleToolCall_RetriesOnlyReadOnlyTools(t *testing.T) {
+	origDelay := retryBaseDelay
+	retryBaseDelay = time.Millisecond
+	defer func() { retryBaseDelay = origDelay }()
+
+	tests := []struct {
+		name        string
+		tool        string
+		handler     func(*int) ToolHandler
+		wantCalls   int
+		wantRetries int
+		wantStatus  string
+	}{
+		{
+			name: "scan retries two transient failures before success",
+			tool: "scan",
+			handler: func(calls *int) ToolHandler {
+				return func(json.RawMessage) (json.RawMessage, error) {
+					*calls++
+					if *calls < 3 {
+						return nil, fmt.Errorf("context deadline exceeded")
+					}
+					return json.RawMessage(`{"result":"ok"}`), nil
+				}
+			},
+			wantCalls: 3, wantRetries: 2, wantStatus: "pass",
+		},
+		{
+			name: "validate exhausts transient retries",
+			tool: "validate",
+			handler: func(calls *int) ToolHandler {
+				return func(json.RawMessage) (json.RawMessage, error) {
+					*calls++
+					return nil, fmt.Errorf("i/o timeout")
+				}
+			},
+			wantCalls: 3, wantRetries: 2, wantStatus: "fail",
+		},
+		{
+			name: "mutator does not retry a transient failure",
+			tool: "autofix",
+			handler: func(calls *int) ToolHandler {
+				return func(json.RawMessage) (json.RawMessage, error) {
+					*calls++
+					return nil, fmt.Errorf("connection refused")
+				}
+			},
+			wantCalls: 1, wantRetries: 0, wantStatus: "fail",
+		},
+		{
+			name: "command not found does not retry",
+			tool: "upgrade_scan",
+			handler: func(calls *int) ToolHandler {
+				return func(json.RawMessage) (json.RawMessage, error) {
+					*calls++
+					return nil, fmt.Errorf("command not found")
+				}
+			},
+			wantCalls: 1, wantRetries: 0, wantStatus: "fail",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			server := NewServer(&buf, "test")
+			calls := 0
+			server.RegisterTool(tt.tool, tt.handler(&calls))
+			beforeRetries := metrics.Default().Snapshot().Retries
+
+			req := JSONRPCRequest{
+				JSONRPC: "2.0",
+				ID:      1,
+				Method:  "tools/call",
+				Params:  json.RawMessage(fmt.Sprintf(`{"name":%q,"arguments":{}}`, tt.tool)),
+			}
+			if err := server.handleRequest(req); err != nil {
+				t.Fatalf("handleRequest error: %v", err)
+			}
+
+			var response JSONRPCResponse
+			if err := json.Unmarshal(buf.Bytes(), &response); err != nil {
+				t.Fatalf("invalid response JSON: %v", err)
+			}
+			var envelope Envelope
+			if err := json.Unmarshal(response.Result, &envelope); err != nil {
+				t.Fatalf("invalid tool envelope: %v", err)
+			}
+			if envelope.Status != tt.wantStatus {
+				t.Errorf("status = %q, want %q", envelope.Status, tt.wantStatus)
+			}
+			if calls != tt.wantCalls {
+				t.Errorf("handler calls = %d, want %d", calls, tt.wantCalls)
+			}
+			if got := metrics.Default().Snapshot().Retries - beforeRetries; got != int64(tt.wantRetries) {
+				t.Errorf("retries recorded = %d, want %d", got, tt.wantRetries)
+			}
+		})
 	}
 }
 

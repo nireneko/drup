@@ -204,7 +204,7 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 - **Purpose**: Static compatibility table for the supported Drupal majors → min PHP, recommended PHP, supported-until, next major. The current table must evolve as new Drupal majors are released.
 - **Returns**: `{ drupal_version, php_requirements: {minimum, recommended}, supported_until, upgrade_path: {next_major, migration_guide_url}, known_issues }`
 - **Side-effects**: none (no network).
-- **NOTE**: PHP comparison is lexicographic (`>=`). Works for `8.1, 8.3, 8.4` but NOT for `7.x` vs `8.x`. Treat as advisory, not strict semver.
+- **NOTE**: PHP and Drupal major selection use numeric semver comparison. Treat this static matrix as advisory until its matching target-major catalog is available.
 
 ### 5.8 `issue_patches`
 
@@ -302,16 +302,16 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 
 ### 5.18 `core_upgrade_check`
 
-- **Purpose**: Read-only next-Drupal-major lookup. Returns preview of the composer.json diff. **Never mutates anything.**
+- **Purpose**: Read-only next-Drupal-major lookup. An optional `target_major` is accepted only when an exact compatibility catalog exists for every required immediate step. Returns preview of the composer.json diff. **Never mutates anything.**
 - **Returns**: `{ current_version, next_version, composer_patch_preview, supported: <bool> }`
 - **Side-effects**: none.
 - **Red flag**: expecting it to apply the upgrade — use `core_upgrade_apply` for that.
 
 ### 5.19 `core_upgrade_apply`
 
-- **Purpose**: Bump `drupal/core-recommended` and `drupal/core` to `target_version`. With `dry_run=true`, returns the diff preview only. With `dry_run=false`, refuses on dirty tree, commits a git checkpoint, then mutates `composer.json`.
+- **Purpose**: Apply one validated immediate step to `target_major`; `target_version` remains a compatibility alias. With `dry_run=true`, returns the diff preview only. With `dry_run=false`, refuses on dirty tree, commits a git checkpoint, then mutates `composer.json`.
 - **Returns**: `{ success, report: <diff>, rollback_checkpoint: <sha>, stderr }`
-- **Prerequisites**: clean working tree, git repo, absolute `project_path`, `target_version` string.
+- **Prerequisites**: clean working tree, git repo, absolute `project_path`, and exact metadata for the requested major jump. Missing metadata fails closed; a `10-to-11` catalog is never reused for `11-to-12`.
 - **Side-effects**: on real run, creates two commits (checkpoint + bump).
 - **Rollback**: `git reset --hard <rollback_checkpoint>` reverts everything cleanly.
 - **Error signals**: distinct messages for dirty tree, invalid `target_version`, path containing `..`.

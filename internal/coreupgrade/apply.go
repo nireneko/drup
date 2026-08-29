@@ -10,6 +10,7 @@ import (
 	drupexec "github.com/nireneko/drup/internal/exec"
 	"github.com/nireneko/drup/internal/gitops"
 	"github.com/nireneko/drup/internal/session"
+	"github.com/nireneko/drup/internal/upgradeplan"
 )
 
 // ApplyResult is returned by Apply.
@@ -54,22 +55,63 @@ func Apply(projectPath, targetVersion string, dryRun, allowDirty, force bool) (*
 	if err != nil {
 		return nil, err
 	}
-	projectPath = resolvedPath
 	if targetVersion == "" {
 		return nil, fmt.Errorf("target_version must not be empty")
 	}
 
-	composerPath := filepath.Join(projectPath, "composer.json")
+	composerPath := filepath.Join(resolvedPath, "composer.json")
 	data, err := os.ReadFile(composerPath)
 	if err != nil {
 		return nil, fmt.Errorf("read composer.json: %w", err)
 	}
 
-	targetMajor, err := MajorVersion(targetVersion)
+	targetMajor, err := upgradeplan.ParseMajor(targetVersion)
 	if err != nil {
 		return nil, fmt.Errorf("parse target version %q: %w", targetVersion, err)
 	}
-	constraint := fmt.Sprintf("^%d.0", targetMajor)
+	currentMajor, err := composerCoreMajor(data)
+	if err != nil {
+		return nil, err
+	}
+	current, err := upgradeplan.NewMajor(currentMajor)
+	if err != nil {
+		return nil, err
+	}
+	plan, err := upgradeplan.Build(current, targetMajor, upgradeplan.KnownCatalog())
+	if err != nil {
+		return nil, err
+	}
+	if plan.NoOp() {
+		return &ApplyResult{Success: true, Report: "already at target; no changes made"}, nil
+	}
+	return ApplyStep(resolvedPath, plan.Steps[0], dryRun, allowDirty, force)
+}
+
+// ApplyStep applies one validated immediate step. The upgradeplan domain owns
+// the transition invariant; this package verifies only that composer.json is
+// at the declared source before it performs an effect.
+func ApplyStep(projectPath string, step upgradeplan.Step, dryRun, allowDirty, force bool) (*ApplyResult, error) {
+	if err := step.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid upgrade step: %w", err)
+	}
+	resolvedPath, err := ValidateProjectPath(projectPath)
+	if err != nil {
+		return nil, err
+	}
+	projectPath = resolvedPath
+	composerPath := filepath.Join(projectPath, "composer.json")
+	data, err := os.ReadFile(composerPath)
+	if err != nil {
+		return nil, fmt.Errorf("read composer.json: %w", err)
+	}
+	currentMajor, err := composerCoreMajor(data)
+	if err != nil {
+		return nil, err
+	}
+	if upgradeplan.Major(currentMajor) != step.From {
+		return nil, fmt.Errorf("composer.json is at Drupal major %d, but step requires source major %d", currentMajor, step.From)
+	}
+	constraint := step.Constraint()
 
 	diff, changed, err := PreviewComposerPatch(data, constraint)
 	if err != nil {
@@ -103,7 +145,7 @@ func Apply(projectPath, targetVersion string, dryRun, allowDirty, force bool) (*
 		}
 	}
 
-	checkpointSHA, err := createCheckpoint(projectPath, fmt.Sprintf("checkpoint: before core upgrade to %s", targetVersion))
+	checkpointSHA, err := createCheckpoint(projectPath, fmt.Sprintf("checkpoint: before core upgrade to %d", step.To))
 	if err != nil {
 		return nil, fmt.Errorf("create checkpoint commit: %w", err)
 	}
@@ -121,6 +163,55 @@ func Apply(projectPath, targetVersion string, dryRun, allowDirty, force bool) (*
 		Report:             diff,
 		RollbackCheckpoint: checkpointSHA,
 	}, nil
+}
+
+// ApplyPlan consumes a domain plan without reimplementing its transition
+// rules. Effects are intentionally limited to one step; callers must persist
+// and execute multi-step plans one step at a time.
+func ApplyPlan(projectPath string, plan upgradeplan.Plan, dryRun, allowDirty, force bool) (*ApplyResult, error) {
+	if plan.NoOp() {
+		return &ApplyResult{Success: true, Report: "already at target; no changes made"}, nil
+	}
+	if len(plan.Steps) != 1 {
+		return nil, fmt.Errorf("upgrade plan has %d steps; execute one validated step at a time", len(plan.Steps))
+	}
+	return ApplyStep(projectPath, plan.Steps[0], dryRun, allowDirty, force)
+}
+
+// CurrentMajor reads the Drupal core major declared in composer.json.
+func CurrentMajor(projectPath string) (upgradeplan.Major, error) {
+	resolvedPath, err := ValidateProjectPath(projectPath)
+	if err != nil {
+		return 0, err
+	}
+	data, err := os.ReadFile(filepath.Join(resolvedPath, "composer.json"))
+	if err != nil {
+		return 0, fmt.Errorf("read composer.json: %w", err)
+	}
+	major, err := composerCoreMajor(data)
+	if err != nil {
+		return 0, err
+	}
+	return upgradeplan.NewMajor(major)
+}
+
+func composerCoreMajor(composerJSON []byte) (int, error) {
+	var doc struct {
+		Require map[string]string `json:"require"`
+	}
+	if err := json.Unmarshal(composerJSON, &doc); err != nil {
+		return 0, fmt.Errorf("parse composer.json: %w", err)
+	}
+	for _, pkg := range []string{"drupal/core-recommended", drupalCorePackage} {
+		if constraint, ok := doc.Require[pkg]; ok {
+			major, err := MajorVersion(constraint)
+			if err != nil {
+				return 0, fmt.Errorf("parse %s constraint %q: %w", pkg, constraint, err)
+			}
+			return major, nil
+		}
+	}
+	return 0, fmt.Errorf("composer.json has no drupal/core requirement")
 }
 
 // createCheckpoint records an empty commit marking the pre-mutation state.

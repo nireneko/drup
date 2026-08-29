@@ -203,6 +203,21 @@ func TestCheckCoreReadiness_ModuleBlocksD11(t *testing.T) {
 	}
 }
 
+func TestCheckCoreReadinessForMajor_DoesNotReuseD11RulesForD12(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/core":"^10.3 || ^11"}}`), 0o644)
+
+	results, err := checkCoreReadinessForMajor(dir, 12)
+	if err != nil {
+		t.Fatalf("checkCoreReadinessForMajor error: %v", err)
+	}
+	for _, result := range results {
+		if result.Check == "core_composer_constraint" && result.Pass {
+			t.Error("Drupal 12 must not pass using a constraint that ends at Drupal 11")
+		}
+	}
+}
+
 func TestCheckCoreReadiness_NoCustomCode(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"require":{"drupal/core":"^10.3 || ^11"}}`), 0o644)
