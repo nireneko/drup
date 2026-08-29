@@ -78,6 +78,10 @@ type ToolEffect string
 const (
 	EffectReadOnly ToolEffect = "read_only"
 	EffectMutating ToolEffect = "mutating"
+	// EffectWorkflow changes the durable run authority but is not a project
+	// mutation. Workflow tools intentionally do not enter the session/backup
+	// guard or the operation ledger.
+	EffectWorkflow ToolEffect = "workflow"
 )
 
 // SessionPolicy controls how a mutating tool behaves without a matching
@@ -110,6 +114,9 @@ type ToolSpec struct {
 	// ReconcilesOperation marks the recovery endpoint. It persists observed
 	// evidence but does not itself invoke the guarded domain effect.
 	ReconcilesOperation bool
+	// RequiresRun makes a project-mutating tool prove membership in the
+	// canonical persisted run before its handler can execute.
+	RequiresRun bool
 }
 
 // toolSchema preserves the package-private name used by existing transport
@@ -395,6 +402,62 @@ var toolRegistry = map[string]toolSchema{
 		},
 		Required: []string{"project_path", "request_id", "evidence_path"},
 	},
+	"run_create": {
+		Description: "Create the persisted upgrade run authority for a canonical Drupal project root",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path":    {Type: "string", Description: "Absolute path to the Drupal project"},
+			"target_major":    {Type: "integer", Description: "Target Drupal major version"},
+			"commit_strategy": {Type: "string", Description: "Commit strategy selected for this run"},
+			"scope":           {Type: "array", Description: "Selected upgrade scope"},
+		},
+		Required: []string{"project_path", "target_major"},
+	},
+	"run_status": {
+		Description: "Read the persisted run phase, allowed actions, evidence, and recovery state",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+			"run_id":       {Type: "string", Description: "Run ID (defaults to the project's active run)"},
+		},
+		Required: []string{"project_path"},
+	},
+	"run_record": {
+		Description: "Append sanitized checkpoint evidence and advance only through the persisted allowed action",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+			"run_id":       {Type: "string", Description: "Persisted run ID"},
+			"action":       {Type: "string", Description: "One action returned by run_status"},
+			"evidence":     {Type: "object", Description: "Structured evidence; raw payload is hash-only at rest"},
+		},
+		Required: []string{"project_path", "run_id", "action", "evidence"},
+	},
+	"run_confirm": {
+		Description: "Record explicit confirmation for a persisted run action",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+			"run_id":       {Type: "string", Description: "Persisted run ID"},
+			"action":       {Type: "string", Description: "Confirmation action"},
+		},
+		Required: []string{"project_path", "run_id", "action"},
+	},
+	"run_block": {
+		Description: "Block a run with a persisted reason and explicit recovery target",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+			"run_id":       {Type: "string", Description: "Persisted run ID"},
+			"reason":       {Type: "string", Description: "Safe explanation of the blocker"},
+			"target":       {Type: "string", Description: "Optional recovery target"},
+		},
+		Required: []string{"project_path", "run_id", "reason"},
+	},
+	"run_abandon": {
+		Description: "End a persisted run without deleting its backups or evidence",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+			"run_id":       {Type: "string", Description: "Persisted run ID"},
+			"reason":       {Type: "string", Description: "Safe reason for abandonment"},
+		},
+		Required: []string{"project_path", "run_id", "reason"},
+	},
 }
 
 // ToolSpecs returns a deterministic snapshot of the tool catalog. Returning
@@ -452,6 +515,18 @@ func init() {
 		spec.Required = append(spec.Required, "request_id")
 		toolRegistry[name] = spec
 	}
+	for _, name := range []string{
+		"prepare_upgrade_status", "autofix", "apply_patch", "create_patch",
+		"composer_require", "drush_exec", "patch_rollback", "core_upgrade_apply",
+		"cleanup", "custom_compat_fix", "contrib_allow_lenient", "contrib_compat_patch", "generate_report",
+		"test_backup_create", "test_backup_restore", "test_backup_delete",
+	} {
+		spec := toolRegistry[name]
+		spec.RequiresRun = true
+		spec.Properties["run_id"] = jsonSchemaProperty{Type: "string", Description: "Persisted upgrade run ID authorizing this mutation"}
+		spec.Required = append(spec.Required, "run_id")
+		toolRegistry[name] = spec
+	}
 	// Reconciliation changes only the authoritative operation ledger. Its
 	// request_id identifies the unknown operation being resolved, so it must
 	// not be recursively idempotency-wrapped as a new domain mutation.
@@ -459,7 +534,16 @@ func init() {
 	spec.Effect = EffectMutating
 	spec.Role = "reconciler"
 	spec.ReconcilesOperation = true
+	spec.RequiresRun = true
+	spec.Properties["run_id"] = jsonSchemaProperty{Type: "string", Description: "Persisted upgrade run ID authorizing this reconciliation"}
+	spec.Required = append(spec.Required, "run_id")
 	toolRegistry["operation_reconcile"] = spec
+	for _, name := range []string{"run_create", "run_status", "run_record", "run_confirm", "run_block", "run_abandon"} {
+		spec := toolRegistry[name]
+		spec.Effect = EffectWorkflow
+		spec.Role = "workflow_authority"
+		toolRegistry[name] = spec
+	}
 	for _, name := range []string{"core_upgrade_apply", "contrib_compat_patch", "contrib_allow_lenient", "custom_compat_fix"} {
 		spec := toolRegistry[name]
 		spec.SessionPolicy = SessionPolicyForceDryRun

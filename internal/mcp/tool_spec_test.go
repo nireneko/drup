@@ -57,3 +57,27 @@ func TestMutatingDescriptorsRequireRequestIDAndOnlyReadOnlyDescriptorsRetry(t *t
 		}
 	}
 }
+
+func TestToolSpecs_RunBoundMutationsAndWorkflowToolsHaveDistinctContracts(t *testing.T) {
+	workflow := map[string]bool{
+		"run_create": true, "run_status": true, "run_record": true,
+		"run_confirm": true, "run_block": true, "run_abandon": true,
+	}
+	for _, spec := range ToolSpecs() {
+		if workflow[spec.Name] {
+			if spec.Effect != EffectWorkflow || spec.RequiresRun {
+				t.Errorf("workflow tool %s = effect %q requires_run %v", spec.Name, spec.Effect, spec.RequiresRun)
+			}
+			continue
+		}
+		if spec.RequiresRun {
+			hasRunID := false
+			for _, required := range spec.Required {
+				hasRunID = hasRunID || required == "run_id"
+			}
+			if !hasRunID {
+				t.Errorf("run-bound tool %s does not require run_id", spec.Name)
+			}
+		}
+	}
+}

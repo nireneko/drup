@@ -60,6 +60,12 @@ func defaultTools() map[string]ToolHandler {
 		// Mutation audit ledger.
 		"pipeline_status":     handlePipelineStatus,
 		"operation_reconcile": handleOperationReconcile,
+		"run_create":          handleRunCreate,
+		"run_status":          handleRunStatus,
+		"run_record":          handleRunRecord,
+		"run_confirm":         handleRunConfirm,
+		"run_block":           handleRunBlock,
+		"run_abandon":         handleRunAbandon,
 	}
 
 	tools := make(map[string]ToolHandler, len(handlers))
@@ -74,6 +80,41 @@ func defaultTools() map[string]ToolHandler {
 		tools[spec.Name] = handler
 	}
 	return tools
+}
+
+func unavailableRunHandler(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath string `json:"project_path"`
+		RunID       string `json:"run_id"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]interface{}{
+		"success":      false,
+		"project_path": params.ProjectPath,
+		"run_id":       params.RunID,
+		"message":      "run state requires production wiring",
+	})
+}
+
+func handleRunCreate(args json.RawMessage) (json.RawMessage, error) {
+	return unavailableRunHandler(args)
+}
+func handleRunStatus(args json.RawMessage) (json.RawMessage, error) {
+	return unavailableRunHandler(args)
+}
+func handleRunRecord(args json.RawMessage) (json.RawMessage, error) {
+	return unavailableRunHandler(args)
+}
+func handleRunConfirm(args json.RawMessage) (json.RawMessage, error) {
+	return unavailableRunHandler(args)
+}
+func handleRunBlock(args json.RawMessage) (json.RawMessage, error) {
+	return unavailableRunHandler(args)
+}
+func handleRunAbandon(args json.RawMessage) (json.RawMessage, error) {
+	return unavailableRunHandler(args)
 }
 
 func handleOperationReconcile(args json.RawMessage) (json.RawMessage, error) {

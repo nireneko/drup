@@ -32,7 +32,7 @@ func TestHarnessRejectsInvalidDispatchBeforeAnyToolCall(t *testing.T) {
 func TestHarnessValidatesReportAndToolSchemaAgainstSingleCatalog(t *testing.T) {
 	fake := NewFakeMCP()
 	h := New(fake)
-	_, err := h.Execute(dispatchJSON("drup-contrib", "contrib", "contrib"), reportJSON("drup-contrib", "contrib", "pass"), ToolCall{Name: "apply_patch", Arguments: json.RawMessage(`{"project_path":"/project","patch_url":"https://example.test/fix.patch","request_id":"r1"}`)})
+	_, err := h.Execute(dispatchJSON("drup-contrib", "contrib", "contrib"), reportJSON("drup-contrib", "contrib", "pass"), ToolCall{Name: "apply_patch", Arguments: json.RawMessage(`{"project_path":"/project","patch_url":"https://example.test/fix.patch","run_id":"run-1","request_id":"r1"}`)})
 	if err == nil || !strings.Contains(err.Error(), "composer_package") || !strings.Contains(err.Error(), "apply_patch") {
 		t.Fatalf("Execute missing tool args error = %v", err)
 	}
@@ -53,7 +53,7 @@ func TestTranscriptScenariosPreserveBoundedRetriesAndExplicitRecovery(t *testing
 	for _, scenario := range []Scenario{
 		{Name: "happy", Dispatch: dispatchJSON("drup-validator", "baseline", "baseline"), Report: reportJSON("drup-validator", "baseline", "pass"), Calls: []ToolCall{{Name: "scan", Arguments: json.RawMessage(`{"project_path":"/project"}`)}}},
 		{Name: "retry exhausted", Dispatch: dispatchJSON("drup-validator", "baseline", "baseline"), Report: reportJSON("drup-validator", "baseline", "pass"), Calls: []ToolCall{{Name: "scan", Arguments: json.RawMessage(`{"project_path":"/project"}`), Failures: 3}}, WantRetries: 3},
-		{Name: "unknown requires recovery", Dispatch: dispatchJSON("drup-contrib", "contrib", "contrib"), Report: reportJSON("drup-contrib", "contrib", "pass"), Calls: []ToolCall{{Name: "apply_patch", Arguments: json.RawMessage(`{"project_path":"/project","patch_url":"https://example.test/fix.patch","composer_package":"drupal/example","description":"fix","request_id":"r3"}`), Unknown: true}}, WantBlocked: true},
+		{Name: "unknown requires recovery", Dispatch: dispatchJSON("drup-contrib", "contrib", "contrib"), Report: reportJSON("drup-contrib", "contrib", "pass"), Calls: []ToolCall{{Name: "apply_patch", Arguments: json.RawMessage(`{"project_path":"/project","patch_url":"https://example.test/fix.patch","composer_package":"drupal/example","description":"fix","run_id":"run-1","request_id":"r3"}`), Unknown: true}}, WantBlocked: true},
 	} {
 		t.Run(scenario.Name, func(t *testing.T) {
 			trace, err := RunScenario(scenario)

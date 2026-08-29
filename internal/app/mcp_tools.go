@@ -24,6 +24,7 @@ import (
 	"github.com/nireneko/drup/internal/patch"
 	"github.com/nireneko/drup/internal/patchreconcile"
 	"github.com/nireneko/drup/internal/report"
+	"github.com/nireneko/drup/internal/runstate"
 	"github.com/nireneko/drup/internal/scan"
 	"github.com/nireneko/drup/internal/semver"
 	"github.com/nireneko/drup/internal/session"
@@ -140,6 +141,12 @@ func WireMCPTools(s *mcp.Server) {
 		"session_open":           realHandleSessionOpen,
 		"pipeline_status":        realHandlePipelineStatus,
 		"operation_reconcile":    realHandleOperationReconcile,
+		"run_create":             realHandleRunCreate,
+		"run_status":             realHandleRunStatus,
+		"run_record":             realHandleRunRecord,
+		"run_confirm":            realHandleRunConfirm,
+		"run_block":              realHandleRunBlock,
+		"run_abandon":            realHandleRunAbandon,
 	}
 	for _, spec := range mcp.ToolSpecs() {
 		handler, ok := handlers[spec.Name]
@@ -159,18 +166,22 @@ func WireMCPTools(s *mcp.Server) {
 func realHandleOperationReconcile(args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectPath  string `json:"project_path"`
+		RunID        string `json:"run_id"`
 		RequestID    string `json:"request_id"`
 		EvidencePath string `json:"evidence_path"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, err
 	}
-	if params.ProjectPath == "" || params.RequestID == "" || params.EvidencePath == "" {
-		return nil, fmt.Errorf("project_path, request_id, and evidence_path are required")
+	if params.ProjectPath == "" || params.RunID == "" || params.RequestID == "" || params.EvidencePath == "" {
+		return nil, fmt.Errorf("project_path, run_id, request_id, and evidence_path are required")
 	}
-	root, err := filepath.Abs(params.ProjectPath)
+	root, err := session.CanonicalRoot(params.ProjectPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolve project path: %w", err)
+	}
+	if _, err := runstate.NewStore(root).ValidateMutation(params.RunID, root, "operation_reconcile"); err != nil {
+		return nil, err
 	}
 	evidence := filepath.Clean(params.EvidencePath)
 	if filepath.IsAbs(evidence) || evidence == ".." || strings.HasPrefix(evidence, ".."+string(os.PathSeparator)) {

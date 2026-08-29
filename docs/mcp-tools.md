@@ -1,8 +1,8 @@
 # drup MCP Tools — Agent Reference
 
-This document is an **agent-facing reference** for the 33 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
+This document is an **agent-facing reference** for the 39 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
 
-**Tooling totals at runtime:** the `ToolSpec` catalog derives 29 stub entries (including `session_open`, `pipeline_status`, and `operation_reconcile`) plus 4 reverse-asymmetric backup tools = **33 total**. See [§1.1](#11-response-envelope-uniform-contract) for the uniform envelope that wraps every response.
+**Tooling totals at runtime:** the `ToolSpec` catalog derives 35 stub entries (including `session_open`, `pipeline_status`, `operation_reconcile`, and the six `run_*` workflow tools) plus 4 reverse-asymmetric backup tools = **39 total**. See [§1.1](#11-response-envelope-uniform-contract) for the uniform envelope that wraps every response.
 
 For tool **schemas** (JSON Schema, required fields, types) call `tools/list` — do not hardcode them here. For tool **internals** (Go package, test coverage) read `internal/app/mcp_tools.go`.
 
@@ -16,7 +16,8 @@ For tool **schemas** (JSON Schema, required fields, types) call `tools/list` —
 4. **Errors are returned two ways.** (a) As a uniform envelope with `"status": "fail"` or `"status": "unknown"` and `"summary": "<error message>"` in the **result** channel — the tool failed or its mutating outcome cannot be proven. `unknown` is a hard stop: do not retry the mutation; reconcile observable evidence first. (b) As a JSON-RPC error response (`"code": -32601`, `-32602`, `-32603`) — this is a **protocol-level** failure (malformed request, unknown tool name, marshal failure), NOT a tool failure. Always inspect `status` first; treat JSON-RPC errors as dispatch failures and stop.
 5. **Backup before mutations.** Any tool that mutates `composer.json`, the working tree, or drupal.org state (apply_patch, core_upgrade_apply, patch_rollback, composer_require without dry-run, create_patch) requires a `test_backup_create` recorded in run state. The orchestrator enforces this; sub-agents must read it before dispatching mutators.
 6. **Give every mutator a stable `request_id`.** The server persists that identity before the effect. Repeating a completed ID returns its stored response without executing again; reusing it for a different operation is refused.
-7. **`tools/list` advertises only what is in `s.tools`.** `internal/mcp.ToolSpec` is the canonical catalog for each name, schema, effect class, timeout, role, preconditions, and stub visibility. Stubs and production wiring are derived from it; a missing handler fails fast during wiring.
+7. **Use a persisted run for every project mutation.** Call `run_create`, then advance only via the action returned by `run_status`. A mutator needs that `run_id`, and Go refuses a missing, foreign, blocked, or out-of-phase run before its handler executes.
+8. **`tools/list` advertises only what is in `s.tools`.** `internal/mcp.ToolSpec` is the canonical catalog for each name, schema, effect class, timeout, role, preconditions, and stub visibility. Stubs and production wiring are derived from it; a missing handler fails fast during wiring.
 
 ### 1.1 Response Envelope (uniform contract)
 
@@ -377,10 +378,19 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 ### 5.26 `operation_reconcile`
 
 - **Purpose**: Resolve a mutation with durable `unknown` outcome using an observable file already present below `project_path`.
-- **Inputs**: `project_path`, the original mutation's `request_id`, and a project-relative `evidence_path` to an existing regular file. A client-supplied success boolean is never accepted as evidence.
+- **Inputs**: `project_path`, an active matching `run_id`, the original mutation's `request_id`, and a project-relative `evidence_path` to an existing regular file. A client-supplied success boolean is never accepted as evidence.
 - **Returns**: `{ success, request_id, operation_state: "completed", evidence }` when the unknown operation is reconciled.
 - **Side-effects**: records the observed evidence and confirmed response in `.drup/operations.v1.json`; it does not rerun the original mutation.
 - **Red flag**: guessing that a timeout failed. A timeout or cancellation can occur after the effect; inspect a real artifact first, then reconcile it. If evidence is absent, preserve `unknown` and stop.
+
+### 5.27 Run-state workflow tools
+
+- **`run_create`** creates one active run for the canonical root at `git_safety`; it rejects a second active or blocked run for that root.
+- **`run_status`** returns the persisted phase, `allowed_actions`, safe evidence hashes/summaries, and pending-human recovery state. It is the only source of truth after restart.
+- **`run_record`** accepts one currently allowed checkpoint action plus `{kind, summary, payload?}` evidence. The raw payload is never persisted; only its hash and a sanitized summary are retained.
+- **`run_confirm`** records the explicit `core_upgrade` or `restore` confirmation required by the corresponding guarded mutation.
+- **`run_block`** persists a safe reason and recovery target, leaving only `resolve_block` as the next action; **`run_abandon`** finishes the run without deleting evidence or backups.
+- **Red flag**: advancing from agent prose or stdout. If `run_status` does not advertise an action, the tool must not be called.
 
 ---
 

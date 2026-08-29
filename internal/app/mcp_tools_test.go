@@ -19,6 +19,7 @@ import (
 	"github.com/nireneko/drup/internal/envdetect"
 	drupexec "github.com/nireneko/drup/internal/exec"
 	"github.com/nireneko/drup/internal/mcp"
+	"github.com/nireneko/drup/internal/runstate"
 	"github.com/nireneko/drup/internal/session"
 )
 
@@ -35,7 +36,7 @@ func TestWireMCPTools_AllToolsRegistered(t *testing.T) {
 	server := mcp.NewServer(&buf, "test")
 	WireMCPTools(server)
 
-	expected := 33
+	expected := 39
 	actual := server.ToolCount()
 	if actual != expected {
 		t.Errorf("expected %d tools, got %d", expected, actual)
@@ -1938,7 +1939,8 @@ func TestWireMCPTools_PrepareUpgradeStatusRequiresBackupAndAuditsRefusal(t *test
 	if _, err := session.Open(dir); err != nil {
 		t.Fatalf("session.Open error: %v", err)
 	}
-	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"request_id":"prepare-backup-refusal"}`)
+	runID := createRunAtPhaseForTool(t, dir, runstate.PhaseTooling)
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"run_id":` + jsonStr(runID) + `,"request_id":"prepare-backup-refusal"}`)
 	_, err := server.CallTool("prepare_upgrade_status", args)
 	if err == nil || !strings.Contains(err.Error(), "test_backup_create") {
 		t.Fatalf("prepare_upgrade_status error = %v, want backup guidance", err)
@@ -1968,8 +1970,9 @@ func TestWireMCPTools_PrepareUpgradeStatusRefusesAtMutationCap(t *testing.T) {
 	if _, err := session.Open(dir); err != nil {
 		t.Fatalf("session.Open error: %v", err)
 	}
+	runID := createRunAtPhaseForTool(t, dir, runstate.PhaseTooling)
 
-	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"request_id":"prepare-cap-refusal"}`)
+	args := json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"run_id":` + jsonStr(runID) + `,"request_id":"prepare-cap-refusal"}`)
 	audit.Append(dir, "apply_patch", args, audit.ResultSuccess, "")
 	_, err := server.CallTool("prepare_upgrade_status", args)
 	if err == nil || !strings.Contains(err.Error(), "mutation cap reached (1/1)") {
@@ -2024,21 +2027,29 @@ func TestWireMCPTools_CoreUpgradeApply_ForcesDryRunWithoutSession(t *testing.T) 
 	server := mcp.NewServer(&buf, "test")
 	WireMCPTools(server)
 
-	// No dry_run field in the request at all — without a bound session the
-	// guard must force it to true regardless.
+	// No persisted run exists, so the run guard must refuse before the legacy
+	// no-session force-dry-run fallback can enter the handler.
 	args := json.RawMessage(fmt.Sprintf(`{"project_path":%s,"target_version":"11.0.9","request_id":"core-upgrade-dry-run"}`, jsonStr(dir)))
 	result, err := server.CallTool("core_upgrade_apply", args)
+	if err == nil || !strings.Contains(err.Error(), "run_id") {
+		t.Fatalf("core_upgrade_apply result = %s, error = %v; want run_id refusal", result, err)
+	}
+}
+
+func createRunAtPhaseForTool(t *testing.T, root string, phase runstate.Phase) string {
+	t.Helper()
+	store := runstate.NewStore(root)
+	run, err := store.Create(runstate.CreateInput{ID: "run-tool-" + string(phase), TargetMajor: 11})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
 	}
-	var resp map[string]interface{}
-	json.Unmarshal(result, &resp)
-	if resp["success"] != true {
-		t.Errorf("success = %v, want true", resp["success"])
+	for run.Phase != phase {
+		run, err = store.Record(run.ID, runstate.RecordInput{Action: run.AllowedActions[0], Kind: "test", Summary: "checkpoint"})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	if resp["rollback_checkpoint"] != "" {
-		t.Errorf("rollback_checkpoint = %v, want empty — the guard should have forced dry_run without a session", resp["rollback_checkpoint"])
-	}
+	return run.ID
 }
 
 func TestWireMCPTools_MatchingSessionAllowsGuardedToolThrough(t *testing.T) {

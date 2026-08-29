@@ -13,6 +13,7 @@ import (
 	"github.com/nireneko/drup/internal/mcp"
 	"github.com/nireneko/drup/internal/operation"
 	"github.com/nireneko/drup/internal/projectconfig"
+	"github.com/nireneko/drup/internal/runstate"
 	"github.com/nireneko/drup/internal/session"
 )
 
@@ -124,6 +125,19 @@ func guardedSpecCall(spec mcp.ToolSpec, args json.RawMessage, handler mcp.ToolHa
 	requestID, err := requiredRequestID(args)
 	if err != nil {
 		return nil, err
+	}
+	if spec.RequiresRun {
+		runID, err := requiredRunID(args)
+		if err != nil {
+			return nil, err
+		}
+		root, err := session.ResolveSymlinks(projectPath)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := runstate.NewStore(root).ValidateMutation(runID, root, spec.Name); err != nil {
+			return nil, err
+		}
 	}
 	if outcome.ForceDryRun {
 		return guardedSpecCallLegacy(spec, args, handler)
@@ -245,6 +259,19 @@ func requiredRequestID(args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("request_id is required for mutating tool calls")
 	}
 	return input.RequestID, nil
+}
+
+func requiredRunID(args json.RawMessage) (string, error) {
+	var input struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return "", err
+	}
+	if input.RunID == "" {
+		return "", fmt.Errorf("run_id is required for mutating tool calls")
+	}
+	return input.RunID, nil
 }
 
 func isAmbiguousMutationError(err error) bool {
