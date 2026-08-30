@@ -25,6 +25,19 @@ var (
 	ErrInvalidTransition  = errors.New("invalid run transition")
 	ErrRootMismatch       = errors.New("run does not belong to this project root")
 	ErrMutationNotAllowed = errors.New("mutation is not allowed by the active run")
+	ErrCheckpointDenied   = errors.New("checkpoint commit is not authorized")
+)
+
+// CommitStrategy controls when a run may publish its already-validated
+// working-tree changes. The empty value is intentionally normalized to none:
+// an older run must never gain publication authority merely by being read by a
+// newer binary.
+type CommitStrategy string
+
+const (
+	CommitStrategyNone   CommitStrategy = "none"
+	CommitStrategySingle CommitStrategy = "single"
+	CommitStrategyPerFix CommitStrategy = "per-fix"
 )
 
 // Phase names the authoritative workflow checkpoint.
@@ -81,12 +94,16 @@ const (
 // Evidence is append-only and stores only a safe summary plus a content hash;
 // raw stdout and secret-bearing payloads are deliberately not persisted.
 type Evidence struct {
-	Phase       Phase     `json:"phase"`
-	Action      Action    `json:"action"`
-	Kind        string    `json:"kind"`
-	Summary     string    `json:"summary"`
-	PayloadHash string    `json:"payload_hash,omitempty"`
-	RecordedAt  time.Time `json:"recorded_at"`
+	Phase          Phase     `json:"phase"`
+	Action         Action    `json:"action"`
+	Kind           string    `json:"kind"`
+	Summary        string    `json:"summary"`
+	PayloadHash    string    `json:"payload_hash,omitempty"`
+	ValidationHash string    `json:"validation_hash,omitempty"`
+	CandidateHash  string    `json:"candidate_hash,omitempty"`
+	Paths          []string  `json:"paths,omitempty"`
+	Target         string    `json:"target,omitempty"`
+	RecordedAt     time.Time `json:"recorded_at"`
 }
 
 type PendingHuman struct {
@@ -102,7 +119,7 @@ type Run struct {
 	ID             string         `json:"id"`
 	Root           string         `json:"project_path"`
 	TargetMajor    int            `json:"target_major"`
-	CommitStrategy string         `json:"commit_strategy,omitempty"`
+	CommitStrategy CommitStrategy `json:"commit_strategy"`
 	Scope          []string       `json:"scope,omitempty"`
 	Status         Status         `json:"status"`
 	Phase          Phase          `json:"phase"`
@@ -117,7 +134,7 @@ type Run struct {
 type CreateInput struct {
 	ID             string
 	TargetMajor    int
-	CommitStrategy string
+	CommitStrategy CommitStrategy
 	Scope          []string
 }
 
@@ -126,6 +143,24 @@ type RecordInput struct {
 	Kind    string
 	Summary string
 	Payload json.RawMessage
+	// ValidationHash, CandidateHash and Paths bind independently observed
+	// validation to the exact candidate a later checkpoint may publish.
+	ValidationHash string
+	CandidateHash  string
+	Paths          []string
+	Target         string
+}
+
+// CheckpointInput is the immutable binding checked before a commit is
+// exposed. The application layer computes CandidateHash from the current git
+// diff; runstate only compares it with persisted validator evidence.
+type CheckpointInput struct {
+	Strategy       CommitStrategy
+	Scope          []string
+	Paths          []string
+	ValidationHash string
+	CandidateHash  string
+	Target         string
 }
 
 // Store is project-root scoped. The caller must pass the canonical root from
@@ -160,7 +195,7 @@ func (s *Store) Create(input CreateInput) (Run, error) {
 		return Run{}, fmt.Errorf("%w: %s", ErrActiveRunExists, active)
 	}
 	now := time.Now().UTC()
-	run := Run{Version: schemaVersion, ID: input.ID, Root: s.root, TargetMajor: input.TargetMajor, CommitStrategy: input.CommitStrategy, Scope: append([]string(nil), input.Scope...), Status: StatusActive, Phase: PhaseGitSafety, Evidence: []Evidence{}, CreatedAt: now, UpdatedAt: now}
+	run := Run{Version: schemaVersion, ID: input.ID, Root: s.root, TargetMajor: input.TargetMajor, CommitStrategy: normalizedCommitStrategy(input.CommitStrategy), Scope: append([]string(nil), input.Scope...), Status: StatusActive, Phase: PhaseGitSafety, Evidence: []Evidence{}, CreatedAt: now, UpdatedAt: now}
 	run.AllowedActions = actionsFor(run)
 	if err := s.writeLocked(run); err != nil {
 		return Run{}, err
@@ -201,7 +236,7 @@ func (s *Store) Record(id string, input RecordInput) (Run, error) {
 		if strings.TrimSpace(input.Kind) == "" || strings.TrimSpace(input.Summary) == "" {
 			return Run{}, fmt.Errorf("evidence kind and summary are required")
 		}
-		run.Evidence = append(run.Evidence, Evidence{Phase: run.Phase, Action: input.Action, Kind: input.Kind, Summary: sanitizeSummary(input.Summary), PayloadHash: hashPayload(input.Payload), RecordedAt: time.Now().UTC()})
+		run.Evidence = append(run.Evidence, evidenceFromInput(run.Phase, input.Action, input))
 		run.Status = StatusActive
 		run.UpdatedAt = time.Now().UTC()
 		run.AllowedActions = actionsFor(run)
@@ -220,7 +255,7 @@ func (s *Store) Record(id string, input RecordInput) (Run, error) {
 	if strings.TrimSpace(input.Kind) == "" || strings.TrimSpace(input.Summary) == "" {
 		return Run{}, fmt.Errorf("evidence kind and summary are required")
 	}
-	run.Evidence = append(run.Evidence, Evidence{Phase: run.Phase, Action: input.Action, Kind: input.Kind, Summary: sanitizeSummary(input.Summary), PayloadHash: hashPayload(input.Payload), RecordedAt: time.Now().UTC()})
+	run.Evidence = append(run.Evidence, evidenceFromInput(run.Phase, input.Action, input))
 	run.Phase = next
 	if next == PhaseCompleted {
 		run.Status = StatusCompleted
@@ -231,6 +266,80 @@ func (s *Store) Record(id string, input RecordInput) (Run, error) {
 		return Run{}, err
 	}
 	return run, nil
+}
+
+// AuthorizeCheckpoint proves that a proposed commit still represents the
+// independently validated candidate. It never performs a git effect.
+func (s *Store) AuthorizeCheckpoint(id string, input CheckpointInput) (Run, error) {
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	run, err := s.getLocked(id)
+	if err != nil {
+		return Run{}, err
+	}
+	if err := authorizeCheckpoint(run, input); err != nil {
+		return Run{}, err
+	}
+	return run, nil
+}
+
+// RecordCheckpoint persists the successful publication receipt. Callers must
+// invoke it immediately after the scoped git commit and treat a persistence
+// failure as ambiguous rather than retrying the commit blindly.
+func (s *Store) RecordCheckpoint(id string, input CheckpointInput, commitHash string) (Run, error) {
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	run, err := s.getLocked(id)
+	if err != nil {
+		return Run{}, err
+	}
+	if err := authorizeCheckpoint(run, input); err != nil {
+		return Run{}, err
+	}
+	run.Evidence = append(run.Evidence, Evidence{
+		Phase: run.Phase, Action: "checkpoint_commit", Kind: "checkpoint_commit",
+		Summary: "validated checkpoint commit", PayloadHash: hashPayload(json.RawMessage(fmt.Sprintf(`{"commit_hash":%q}`, commitHash))),
+		ValidationHash: input.ValidationHash, CandidateHash: input.CandidateHash,
+		Paths: append([]string(nil), input.Paths...), Target: input.Target, RecordedAt: time.Now().UTC(),
+	})
+	run.UpdatedAt = time.Now().UTC()
+	if err := s.writeLocked(run); err != nil {
+		return Run{}, err
+	}
+	return run, nil
+}
+
+func authorizeCheckpoint(run Run, input CheckpointInput) error {
+	if run.Status != StatusActive {
+		return fmt.Errorf("%w: run is %s", ErrCheckpointDenied, run.Status)
+	}
+	strategy := normalizedCommitStrategy(input.Strategy)
+	if strategy != run.CommitStrategy {
+		return fmt.Errorf("%w: strategy %q does not match run strategy %q", ErrCheckpointDenied, strategy, run.CommitStrategy)
+	}
+	if strategy == CommitStrategyNone {
+		return nil
+	}
+	if strategy == CommitStrategySingle && run.Phase != PhaseReport {
+		return fmt.Errorf("%w: single strategy may commit only at final report", ErrCheckpointDenied)
+	}
+	if strings.TrimSpace(input.ValidationHash) == "" || strings.TrimSpace(input.CandidateHash) == "" || len(input.Paths) == 0 {
+		return fmt.Errorf("%w: validation_hash, candidate_hash and paths are required", ErrCheckpointDenied)
+	}
+	if !sameStrings(input.Scope, run.Scope) {
+		return fmt.Errorf("%w: checkpoint scope differs from run scope", ErrCheckpointDenied)
+	}
+	for i := len(run.Evidence) - 1; i >= 0; i-- {
+		evidence := run.Evidence[i]
+		if evidence.Kind != "validation" || evidence.ValidationHash != input.ValidationHash {
+			continue
+		}
+		if evidence.CandidateHash != input.CandidateHash || !sameStrings(evidence.Paths, input.Paths) || evidence.Target != input.Target {
+			return fmt.Errorf("%w: validation evidence is stale or belongs to another target/path set", ErrCheckpointDenied)
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: no matching independent validation evidence", ErrCheckpointDenied)
 }
 
 func (s *Store) Confirm(id string, action Action) (Run, error) {
@@ -422,7 +531,39 @@ func validateCreate(input CreateInput) error {
 	if input.TargetMajor < 1 {
 		return fmt.Errorf("target_major must be positive")
 	}
+	strategy := normalizedCommitStrategy(input.CommitStrategy)
+	if strategy != CommitStrategyNone && strategy != CommitStrategySingle && strategy != CommitStrategyPerFix {
+		return fmt.Errorf("commit_strategy must be none, single, or per-fix")
+	}
 	return nil
+}
+
+func normalizedCommitStrategy(strategy CommitStrategy) CommitStrategy {
+	if strategy == "" {
+		return CommitStrategyNone
+	}
+	return strategy
+}
+
+func evidenceFromInput(phase Phase, action Action, input RecordInput) Evidence {
+	return Evidence{
+		Phase: phase, Action: action, Kind: input.Kind, Summary: sanitizeSummary(input.Summary),
+		PayloadHash: hashPayload(input.Payload), ValidationHash: input.ValidationHash,
+		CandidateHash: input.CandidateHash, Paths: append([]string(nil), input.Paths...),
+		Target: input.Target, RecordedAt: time.Now().UTC(),
+	}
+}
+
+func sameStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func actionsFor(run Run) []Action {

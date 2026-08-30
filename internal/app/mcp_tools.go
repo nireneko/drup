@@ -141,6 +141,7 @@ func WireMCPTools(s *mcp.Server) {
 		"session_open":           realHandleSessionOpen,
 		"pipeline_status":        realHandlePipelineStatus,
 		"operation_reconcile":    realHandleOperationReconcile,
+		"checkpoint_commit":      realHandleCheckpointCommit,
 		"run_create":             realHandleRunCreate,
 		"run_status":             realHandleRunStatus,
 		"run_record":             realHandleRunRecord,

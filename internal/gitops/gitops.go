@@ -1,11 +1,139 @@
 package gitops
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	drupexec "github.com/nireneko/drup/internal/exec"
 )
+
+// Candidate is a canonical snapshot of the currently publishable diff. Its
+// hash includes both the ordered path list and staged/unstaged textual diffs,
+// so validation evidence cannot be reused after the candidate changes.
+type Candidate struct {
+	Paths []string
+	Hash  string
+}
+
+// CandidateForPaths validates that the complete current tracked diff is
+// exactly paths, then returns the stable candidate identity. It deliberately
+// rejects extra staged or unstaged files instead of quietly committing a
+// subset that validation did not review.
+func CandidateForPaths(path string, paths []string) (Candidate, error) {
+	if len(paths) == 0 {
+		return Candidate{}, fmt.Errorf("candidate paths are required")
+	}
+	declared := append([]string(nil), paths...)
+	sort.Strings(declared)
+	for i, candidate := range declared {
+		if candidate == "" || strings.HasPrefix(candidate, "../") || candidate == ".." || strings.HasPrefix(candidate, "/") {
+			return Candidate{}, fmt.Errorf("unsafe candidate path %q", candidate)
+		}
+		if i > 0 && declared[i-1] == candidate {
+			return Candidate{}, fmt.Errorf("duplicate candidate path %q", candidate)
+		}
+	}
+
+	actual, untracked, err := changedPaths(path)
+	if err != nil {
+		return Candidate{}, err
+	}
+	if !samePathSet(declared, actual) {
+		return Candidate{}, fmt.Errorf("candidate paths do not match current diff: declared %s, actual %s", strings.Join(declared, ", "), strings.Join(actual, ", "))
+	}
+
+	unstagedArgs := append([]string{"diff", "--no-ext-diff", "--no-color", "--"}, declared...)
+	unstaged, err := gitOutput(path, unstagedArgs...)
+	if err != nil {
+		return Candidate{}, err
+	}
+	stagedArgs := append([]string{"diff", "--cached", "--no-ext-diff", "--no-color", "--"}, declared...)
+	staged, err := gitOutput(path, stagedArgs...)
+	if err != nil {
+		return Candidate{}, err
+	}
+	var untrackedData strings.Builder
+	for _, name := range declared {
+		if !untracked[name] {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(path, name))
+		if readErr != nil {
+			return Candidate{}, fmt.Errorf("read untracked candidate %s: %w", name, readErr)
+		}
+		untrackedData.WriteString(name)
+		untrackedData.WriteByte('\n')
+		untrackedData.Write(data)
+	}
+	sum := sha256.Sum256([]byte(strings.Join(declared, "\n") + "\n--unstaged--\n" + unstaged + "\n--staged--\n" + staged + "\n--untracked--\n" + untrackedData.String()))
+	return Candidate{Paths: declared, Hash: hex.EncodeToString(sum[:])}, nil
+}
+
+func changedPaths(path string) ([]string, map[string]bool, error) {
+	status, err := gitOutput(path, "status", "--porcelain=v1", "--untracked-files=all", "-z")
+	if err != nil {
+		return nil, nil, err
+	}
+	seen := map[string]struct{}{}
+	untracked := map[string]bool{}
+	for _, entry := range strings.Split(status, "\x00") {
+		if entry == "" {
+			continue
+		}
+		if len(entry) < 4 || entry[2] != ' ' {
+			return nil, nil, fmt.Errorf("unexpected git status entry %q", entry)
+		}
+		changed := entry[3:]
+		// Durable run authority is control data, not an upgrade candidate. It
+		// must never force an unrelated user diff into a checkpoint nor be
+		// staged by the publication adapter itself.
+		if changed == ".drup" || strings.HasPrefix(changed, ".drup/") {
+			continue
+		}
+		// Renames include a second NUL-delimited source path. They cannot be
+		// represented as a single independently validated destination path.
+		if entry[0] == 'R' || entry[1] == 'R' || entry[0] == 'C' || entry[1] == 'C' {
+			return nil, nil, fmt.Errorf("rename/copy candidates are not supported")
+		}
+		seen[changed] = struct{}{}
+		untracked[changed] = entry[:2] == "??"
+	}
+	paths := make([]string, 0, len(seen))
+	for changed := range seen {
+		paths = append(paths, changed)
+	}
+	sort.Strings(paths)
+	return paths, untracked, nil
+}
+
+func gitOutput(path string, args ...string) (string, error) {
+	args = append([]string{"-C", path}, args...)
+	stdout, stderr, exitCode, err := runCommand("git", args...)
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w", strings.Join(args[2:], " "), err)
+	}
+	if exitCode != 0 {
+		return "", fmt.Errorf("git %s: exit %d: %s", strings.Join(args[2:], " "), exitCode, stderr)
+	}
+	return stdout, nil
+}
+
+func samePathSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
 
 // runCommand is the function used to execute git commands.
 // Package-level var for testability — tests can override to avoid real git calls.

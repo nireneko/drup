@@ -60,6 +60,7 @@ func defaultTools() map[string]ToolHandler {
 		// Mutation audit ledger.
 		"pipeline_status":     handlePipelineStatus,
 		"operation_reconcile": handleOperationReconcile,
+		"checkpoint_commit":   handleCheckpointCommit,
 		"run_create":          handleRunCreate,
 		"run_status":          handleRunStatus,
 		"run_record":          handleRunRecord,
@@ -99,6 +100,9 @@ func unavailableRunHandler(args json.RawMessage) (json.RawMessage, error) {
 }
 
 func handleRunCreate(args json.RawMessage) (json.RawMessage, error) {
+	return unavailableRunHandler(args)
+}
+func handleCheckpointCommit(args json.RawMessage) (json.RawMessage, error) {
 	return unavailableRunHandler(args)
 }
 func handleRunStatus(args json.RawMessage) (json.RawMessage, error) {

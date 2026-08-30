@@ -36,7 +36,7 @@ func TestWireMCPTools_AllToolsRegistered(t *testing.T) {
 	server := mcp.NewServer(&buf, "test")
 	WireMCPTools(server)
 
-	expected := 39
+	expected := 40
 	actual := server.ToolCount()
 	if actual != expected {
 		t.Errorf("expected %d tools, got %d", expected, actual)

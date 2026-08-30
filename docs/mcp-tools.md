@@ -83,16 +83,16 @@ phase gates.
 4. test_backup_create (database + selected filesystem snapshot)
 5. install Drush if missing, then install/enable upgrade_status and Rector tooling
 6. upgrade_scan (baseline findings and inventory)
-7. custom_compat_fix dry_run → apply → validate → config export → commit
-8. autofix existing custom modules/themes only → validate → manual fixes → commit
-9. contrib patch-level phase: backup → update → drush updb → validate/smoke → config export → commit
+7. custom_compat_fix dry_run → apply → validate → config export → checkpoint_commit
+8. autofix existing custom modules/themes only → validate → manual fixes → checkpoint_commit
+9. contrib patch-level phase: backup → update → drush updb → validate/smoke → config export → checkpoint_commit
 10. contrib minor-level phase: same checkpoint sequence
 11. contrib major-level phase: one package at a time with the same checkpoint sequence
 12. core_upgrade_check for the immediate next major
-13. core_upgrade_apply dry_run → user gate → apply → drush updb → validate/smoke → config export → commit
+13. core_upgrade_apply dry_run → user gate → apply → drush updb → validate/smoke → config export → checkpoint_commit
 14. repeat steps 9–13 for every remaining major; never skip a major
 15. final upgrade_status validation, tests, cache rebuild, and status checks
-16. remove temporary tooling when explicitly configured → validate → config export → commit
+16. remove temporary tooling when explicitly configured → validate → config export → checkpoint_commit
 17. generate_report with exact versions, patches, commits, backups, and pending work
 18. retain the backup; restore only after explicit user confirmation; never delete automatically
 ```
@@ -102,7 +102,7 @@ phase gates.
 ```
 patch_status     →  if NOT applied:
   issue_patches
-  apply_patch     →  returns commit_hash
+  apply_patch     →  returns changed_files; validate the candidate before checkpoint_commit
 patch_reconcile  →  is_still_needed?
 if false: patch_rollback → composer update
 if true:  apply_patch with newer URL
@@ -219,17 +219,17 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 
 ### 5.9 `apply_patch`
 
-- **Purpose**: Download a `.patch` from drupal.org, validate URL allowlist, `git apply`, commit, register under `composer.json → extra.patches`.
-- **Returns**: `{ applied: <bool>, commit_hash: <str>, error: <str> }`
+- **Purpose**: Download a `.patch` from drupal.org, validate URL allowlist, `git apply`, and register it under `composer.json → extra.patches`.
+- **Returns**: `{ applied: <bool>, changed_files: [<path>…], error: <str> }`; it never commits.
 - **Prerequisites**: clean working tree; absolute `project_path`; `patch_url` from `*.drupal.org`.
-- **Side-effects**: creates a git commit and a JSON edit on `composer.json`. Atomic — if any step fails, leaves no commit.
+- **Side-effects**: mutates the working tree and `composer.json`; it never stages or commits. If registration fails, it reverts the applied patch.
 - **Error signals**: each failure mode (`URL not allowed`, `download fails`, `git apply conflict`, `composer.json malformed`) has a distinct message.
 - **Red flag**: retrying on conflict without first running `patch_rollback`.
 
 ### 5.10 `patch_status`
 
-- **Purpose**: Was a patch (by URL or by composer_package) already applied? Reads `composer.json` and `git log`.
-- **Returns**: `{ is_applied, commit_hash, registered_in_composer, patch_info: {url, package, description}|null }`
+- **Purpose**: Was a patch (by URL or by composer_package) already applied? Reads `composer.json`; legacy records may also expose a commit hash.
+- **Returns**: `{ is_applied, commit_hash, registered_in_composer, patch_info: {url, package, description}|null }`; new commit-free patch mutations may have an empty `commit_hash` until their run-bound checkpoint is recorded.
 - **Side-effects**: none.
 - **NOTE**: `is_applied=false` may simply mean rejected/closed — see `patch_reconcile` for upstream status.
 
@@ -313,10 +313,10 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 
 ### 5.19 `core_upgrade_apply`
 
-- **Purpose**: Apply one validated immediate step to `target_major`; `target_version` remains a compatibility alias. With `dry_run=true`, returns the diff preview only. With `dry_run=false`, refuses on dirty tree, commits a git checkpoint, then mutates `composer.json`.
+- **Purpose**: Apply one validated immediate step to `target_major`; `target_version` remains a compatibility alias. With `dry_run=true`, returns the diff preview only. With `dry_run=false`, refuses on dirty tree, records the existing rollback revision, then mutates `composer.json`.
 - **Returns**: `{ success, report: <diff>, rollback_checkpoint: <sha>, stderr }`
 - **Prerequisites**: clean working tree, git repo, absolute `project_path`, and exact metadata for the requested major jump. Missing metadata fails closed; a `10-to-11` catalog is never reused for `11-to-12`.
-- **Side-effects**: on real run, creates two commits (checkpoint + bump).
+- **Side-effects**: mutates the working tree only. Use `checkpoint_commit` after independent validation to publish the resulting diff.
 - **Rollback**: `git reset --hard <rollback_checkpoint>` reverts everything cleanly.
 - **Error signals**: distinct messages for dirty tree, invalid `target_version`, path containing `..`.
 - **Red flag**: requesting a real (non-dry-run) apply without `test_backup_create` recorded in run state.
@@ -336,9 +336,17 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 - **Side-effects**: modifies the Drupal site (uninstalls modules) and the working tree (reverts temp patches).
 - **Red flag**: calling it on a failing pipeline to "clean anyway" — it is designed to skip on failure. If you want to clean after a failed run, restore from `test_backup` instead.
 
-> The wiring invariant above (cleanup is in both maps with the right properties) is enforced by `TestServer_WiringSymmetryCleanupToolIsSymmetric` in `internal/mcp/mcp_test.go`. If you add a schema property or shorten/remove `cleanup` from either `defaultTools()` or `toolRegistry`, that test will fail.
+### 5.22 `checkpoint_commit`
 
-### 5.22 `custom_compat_fix`
+- **Purpose**: Publish exactly the current candidate previously approved by independent validation evidence.
+- **Inputs**: `project_path`, `run_id`, `commit_strategy`, `scope`, complete `paths`, `validation_hash`, and `target`; optional `commit_message`.
+- **Returns**: `{ success, skipped, commit_strategy, commit_hash?, candidate_hash?, changed_files }`.
+- **Safety**: `none` always skips; `single` is accepted only at final report; `per-fix` requires matching validation evidence. The live path set and candidate hash must exactly match that evidence, otherwise the request is rejected as stale.
+- **Red flag**: staging or committing from `apply_patch`, `core_upgrade_apply`, or `cleanup` bypasses this evidence binding.
+
+> The wiring invariant above is enforced by MCP catalog tests. Every tool must remain present in `defaultTools()`, `toolRegistry`, and `WireMCPTools`.
+
+### 5.23 `custom_compat_fix`
 
 - **Purpose**: Declares support for the target Drupal major in the project's own modules, themes and profiles by widening `core_version_requirement`. These declarations are what `preflight` reports as `core_module_compat` blockers, and no other stage rewrites them.
 - **Returns**: `{ project_path, target_version, dry_run, updated, already_compatible, needs_attention, changes: [{ name, file, before, after, changed, note }] }`

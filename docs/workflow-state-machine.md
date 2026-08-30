@@ -59,7 +59,7 @@ Never store secrets or raw command output that may contain credentials.
 | `contrib_minor` | same checkpoint evidence as `contrib_patch` | `contrib_major` |
 | `contrib_major` | one package only per checkpoint; same checkpoint evidence | `core_loop` |
 | `core_loop` | one immediate major only: backup, preview, user confirmation, upgrade, `updb`, cache/status, validation, config export, optional commit | `contrib_patch` for the next major or `cleanup` at target |
-| `cleanup` | final validation, tests/smoke checks, explicit temporary-tool policy, config export if changed, optional commit | `report` |
+| `cleanup` | final validation, tests/smoke checks, explicit temporary-tool policy, config export if changed, evidence-bound checkpoint commit | `report` |
 | `report` | root Markdown report with versions, patches, backups, commits, exports, failures, and pending-human work | `completed` |
 | `blocked` | failure or human decision required | same state after a recorded resolution, or `abandoned` |
 | `completed` / `abandoned` | terminal | none |
@@ -80,6 +80,7 @@ envelope.
 | `run_confirm` | `project_path`, `run_id`, `action` | Records explicit user confirmation; initially required only for real core mutations and destructive restore. |
 | `run_block` | `project_path`, `run_id`, `reason`, `target` | Records a retryable blocker or a pending-human item. |
 | `run_abandon` | `project_path`, `run_id`, `reason` | Ends a run without deleting backups or evidence. |
+| `checkpoint_commit` | `project_path`, `run_id`, `commit_strategy`, `scope`, `paths`, `validation_hash`, `target` | Commits only a current diff matching independent validation evidence. |
 
 Every existing mutating tool gains a required `run_id`. Its guard verifies that
 the run is active, belongs to the same canonical project root, and permits that
@@ -98,7 +99,8 @@ The transition layer, not the agent, enforces these rules:
 - Composer, patch, Rector, compatibility, database-update, config-export, and
   core mutation actions are allowed only in their matching state.
 - A validator result is recorded separately from a fixer result. A commit is
-  allowed only after the corresponding validator evidence passes.
+  allowed only through `checkpoint_commit`, after its candidate hash, paths,
+  target, scope and validation hash match the persisted validator evidence.
 - A major contrib checkpoint accepts exactly one package target.
 - `core_upgrade_apply` requires `run_confirm(action="core_upgrade")` and a
   target equal to the recorded immediate next major.

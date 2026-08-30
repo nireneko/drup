@@ -56,10 +56,10 @@ For each immediate major until `target_major`: validate PHP requirements and nex
 
 ### 5. Cleanup, Evidence, And Recovery
 
-Dispatch `drup-validator` for final global validation, project tests, and smoke checks. Remove temporary tooling only when the agreed policy says so; uninstall temporary modules before removing packages, export config if needed, validate, and commit cleanup separately. Dispatch the validator to generate the root Markdown report with versions, patches added/removed, backups, commits, exports, validation, skipped work, and pending-human evidence.
+Dispatch `drup-validator` for final global validation, project tests, and smoke checks. Remove temporary tooling only when the agreed policy says so; uninstall temporary modules before removing packages, export config if needed, validate, then call `checkpoint_commit` with the validator evidence. Dispatch the validator to generate the root Markdown report with versions, patches added/removed, backups, commits, exports, validation, skipped work, and pending-human evidence.
 
 Retain the final backup. On failure, report its ID/path and ask whether to restore. Report the concise result and report path to the user.
 
 ## Commit And Confirmation Gates
 
-`none` means no commits. `single` means one final validated commit. `per-fix` commits each validated checkpoint. Stage only files owned by that checkpoint, never `git add -A`. Ask for explicit confirmation immediately before every real core mutation and before destructive recovery.
+`none` means no commits. `single` means one final validated `checkpoint_commit`. `per-fix` uses one `checkpoint_commit` for each validated checkpoint. Mutation agents never stage or commit; the coordinator supplies the exact validated paths and evidence. Ask for explicit confirmation immediately before every real core mutation and before destructive recovery.

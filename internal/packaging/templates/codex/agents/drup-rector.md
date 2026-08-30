@@ -22,7 +22,7 @@ Every mutating MCP call includes a stable, fresh `request_id` supplied in the di
 
 1. Call `autofix(project_path, request_id)` to run drupal-rector with the D11 rule sets.
 2. Record which modules/paths rector touched and which files it changed, from rector's own summary output.
-3. If `commit_message` is present in the dispatch (meaning `drup-validator` already confirmed this change is clean), commit with that exact message via `git commit`, staging only the files you changed — never `git add -A`, which sweeps unrelated work in progress into a commit that a later rollback then destroys. Otherwise leave the tree uncommitted and report back — never commit before a validator gate confirms the result.
+3. Never stage or commit. Report the changed paths and diff; only the coordinator may call `checkpoint_commit` after independent validation binds the exact candidate.
 4. If the dispatch carries `commit_strategy: "none"`, do not commit under any circumstance, even if a `commit_message` is present. Report the changed paths and your diff instead; the user asked to inspect the work before it enters history.
 4. NEVER call `validate`, `scan`, `apply_patch`, `create_patch`, or `composer_require`.
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -46,6 +47,14 @@ func TestStoreCreateRejectsSecondActiveRunForRoot(t *testing.T) {
 	}
 	if _, err := store.Create(CreateInput{ID: "run-2", TargetMajor: 12}); !errors.Is(err, ErrActiveRunExists) {
 		t.Fatalf("second Create() error = %v, want ErrActiveRunExists", err)
+	}
+}
+
+func TestStoreCreateRejectsUnknownCommitStrategy(t *testing.T) {
+	store := NewStore(t.TempDir())
+	_, err := store.Create(CreateInput{ID: "run-1", TargetMajor: 11, CommitStrategy: "every-file"})
+	if err == nil || !strings.Contains(err.Error(), "commit_strategy") {
+		t.Fatalf("Create invalid strategy error = %v, want strategy refusal", err)
 	}
 }
 

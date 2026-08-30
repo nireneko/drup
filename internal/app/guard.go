@@ -286,12 +286,10 @@ func payloadIndicatesFailure(result json.RawMessage) bool {
 }
 
 // extractCommitHash looks for the handful of result field names the
-// guarded tools use to report a git commit that resulted from the
-// mutation (apply_patch's "commit_hash", patch_rollback's
-// "reverted_commit", core_upgrade_apply's "rollback_checkpoint"). Absence
-// of all three simply means the mutation was not applicable/did not
-// produce a commit, per specs/mutation-audit's "commit hash when
-// applicable".
+// guarded tools use to report a git revision. checkpoint_commit and legacy
+// recovery operations may produce commits; core_upgrade_apply reports its
+// pre-mutation rollback anchor instead. Absence means no revision was
+// applicable to the effect.
 func extractCommitHash(result json.RawMessage) string {
 	if len(result) == 0 {
 		return ""

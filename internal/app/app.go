@@ -113,6 +113,8 @@ func Run(args []string) error {
 			return fmt.Errorf("usage: drup cleanup <project-path> [--validate-passed|--validate-failed]")
 		}
 		return RunCleanup(os.Stdout, args[1:])
+	case "checkpoint-commit":
+		return RunCheckpointCommit(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q — run 'drup help' for available commands", args[0])
 	}
@@ -147,6 +149,7 @@ Commands:
 	 test-backup-restore <p> <id> --confirm Restore a testing backup
 	 test-backup-delete <p> <id> Delete a testing backup after success
   cleanup <path>        Post-validation cleanup (remove upgrade_status)
+  checkpoint-commit     Publish a run-bound, independently validated diff
   version               Print version
   help                  Show this help message
 

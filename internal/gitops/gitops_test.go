@@ -130,6 +130,43 @@ func TestCommit_NothingToCommit(t *testing.T) {
 	}
 }
 
+func TestCandidateForPaths_RejectsExtraCurrentPath(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "declared.txt"), []byte("declared"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "extra.txt"), []byte("extra"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := CandidateForPaths(dir, []string{"declared.txt"})
+	if err == nil || !strings.Contains(err.Error(), "do not match") {
+		t.Fatalf("CandidateForPaths extra path error = %v, want exact path-set refusal", err)
+	}
+}
+
+func TestCandidateForPaths_HashesUntrackedCandidateContent(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "composer.lock"), []byte(`{"content-hash":"one"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first, err := CandidateForPaths(dir, []string{"composer.lock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "composer.lock"), []byte(`{"content-hash":"two"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := CandidateForPaths(dir, []string{"composer.lock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Hash == second.Hash {
+		t.Error("untracked candidate content changed but hash did not")
+	}
+}
+
 // TestCommit_DeclaredSubset_Succeeds guards G8: a scoped commit that only
 // declares files actually changed must stage exactly those files and
 // succeed, leaving no unexpected paths behind.

@@ -402,6 +402,20 @@ var toolRegistry = map[string]toolSchema{
 		},
 		Required: []string{"project_path", "request_id", "evidence_path"},
 	},
+	"checkpoint_commit": {
+		Description: "Commit only the exact current diff previously approved by independent validation evidence",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path":    {Type: "string", Description: "Absolute path to the Drupal project"},
+			"run_id":          {Type: "string", Description: "Persisted upgrade run authorizing this checkpoint"},
+			"commit_strategy": {Type: "string", Description: "Must exactly match the run strategy: none, single, or per-fix"},
+			"scope":           {Type: "array", Description: "Must exactly match the run scope"},
+			"paths":           {Type: "array", Description: "Complete set of diff paths reviewed by validation"},
+			"validation_hash": {Type: "string", Description: "Independent validation evidence hash"},
+			"target":          {Type: "string", Description: "Validated target bound to the evidence"},
+			"commit_message":  {Type: "string", Description: "Optional conventional commit message"},
+		},
+		Required: []string{"project_path", "run_id", "commit_strategy", "scope", "paths", "validation_hash", "target"},
+	},
 	"run_create": {
 		Description: "Create the persisted upgrade run authority for a canonical Drupal project root",
 		Properties: map[string]jsonSchemaProperty{
@@ -410,7 +424,7 @@ var toolRegistry = map[string]toolSchema{
 			"commit_strategy": {Type: "string", Description: "Commit strategy selected for this run"},
 			"scope":           {Type: "array", Description: "Selected upgrade scope"},
 		},
-		Required: []string{"project_path", "target_major"},
+		Required: []string{"project_path", "target_major", "commit_strategy", "scope"},
 	},
 	"run_status": {
 		Description: "Read the persisted run phase, allowed actions, evidence, and recovery state",
@@ -426,7 +440,7 @@ var toolRegistry = map[string]toolSchema{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"run_id":       {Type: "string", Description: "Persisted run ID"},
 			"action":       {Type: "string", Description: "One action returned by run_status"},
-			"evidence":     {Type: "object", Description: "Structured evidence; raw payload is hash-only at rest"},
+			"evidence":     {Type: "object", Description: "Structured evidence; validation records must include validation_hash, candidate_hash, paths, and target; raw payload is hash-only at rest"},
 		},
 		Required: []string{"project_path", "run_id", "action", "evidence"},
 	},
@@ -503,7 +517,7 @@ func init() {
 		"prepare_upgrade_status", "autofix", "apply_patch", "create_patch",
 		"composer_require", "drush_exec", "patch_rollback", "core_upgrade_apply",
 		"cleanup", "custom_compat_fix", "contrib_allow_lenient", "contrib_compat_patch", "generate_report",
-		"test_backup_create", "test_backup_restore", "test_backup_delete",
+		"test_backup_create", "test_backup_restore", "test_backup_delete", "checkpoint_commit",
 	} {
 		spec := toolRegistry[name]
 		spec.Effect = EffectMutating
@@ -519,7 +533,7 @@ func init() {
 		"prepare_upgrade_status", "autofix", "apply_patch", "create_patch",
 		"composer_require", "drush_exec", "patch_rollback", "core_upgrade_apply",
 		"cleanup", "custom_compat_fix", "contrib_allow_lenient", "contrib_compat_patch", "generate_report",
-		"test_backup_create", "test_backup_restore", "test_backup_delete",
+		"test_backup_create", "test_backup_restore", "test_backup_delete", "checkpoint_commit",
 	} {
 		spec := toolRegistry[name]
 		spec.RequiresRun = true

@@ -29,10 +29,10 @@ func canonicalRunStore(projectPath string) (*runstate.Store, string, error) {
 
 func realHandleRunCreate(args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		ProjectPath    string   `json:"project_path"`
-		TargetMajor    int      `json:"target_major"`
-		CommitStrategy string   `json:"commit_strategy"`
-		Scope          []string `json:"scope"`
+		ProjectPath    string                  `json:"project_path"`
+		TargetMajor    int                     `json:"target_major"`
+		CommitStrategy runstate.CommitStrategy `json:"commit_strategy"`
+		Scope          []string                `json:"scope"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, err
@@ -74,9 +74,13 @@ func realHandleRunRecord(args json.RawMessage) (json.RawMessage, error) {
 		runParams
 		Action   runstate.Action `json:"action"`
 		Evidence struct {
-			Kind    string          `json:"kind"`
-			Summary string          `json:"summary"`
-			Payload json.RawMessage `json:"payload"`
+			Kind           string          `json:"kind"`
+			Summary        string          `json:"summary"`
+			Payload        json.RawMessage `json:"payload"`
+			ValidationHash string          `json:"validation_hash,omitempty"`
+			CandidateHash  string          `json:"candidate_hash,omitempty"`
+			Paths          []string        `json:"paths,omitempty"`
+			Target         string          `json:"target,omitempty"`
 		} `json:"evidence"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
@@ -89,7 +93,11 @@ func realHandleRunRecord(args json.RawMessage) (json.RawMessage, error) {
 	if params.RunID == "" {
 		return nil, fmt.Errorf("run_id is required")
 	}
-	run, err := store.Record(params.RunID, runstate.RecordInput{Action: params.Action, Kind: params.Evidence.Kind, Summary: params.Evidence.Summary, Payload: params.Evidence.Payload})
+	run, err := store.Record(params.RunID, runstate.RecordInput{
+		Action: params.Action, Kind: params.Evidence.Kind, Summary: params.Evidence.Summary,
+		Payload: params.Evidence.Payload, ValidationHash: params.Evidence.ValidationHash,
+		CandidateHash: params.Evidence.CandidateHash, Paths: normalizedStrings(params.Evidence.Paths), Target: params.Evidence.Target,
+	})
 	if err != nil {
 		return nil, err
 	}
