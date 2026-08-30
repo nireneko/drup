@@ -554,7 +554,7 @@ func init() {
 		"prepare_upgrade_status", "autofix", "apply_patch", "create_patch",
 		"composer_require", "drush_exec", "patch_rollback", "core_upgrade_apply",
 		"cleanup", "custom_compat_fix", "contrib_allow_lenient", "contrib_compat_patch", "generate_report",
-		"test_backup_create", "test_backup_restore", "test_backup_delete", "checkpoint_commit",
+		"test_backup_create", "test_backup_restore", "test_backup_delete", "restore_recover", "checkpoint_commit",
 		"checkpoint_execute",
 	} {
 		spec := toolRegistry[name]
@@ -571,7 +571,7 @@ func init() {
 		"prepare_upgrade_status", "autofix", "apply_patch", "create_patch",
 		"composer_require", "drush_exec", "patch_rollback", "core_upgrade_apply",
 		"cleanup", "custom_compat_fix", "contrib_allow_lenient", "contrib_compat_patch", "generate_report",
-		"test_backup_create", "test_backup_restore", "test_backup_delete", "checkpoint_commit",
+		"test_backup_create", "test_backup_restore", "test_backup_delete", "restore_recover", "checkpoint_commit",
 		"checkpoint_execute",
 	} {
 		spec := toolRegistry[name]

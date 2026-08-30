@@ -899,7 +899,7 @@ func (s *Store) ValidateMutation(id, root, tool string) (Run, error) {
 	if run.Status != StatusActive {
 		return Run{}, fmt.Errorf("%w: run is %s", ErrMutationNotAllowed, run.Status)
 	}
-	if backup.HasIncompleteRestore(s.root) {
+	if tool != "restore_recover" && backup.HasIncompleteRestore(s.root) {
 		return Run{}, fmt.Errorf("%w: an incomplete restore journal requires explicit recovery", ErrMutationNotAllowed)
 	}
 	if !toolAllowed(run, tool) {
@@ -1089,7 +1089,7 @@ func toolAllowed(run Run, tool string) bool {
 	if tool == "core_upgrade_apply" {
 		return run.Phase == PhaseCoreLoop && containsAction(run.Confirmations, ActionConfirmCoreUpgrade)
 	}
-	if tool == "test_backup_restore" {
+	if tool == "test_backup_restore" || tool == "restore_recover" {
 		return containsAction(run.Confirmations, ActionConfirmRestore)
 	}
 	switch tool {

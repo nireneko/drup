@@ -395,7 +395,7 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 - **Prerequisites**: `project_path` required; must resolve to a valid Drupal project root.
 - **Side-effects**: replaces any session bound earlier in this same server process — reopening rebinds, it does not stack.
 - **Error signals**: symlink resolution or marker-check failure returns an error before any session is bound.
-- **Red flag**: calling a guarded mutating tool (`apply_patch`, `core_upgrade_apply`, `composer_require`, `create_patch`, `cleanup`, `patch_rollback`, `custom_compat_fix`, `contrib_compat_patch`, `contrib_allow_lenient`, `test_backup_restore`, `test_backup_delete`, or `upgrade_scan`'s nested install) without an open, matching session — it is refused or forced into dry-run depending on the tool's guard partition.
+- **Red flag**: calling a guarded mutating tool (`apply_patch`, `core_upgrade_apply`, `composer_require`, `create_patch`, `cleanup`, `patch_rollback`, `custom_compat_fix`, `contrib_compat_patch`, `contrib_allow_lenient`, `test_backup_restore`, `test_backup_delete`, `restore_recover`, or `upgrade_scan`'s nested install) without an open, matching session — it is refused or forced into dry-run depending on the tool's guard partition.
 
 ### 5.25 `pipeline_status`
 
@@ -430,9 +430,9 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 
 Not part of the 28 categorized tools in §5, but mandatory in the pipeline.
 
-### `test_backup_create`, `test_backup_list`, `test_backup_restore`, `test_backup_delete`
+### `test_backup_create`, `test_backup_list`, `test_backup_restore`, `test_backup_delete`, `restore_recover`
 
-- All four accept `project_path`. Restore also needs `backup_id` and `confirm: true`. Delete needs `backup_id`.
+- All four accept `project_path`. Restore also needs `backup_id`, `plan_id` from `restore_check`, and `confirm: true`. Delete needs `backup_id`.
 - Restore refuses without `confirm:true` — this is a second-line defense against accidental deletion.
 - Restore writes an atomic journal in `.drup/restores/` before each destructive boundary, creates an independent rescue backup, and preserves the pre-swap filesystem tree. Any non-completed journal blocks later run mutations until an operator explicitly reconciles it.
 - Database imports are declared **non-atomic**: after an import failure or interrupted filesystem swap, inspect the journal's `rescue_backup_id` and `previous_path`, reconcile the database deliberately, and only then resume. Never blind-retry a journaled restore.
@@ -468,7 +468,7 @@ internal/app/mcp_tools.go              (real handlers + descriptor-driven WireMC
 | `upgrade_scan` / `core_upgrade_*` | Path-traversal guard | Rejects `..` in `project_path` |
 | `composer_require` | Shell injection | Package name must match `vendor/package[:constraint]` |
 | `cleanup` | Failure-mode preservation | Refuses when `validate_passed=false` so debugging state is kept |
-| `test_backup_restore` / `test_backup_delete` | Confirmation gate | Both require explicit fields; restore requires `confirm:true` |
+| `test_backup_restore` / `test_backup_delete` | Confirmation gate | Both require explicit fields; restore requires `confirm:true` and a matching `plan_id` |
 
 ## 9. Self-test Checklist for Sub-Agents
 
