@@ -95,13 +95,14 @@ func (m *Manager) RestoreWithPlan(project, id, planID string, confirm bool) erro
 type RestoreState string
 
 const (
-	RestorePreflight        RestoreState = "preflight"
-	RestoreRescueCreated    RestoreState = "rescue_created"
-	RestoreFilesStaged      RestoreState = "files_staged"
-	RestoreDatabaseRestored RestoreState = "database_restored"
-	RestoreFilesystemSwap   RestoreState = "filesystem_swapping"
-	RestoreCompleted        RestoreState = "completed"
-	RestoreRecoveryRequired RestoreState = "recovery_required"
+	RestorePreflight           RestoreState = "preflight"
+	RestoreRescueCreated       RestoreState = "rescue_created"
+	RestoreFilesStaged         RestoreState = "files_staged"
+	RestoreDatabaseRestored    RestoreState = "database_restored"
+	RestoreFilesystemSwap      RestoreState = "filesystem_swapping"
+	RestoreCompleted           RestoreState = "completed"
+	RestoreRecoveryRequired    RestoreState = "recovery_required"
+	RestoreFilesystemRecovered RestoreState = "filesystem_recovered"
 )
 
 // RestoreJournal gives an operator an explicit recovery procedure. Database
@@ -373,4 +374,52 @@ func verifyPostRestore(project string) error {
 		return fmt.Errorf("status: %s", commandError(err, stderr, code))
 	}
 	return nil
+}
+
+// Recover executes the journal's concrete filesystem reconciliation. It is
+// deliberately limited to a persisted recovery_required record with a
+// preserved tree; missing or completed evidence is ambiguous and fails closed.
+func (m *Manager) Recover(project, journalID string, confirm bool) error {
+	project, err := validateProject(project)
+	if err != nil {
+		return err
+	}
+	if !confirm || !safeID(journalID) {
+		return fmt.Errorf("restore recovery confirmation or journal id missing")
+	}
+	data, err := os.ReadFile(restoreJournalPath(project, journalID))
+	if err != nil {
+		return fmt.Errorf("restore recovery journal not found")
+	}
+	var journal RestoreJournal
+	if json.Unmarshal(data, &journal) != nil || journal.ID != journalID || journal.State != RestoreRecoveryRequired || journal.PreviousPath == "" {
+		return fmt.Errorf("restore recovery is ambiguous; inspect journal manually")
+	}
+	previous, err := filepath.Abs(journal.PreviousPath)
+	if err != nil || !strings.HasPrefix(previous, restoreJournalDir(project)+string(filepath.Separator)) {
+		return fmt.Errorf("restore recovery is ambiguous; unsafe previous path")
+	}
+	if _, err := os.Stat(previous); err != nil {
+		return fmt.Errorf("restore recovery is ambiguous; preserved tree missing")
+	}
+	stage, err := os.MkdirTemp(filepath.Dir(project), ".drup-recovery-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stage)
+	entries, err := os.ReadDir(previous)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := movePath(filepath.Join(previous, entry.Name()), filepath.Join(stage, entry.Name())); err != nil {
+			return err
+		}
+	}
+	if err := swapProject(project, stage, filepath.Join(restoreJournalDir(project), journal.ID, "failed-tree")); err != nil {
+		return err
+	}
+	journal.State = RestoreFilesystemRecovered
+	journal.Continuation = "filesystem recovery completed; database is non-atomic: restore rescue_backup_id and verify before manually resolving the journal"
+	return writeRestoreJournal(project, &journal)
 }

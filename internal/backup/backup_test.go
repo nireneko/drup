@@ -491,3 +491,28 @@ func TestRestoreCheckRejectsIncompleteJournalAndReportsPlan(t *testing.T) {
 		t.Fatal("restore retried despite incomplete journal")
 	}
 }
+
+func TestRecoverRestoresPreservedFilesystemTree(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "settings.php"), []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := filepath.Join(project, ".drup", "restores", "recover-1", "previous")
+	if err := os.MkdirAll(previous, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(previous, "settings.php"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	j := `{"version":1,"id":"recover-1","backup_id":"b","state":"recovery_required","previous_path":"` + previous + `","database_mode":"non_atomic","continuation":"recover","updated_at":"2026-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(project, ".drup", "restores", "recover-1.json"), []byte(j), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewManager(project).Recover(project, "recover-1", true); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(project, "settings.php"))
+	if string(b) != "old" {
+		t.Fatalf("got %q", b)
+	}
+}

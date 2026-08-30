@@ -488,3 +488,7 @@ A sub-agent that fails this checklist must report `status: blocked` and surface 
 ### `restore_check`
 
 Read-only preflight for a confirmed `RestorePlan`. It validates backup integrity, canonical paths, environment detection, conservative permissions, and same-volume staging space before any rescue backup, database import, or filesystem change. Its `database_mode: "non_atomic"` requires the journal recovery procedure if a restore later fails.
+
+### Restore recovery
+
+A `recovery_required` journal can execute filesystem reconciliation only through `backup.Manager.Recover(project, journal_id, true)`. It fails closed unless the preserved tree is present under `.drup/restores/`; it leaves `filesystem_recovered` blocked until the operator restores the rescue database and verifies it.
