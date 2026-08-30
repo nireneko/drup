@@ -48,13 +48,13 @@ When this phase is coherent, export configuration, commit according to strategy 
 
 ### 3. Contrib In Ordered Checkpoints
 
-For the immediate next core major, maintain a package ledger and dispatch `drup-contrib` in this order: patch-level updates, minor-level updates, then major-level updates one package at a time. For each phase or individual major package: create a backup, update/patch, run database updates, independently validate and smoke-check, export configuration, then commit if its validator gate passes.
+For the immediate next core major, maintain a package ledger and dispatch `drup-contrib` in this order: patch-level updates, minor-level updates, then major-level updates one package at a time. For each patch/minor batch or individual major package: use `checkpoint_execute` after the scoped mutation. It persists the fresh backup, Composer update (contrib patch/minor/major only), database update, cache rebuild, status, independent validation, and managed configuration export; then call `checkpoint_commit` only with independently recorded evidence. A major checkpoint has exactly one package target.
 
 For unavailable releases, use an upstream patch, then a project patch as a last resort. Reconcile existing patches instead of reapplying them. An unresolved package is pending-human with attempts and evidence; never batch unrelated major updates.
 
 ### 4. Core Major Loop
 
-For each immediate major until `target_major`: validate PHP requirements and next-major path, create a backup, preview the Composer change, and ask the user before the real core mutation. Dispatch `drup-contrib` for the core operation. Then run database updates, cache rebuild, status and smoke checks, global Upgrade Status, configuration export, independent validation, and commit the validated phase. Repeat from the next immediate major; never jump from N to N+2.
+For each immediate major until `target_major`: validate PHP requirements and next-major path, create a backup, preview the Composer change, and ask the user before the real core mutation. Dispatch `drup-contrib` for the core operation. Then use `checkpoint_execute` for the operational boundary (it must not repeat Composer core mutation) and obtain independent validation evidence before `checkpoint_commit`. Repeat from the next immediate major; never jump from N to N+2.
 
 ### 5. Cleanup, Evidence, And Recovery
 

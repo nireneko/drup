@@ -55,13 +55,13 @@ func CheckpointCommit(input CheckpointCommitInput) (CheckpointCommitResult, erro
 	if strategy == "" {
 		strategy = run.CommitStrategy
 	}
-	if strategy == runstate.CommitStrategyNone {
+	paths := normalizedStrings(input.Paths)
+	if strategy == runstate.CommitStrategyNone && !requiresCheckpointEvidence(run) {
 		if _, err := store.AuthorizeCheckpoint(run.ID, runstate.CheckpointInput{Strategy: strategy, Scope: normalizedStrings(input.Scope)}); err != nil {
 			return CheckpointCommitResult{}, err
 		}
 		return CheckpointCommitResult{Success: true, Skipped: true, Strategy: strategy, Message: "commit strategy none leaves the validated diff unpublished"}, nil
 	}
-	paths := normalizedStrings(input.Paths)
 	candidate, err := gitops.CandidateForPaths(run.Root, paths)
 	if err != nil {
 		return CheckpointCommitResult{}, err
@@ -72,6 +72,9 @@ func CheckpointCommit(input CheckpointCommitInput) (CheckpointCommitResult, erro
 	}
 	if _, err := store.AuthorizeCheckpoint(run.ID, checkpoint); err != nil {
 		return CheckpointCommitResult{}, err
+	}
+	if strategy == runstate.CommitStrategyNone {
+		return CheckpointCommitResult{Success: true, Skipped: true, Strategy: strategy, CandidateHash: candidate.Hash, ChangedFiles: candidate.Paths, Message: "commit strategy none leaves the validated diff unpublished"}, nil
 	}
 	message := strings.TrimSpace(input.Message)
 	if message == "" {
@@ -85,6 +88,15 @@ func CheckpointCommit(input CheckpointCommitInput) (CheckpointCommitResult, erro
 		return CheckpointCommitResult{}, fmt.Errorf("checkpoint commit %s created but its receipt could not be persisted: %w", commitHash, err)
 	}
 	return CheckpointCommitResult{Success: true, Strategy: strategy, CommitHash: commitHash, CandidateHash: candidate.Hash, ChangedFiles: candidate.Paths, Message: "validated checkpoint committed"}, nil
+}
+
+func requiresCheckpointEvidence(run runstate.Run) bool {
+	switch run.Phase {
+	case runstate.PhaseCustomTheme, runstate.PhaseContribPatch, runstate.PhaseContribMinor, runstate.PhaseContribMajor, runstate.PhaseCoreLoop, runstate.PhaseCleanup:
+		return true
+	default:
+		return run.CheckpointPlan != nil || len(run.CheckpointHistory) > 0
+	}
 }
 
 func normalizedStrings(values []string) []string {

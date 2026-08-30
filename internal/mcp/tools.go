@@ -61,6 +61,7 @@ func defaultTools() map[string]ToolHandler {
 		"pipeline_status":     handlePipelineStatus,
 		"operation_reconcile": handleOperationReconcile,
 		"checkpoint_commit":   handleCheckpointCommit,
+		"checkpoint_execute":  handleCheckpointExecute,
 		"run_create":          handleRunCreate,
 		"run_status":          handleRunStatus,
 		"run_record":          handleRunRecord,
@@ -103,6 +104,9 @@ func handleRunCreate(args json.RawMessage) (json.RawMessage, error) {
 	return unavailableRunHandler(args)
 }
 func handleCheckpointCommit(args json.RawMessage) (json.RawMessage, error) {
+	return unavailableRunHandler(args)
+}
+func handleCheckpointExecute(args json.RawMessage) (json.RawMessage, error) {
 	return unavailableRunHandler(args)
 }
 func handleRunStatus(args json.RawMessage) (json.RawMessage, error) {

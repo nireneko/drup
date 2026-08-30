@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,12 +21,13 @@ import (
 const schemaVersion = 1
 
 var (
-	ErrNotFound           = errors.New("run not found")
-	ErrActiveRunExists    = errors.New("an active run already exists for this project root")
-	ErrInvalidTransition  = errors.New("invalid run transition")
-	ErrRootMismatch       = errors.New("run does not belong to this project root")
-	ErrMutationNotAllowed = errors.New("mutation is not allowed by the active run")
-	ErrCheckpointDenied   = errors.New("checkpoint commit is not authorized")
+	ErrNotFound             = errors.New("run not found")
+	ErrActiveRunExists      = errors.New("an active run already exists for this project root")
+	ErrInvalidTransition    = errors.New("invalid run transition")
+	ErrRootMismatch         = errors.New("run does not belong to this project root")
+	ErrMutationNotAllowed   = errors.New("mutation is not allowed by the active run")
+	ErrCheckpointDenied     = errors.New("checkpoint commit is not authorized")
+	ErrCheckpointPlanDenied = errors.New("checkpoint plan is not authorized")
 )
 
 // CommitStrategy controls when a run may publish its already-validated
@@ -127,8 +129,87 @@ type Run struct {
 	Evidence       []Evidence     `json:"evidence"`
 	PendingHuman   []PendingHuman `json:"pending_human,omitempty"`
 	Confirmations  []Action       `json:"confirmations,omitempty"`
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
+	// CheckpointPlan is the durable, resumable operational boundary for the
+	// current phase. It deliberately lives in Run: a second state file would
+	// allow a restarted caller to derive authority from stale prompt state.
+	CheckpointPlan *CheckpointPlan `json:"checkpoint_plan,omitempty"`
+	// CheckpointHistory keeps completed plans observable after the run advances
+	// into its next phase. It is append-only control evidence, not a second
+	// transition machine.
+	CheckpointHistory []CheckpointPlan `json:"checkpoint_history,omitempty"`
+	CreatedAt         time.Time        `json:"created_at"`
+	UpdatedAt         time.Time        `json:"updated_at"`
+}
+
+// CheckpointStepName is a fixed command boundary. Callers cannot invent an
+// arbitrary shell step; the executor maps these names to argv-only adapters.
+type CheckpointStepName string
+
+const (
+	CheckpointStepBackup       CheckpointStepName = "backup"
+	CheckpointStepUpdate       CheckpointStepName = "update"
+	CheckpointStepDatabase     CheckpointStepName = "database_update"
+	CheckpointStepCacheRebuild CheckpointStepName = "cache_rebuild"
+	CheckpointStepSiteStatus   CheckpointStepName = "status"
+	CheckpointStepValidation   CheckpointStepName = "validation"
+	CheckpointStepConfigExport CheckpointStepName = "config_export"
+	CheckpointStepSmoke        CheckpointStepName = "smoke"
+)
+
+type CheckpointStepStatus string
+
+const (
+	CheckpointStepPending     CheckpointStepStatus = "pending"
+	CheckpointStepRunning     CheckpointStepStatus = "running"
+	CheckpointStepSucceeded   CheckpointStepStatus = "succeeded"
+	CheckpointStepFailed      CheckpointStepStatus = "failed"
+	CheckpointStepUnavailable CheckpointStepStatus = "unavailable"
+)
+
+// CheckpointStepEvidence intentionally excludes command output. Output can
+// contain credentials, URLs, and project data; a digest permits correlation
+// without making the run record a secret store.
+type CheckpointStepEvidence struct {
+	CommandHash string `json:"command_hash,omitempty"`
+	OutputHash  string `json:"output_hash,omitempty"`
+	// CandidateHash is set only by the independent validation step after the
+	// candidate has been captured both before and after validation. It lets a
+	// restarted executor close the durable crash window without inferring that
+	// a previously successful validator still applies.
+	CandidateHash string        `json:"candidate_hash,omitempty"`
+	ExitCode      int           `json:"exit_code"`
+	Duration      time.Duration `json:"duration_ns,omitempty"`
+	Paths         []string      `json:"paths,omitempty"`
+}
+
+type CheckpointStep struct {
+	Name     CheckpointStepName      `json:"name"`
+	Status   CheckpointStepStatus    `json:"status"`
+	Evidence *CheckpointStepEvidence `json:"evidence,omitempty"`
+}
+
+// CheckpointPlan binds an operational checkpoint to one run phase and one
+// target-major. A contrib major plan is intentionally cardinality-one.
+type CheckpointPlan struct {
+	Phase               Phase            `json:"phase"`
+	TargetMajor         int              `json:"target_major"`
+	Targets             []string         `json:"targets"`
+	Paths               []string         `json:"paths"`
+	BackupID            string           `json:"backup_id,omitempty"`
+	CandidateHash       string           `json:"candidate_hash,omitempty"`
+	RequireConfigExport bool             `json:"require_config_export"`
+	SmokeCommands       [][]string       `json:"smoke_commands,omitempty"`
+	Steps               []CheckpointStep `json:"steps"`
+	CompletedAt         time.Time        `json:"completed_at,omitempty"`
+}
+
+type CheckpointPlanInput struct {
+	Phase               Phase
+	TargetMajor         int
+	Targets             []string
+	Paths               []string
+	RequireConfigExport bool
+	SmokeCommands       [][]string
 }
 
 type CreateInput struct {
@@ -255,6 +336,11 @@ func (s *Store) Record(id string, input RecordInput) (Run, error) {
 	if strings.TrimSpace(input.Kind) == "" || strings.TrimSpace(input.Summary) == "" {
 		return Run{}, fmt.Errorf("evidence kind and summary are required")
 	}
+	if checkpointPhase(run.Phase) {
+		if err := authorizeCheckpointProgress(run, input); err != nil {
+			return Run{}, err
+		}
+	}
 	run.Evidence = append(run.Evidence, evidenceFromInput(run.Phase, input.Action, input))
 	run.Phase = next
 	if next == PhaseCompleted {
@@ -266,6 +352,300 @@ func (s *Store) Record(id string, input RecordInput) (Run, error) {
 		return Run{}, err
 	}
 	return run, nil
+}
+
+// BeginCheckpointPlan creates the authoritative operational plan or returns
+// the same plan after a process restart. A caller may never replace a plan
+// with different phase, target, target set, or paths.
+func (s *Store) BeginCheckpointPlan(id string, input CheckpointPlanInput) (Run, error) {
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	run, err := s.getLocked(id)
+	if err != nil {
+		return Run{}, err
+	}
+	if err := validateCheckpointPlan(run, input); err != nil {
+		return Run{}, err
+	}
+	plan := checkpointPlanFromInput(input)
+	if run.CheckpointPlan != nil {
+		if !sameCheckpointIdentity(*run.CheckpointPlan, plan) {
+			if run.CheckpointPlan.CompletedAt.IsZero() {
+				return Run{}, fmt.Errorf("%w: existing plan identity differs", ErrCheckpointPlanDenied)
+			}
+			run.CheckpointHistory = append(run.CheckpointHistory, *run.CheckpointPlan)
+			run.CheckpointPlan = &plan
+			run.UpdatedAt = time.Now().UTC()
+			if err := s.writeLocked(run); err != nil {
+				return Run{}, err
+			}
+			return run, nil
+		}
+		return run, nil
+	}
+	run.CheckpointPlan = &plan
+	run.UpdatedAt = time.Now().UTC()
+	if err := s.writeLocked(run); err != nil {
+		return Run{}, err
+	}
+	return run, nil
+}
+
+// RecordCheckpointStep persists every executor transition. Failed and
+// unavailable are terminal states: retrying them blindly would turn an
+// ambiguous external outcome into a duplicated mutation.
+func (s *Store) RecordCheckpointStep(id string, name CheckpointStepName, status CheckpointStepStatus, evidence *CheckpointStepEvidence) (Run, error) {
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	run, err := s.getLocked(id)
+	if err != nil {
+		return Run{}, err
+	}
+	if run.CheckpointPlan == nil {
+		return Run{}, fmt.Errorf("%w: no active checkpoint plan", ErrCheckpointPlanDenied)
+	}
+	if status != CheckpointStepRunning && status != CheckpointStepSucceeded && status != CheckpointStepFailed && status != CheckpointStepUnavailable {
+		return Run{}, fmt.Errorf("%w: invalid checkpoint step status %q", ErrCheckpointPlanDenied, status)
+	}
+	for i := range run.CheckpointPlan.Steps {
+		step := &run.CheckpointPlan.Steps[i]
+		if step.Name != name {
+			continue
+		}
+		for previous := 0; previous < i; previous++ {
+			prior := run.CheckpointPlan.Steps[previous]
+			if prior.Status != CheckpointStepSucceeded {
+				return Run{}, fmt.Errorf("%w: prior checkpoint step %s is %s", ErrCheckpointPlanDenied, prior.Name, prior.Status)
+			}
+		}
+		if step.Status == CheckpointStepSucceeded || step.Status == CheckpointStepFailed || step.Status == CheckpointStepUnavailable {
+			return Run{}, fmt.Errorf("%w: checkpoint step %s is terminal (%s)", ErrCheckpointPlanDenied, name, step.Status)
+		}
+		if status != CheckpointStepRunning && step.Status != CheckpointStepRunning {
+			return Run{}, fmt.Errorf("%w: checkpoint step %s must be persisted running first", ErrCheckpointPlanDenied, name)
+		}
+		step.Status = status
+		step.Evidence = cloneCheckpointEvidence(evidence)
+		run.UpdatedAt = time.Now().UTC()
+		if err := s.writeLocked(run); err != nil {
+			return Run{}, err
+		}
+		return run, nil
+	}
+	return Run{}, fmt.Errorf("%w: unknown checkpoint step %s", ErrCheckpointPlanDenied, name)
+}
+
+// BindCheckpointBackup attaches the observed backup identity to the plan.
+// The executor must call it immediately after the backup succeeds, before it
+// starts any mutation, so a restart can never use a merely "latest" backup.
+func (s *Store) BindCheckpointBackup(id, backupID string) (Run, error) {
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	run, err := s.getLocked(id)
+	if err != nil {
+		return Run{}, err
+	}
+	if run.CheckpointPlan == nil || strings.TrimSpace(backupID) == "" {
+		return Run{}, fmt.Errorf("%w: checkpoint plan and backup_id are required", ErrCheckpointPlanDenied)
+	}
+	if run.CheckpointPlan.BackupID != "" && run.CheckpointPlan.BackupID != backupID {
+		return Run{}, fmt.Errorf("%w: backup_id is already bound to this checkpoint", ErrCheckpointPlanDenied)
+	}
+	run.CheckpointPlan.BackupID = backupID
+	run.UpdatedAt = time.Now().UTC()
+	if err := s.writeLocked(run); err != nil {
+		return Run{}, err
+	}
+	return run, nil
+}
+
+// ResumeUnavailableCheckpoint is an explicit recovery boundary. Only steps
+// known to be unavailable become pending again; failed and in-flight effects
+// remain blocked because retrying them could duplicate a mutation.
+func (s *Store) ResumeUnavailableCheckpoint(id string) (Run, error) {
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	run, err := s.getLocked(id)
+	if err != nil {
+		return Run{}, err
+	}
+	if run.CheckpointPlan == nil || !run.CheckpointPlan.CompletedAt.IsZero() {
+		return Run{}, fmt.Errorf("%w: no resumable checkpoint plan", ErrCheckpointPlanDenied)
+	}
+	resumed := false
+	for i := range run.CheckpointPlan.Steps {
+		step := &run.CheckpointPlan.Steps[i]
+		if step.Status == CheckpointStepUnavailable {
+			step.Status = CheckpointStepPending
+			step.Evidence = nil
+			resumed = true
+		}
+	}
+	if !resumed {
+		return Run{}, fmt.Errorf("%w: only unavailable checkpoint steps may be resumed", ErrCheckpointPlanDenied)
+	}
+	run.UpdatedAt = time.Now().UTC()
+	if err := s.writeLocked(run); err != nil {
+		return Run{}, err
+	}
+	return run, nil
+}
+
+// CompleteCheckpointPlan stores the candidate identity recomputed by the
+// executor only after every required independent step completed. It does not
+// publish a commit; CheckpointCommit remains the sole publication boundary.
+func (s *Store) CompleteCheckpointPlan(id, candidateHash string) (Run, error) {
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	run, err := s.getLocked(id)
+	if err != nil {
+		return Run{}, err
+	}
+	if run.CheckpointPlan == nil {
+		return Run{}, fmt.Errorf("%w: no active checkpoint plan", ErrCheckpointPlanDenied)
+	}
+	plan := run.CheckpointPlan
+	if plan.BackupID == "" {
+		return Run{}, fmt.Errorf("%w: backup_id is required", ErrCheckpointPlanDenied)
+	}
+	if strings.TrimSpace(candidateHash) == "" {
+		return Run{}, fmt.Errorf("%w: recomputed candidate hash is required", ErrCheckpointPlanDenied)
+	}
+	for _, step := range plan.Steps {
+		if step.Name == CheckpointStepSmoke && step.Status == CheckpointStepPending {
+			continue // smoke is optional when no configured allowlisted command exists.
+		}
+		if step.Status != CheckpointStepSucceeded {
+			return Run{}, fmt.Errorf("%w: required checkpoint step %s is %s", ErrCheckpointPlanDenied, step.Name, step.Status)
+		}
+		if step.Evidence == nil || !sameStrings(step.Evidence.Paths, plan.Paths) {
+			return Run{}, fmt.Errorf("%w: checkpoint step %s is missing deterministic evidence paths", ErrCheckpointPlanDenied, step.Name)
+		}
+		if step.Name == CheckpointStepValidation && (strings.TrimSpace(step.Evidence.CommandHash) == "" || strings.TrimSpace(step.Evidence.OutputHash) == "") {
+			return Run{}, fmt.Errorf("%w: checkpoint step validation is missing independent validation evidence", ErrCheckpointPlanDenied)
+		}
+		if step.Name == CheckpointStepValidation && strings.TrimSpace(step.Evidence.CandidateHash) == "" {
+			return Run{}, fmt.Errorf("%w: checkpoint step validation is missing its candidate identity", ErrCheckpointPlanDenied)
+		}
+	}
+	plan.CandidateHash = candidateHash
+	plan.CompletedAt = time.Now().UTC()
+	run.UpdatedAt = time.Now().UTC()
+	if err := s.writeLocked(run); err != nil {
+		return Run{}, err
+	}
+	return run, nil
+}
+
+func validateCheckpointPlan(run Run, input CheckpointPlanInput) error {
+	if run.Status != StatusActive || input.Phase != run.Phase || !checkpointPhase(input.Phase) {
+		return fmt.Errorf("%w: checkpoint phase does not match active run phase", ErrCheckpointPlanDenied)
+	}
+	if input.TargetMajor != run.TargetMajor || input.TargetMajor < 1 {
+		return fmt.Errorf("%w: target major does not match run", ErrCheckpointPlanDenied)
+	}
+	if len(input.Targets) == 0 || len(input.Paths) == 0 {
+		return fmt.Errorf("%w: targets and paths are required", ErrCheckpointPlanDenied)
+	}
+	if err := validateCheckpointStrings(input.Targets, false); err != nil {
+		return err
+	}
+	if err := validateCheckpointStrings(input.Paths, true); err != nil {
+		return err
+	}
+	if input.Phase == PhaseContribMajor && len(input.Targets) != 1 {
+		return fmt.Errorf("%w: contrib major checkpoints require exactly one target", ErrCheckpointPlanDenied)
+	}
+	return nil
+}
+
+func validateCheckpointStrings(values []string, paths bool) error {
+	canonical := normalizedCheckpointStrings(values)
+	for i, value := range canonical {
+		if value == "" {
+			return fmt.Errorf("%w: checkpoint values may not be empty", ErrCheckpointPlanDenied)
+		}
+		if i > 0 && canonical[i-1] == value {
+			return fmt.Errorf("%w: duplicate checkpoint value %q", ErrCheckpointPlanDenied, value)
+		}
+		if paths && (value == ".." || strings.HasPrefix(value, "../") || filepath.IsAbs(value)) {
+			return fmt.Errorf("%w: unsafe checkpoint path %q", ErrCheckpointPlanDenied, value)
+		}
+	}
+	return nil
+}
+
+func checkpointPhase(phase Phase) bool {
+	switch phase {
+	case PhaseCustomTheme, PhaseContribPatch, PhaseContribMinor, PhaseContribMajor, PhaseCoreLoop, PhaseCleanup:
+		return true
+	default:
+		return false
+	}
+}
+
+func checkpointPlanFromInput(input CheckpointPlanInput) CheckpointPlan {
+	steps := []CheckpointStep{
+		{Name: CheckpointStepBackup, Status: CheckpointStepPending},
+		{Name: CheckpointStepDatabase, Status: CheckpointStepPending},
+		{Name: CheckpointStepCacheRebuild, Status: CheckpointStepPending},
+		{Name: CheckpointStepSiteStatus, Status: CheckpointStepPending},
+	}
+	if input.Phase == PhaseContribPatch || input.Phase == PhaseContribMinor || input.Phase == PhaseContribMajor {
+		steps = append([]CheckpointStep{{Name: CheckpointStepUpdate, Status: CheckpointStepPending}}, steps...)
+	}
+	if input.RequireConfigExport {
+		steps = append(steps, CheckpointStep{Name: CheckpointStepConfigExport, Status: CheckpointStepPending})
+	}
+	if len(input.SmokeCommands) > 0 {
+		steps = append(steps, CheckpointStep{Name: CheckpointStepSmoke, Status: CheckpointStepPending})
+	}
+	// Config export can mutate the candidate. It must precede validation so
+	// validation and the final Git identity both describe the same bytes.
+	steps = append(steps, CheckpointStep{Name: CheckpointStepValidation, Status: CheckpointStepPending})
+	return CheckpointPlan{Phase: input.Phase, TargetMajor: input.TargetMajor, Targets: normalizedCheckpointStrings(input.Targets), Paths: normalizedCheckpointStrings(input.Paths), RequireConfigExport: input.RequireConfigExport, SmokeCommands: cloneCommandVectors(input.SmokeCommands), Steps: steps}
+}
+
+func normalizedCheckpointStrings(values []string) []string {
+	result := append([]string(nil), values...)
+	for i := range result {
+		result[i] = strings.TrimSpace(result[i])
+	}
+	sort.Strings(result)
+	return result
+}
+
+func sameCheckpointIdentity(left, right CheckpointPlan) bool {
+	return left.Phase == right.Phase && left.TargetMajor == right.TargetMajor && left.RequireConfigExport == right.RequireConfigExport && sameStrings(left.Targets, right.Targets) && sameStrings(left.Paths, right.Paths) && sameCommandVectors(left.SmokeCommands, right.SmokeCommands)
+}
+
+func cloneCommandVectors(commands [][]string) [][]string {
+	result := make([][]string, len(commands))
+	for i := range commands {
+		result[i] = append([]string(nil), commands[i]...)
+	}
+	return result
+}
+
+func sameCommandVectors(left, right [][]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if !sameStrings(left[i], right[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneCheckpointEvidence(value *CheckpointStepEvidence) *CheckpointStepEvidence {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	copy.Paths = append([]string(nil), value.Paths...)
+	return &copy
 }
 
 // AuthorizeCheckpoint proves that a proposed commit still represents the
@@ -317,7 +697,12 @@ func authorizeCheckpoint(run Run, input CheckpointInput) error {
 	if strategy != run.CommitStrategy {
 		return fmt.Errorf("%w: strategy %q does not match run strategy %q", ErrCheckpointDenied, strategy, run.CommitStrategy)
 	}
-	if strategy == CommitStrategyNone {
+	// A no-commit policy remains compatible for phases that Phase 7 does not
+	// govern. Once an operational checkpoint exists (or is the active phase),
+	// it is still a publication decision and must prove the same validated
+	// boundary before reporting an unpublished outcome.
+	checkpointRequired := checkpointPhase(run.Phase) || len(checkpointPlans(run)) > 0
+	if strategy == CommitStrategyNone && !checkpointRequired {
 		return nil
 	}
 	if strategy == CommitStrategySingle && run.Phase != PhaseReport {
@@ -337,9 +722,74 @@ func authorizeCheckpoint(run Run, input CheckpointInput) error {
 		if evidence.CandidateHash != input.CandidateHash || !sameStrings(evidence.Paths, input.Paths) || evidence.Target != input.Target {
 			return fmt.Errorf("%w: validation evidence is stale or belongs to another target/path set", ErrCheckpointDenied)
 		}
+		if !completedCheckpointForEvidence(run, evidence) {
+			return fmt.Errorf("%w: completed operational checkpoint does not match validation evidence", ErrCheckpointDenied)
+		}
 		return nil
 	}
 	return fmt.Errorf("%w: no matching independent validation evidence", ErrCheckpointDenied)
+}
+
+// authorizeCheckpointProgress keeps Phase 7 operational phases from moving
+// forward on a conversational claim. The final independent validator must
+// bind its evidence to the exact candidate completed by the persisted plan.
+func authorizeCheckpointProgress(run Run, input RecordInput) error {
+	if input.Kind != "validation" || strings.TrimSpace(input.ValidationHash) == "" || strings.TrimSpace(input.CandidateHash) == "" || len(input.Paths) == 0 || strings.TrimSpace(input.Target) == "" {
+		return fmt.Errorf("%w: operational phase progress requires independent validation bound to a completed checkpoint", ErrCheckpointPlanDenied)
+	}
+	for _, plan := range checkpointPlans(run) {
+		if plan.Phase != run.Phase || !checkpointPlanComplete(plan) {
+			continue
+		}
+		if plan.CandidateHash == input.CandidateHash && sameStrings(plan.Paths, input.Paths) && input.Target == strconv.Itoa(plan.TargetMajor) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: validation does not match the completed checkpoint candidate", ErrCheckpointPlanDenied)
+}
+
+func completedCheckpointForEvidence(run Run, evidence Evidence) bool {
+	for _, plan := range checkpointPlans(run) {
+		if plan.Phase != evidence.Phase || !checkpointPlanComplete(plan) {
+			continue
+		}
+		if plan.CandidateHash == evidence.CandidateHash && sameStrings(plan.Paths, evidence.Paths) && evidence.Target == strconv.Itoa(plan.TargetMajor) {
+			return true
+		}
+	}
+	return false
+}
+
+func checkpointPlans(run Run) []CheckpointPlan {
+	plans := append([]CheckpointPlan(nil), run.CheckpointHistory...)
+	if run.CheckpointPlan != nil {
+		plans = append(plans, *run.CheckpointPlan)
+	}
+	return plans
+}
+
+func checkpointPlanComplete(plan CheckpointPlan) bool {
+	if plan.BackupID == "" || plan.CandidateHash == "" || plan.CompletedAt.IsZero() {
+		return false
+	}
+	for _, step := range plan.Steps {
+		if step.Name == CheckpointStepSmoke && step.Status == CheckpointStepPending {
+			continue
+		}
+		if step.Status != CheckpointStepSucceeded {
+			return false
+		}
+		if step.Evidence == nil || !sameStrings(step.Evidence.Paths, plan.Paths) {
+			return false
+		}
+		if step.Name == CheckpointStepValidation && (strings.TrimSpace(step.Evidence.CommandHash) == "" || strings.TrimSpace(step.Evidence.OutputHash) == "") {
+			return false
+		}
+		if step.Name == CheckpointStepValidation && strings.TrimSpace(step.Evidence.CandidateHash) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) Confirm(id string, action Action) (Run, error) {
@@ -627,6 +1077,8 @@ func toolAllowed(run Run, tool string) bool {
 		return containsAction(run.Confirmations, ActionConfirmRestore)
 	}
 	switch tool {
+	case "checkpoint_execute":
+		return checkpointPhase(run.Phase)
 	case "prepare_upgrade_status":
 		return run.Phase == PhaseTooling
 	case "autofix", "create_patch", "custom_compat_fix":

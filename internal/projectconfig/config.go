@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -37,10 +38,11 @@ type Config struct {
 // duration string (e.g. "24h") on disk rather than the raw nanosecond count
 // encoding/json would otherwise (de)serialize time.Duration as.
 type rawConfig struct {
-	MutationCapPerSession int    `json:"mutation_cap_per_session"`
-	MutationCapPerDay     int    `json:"mutation_cap_per_day"`
-	BackupFreshnessWindow string `json:"backup_freshness_window"`
-	AllowlistMode         string `json:"allowlist_mode"`
+	MutationCapPerSession   int        `json:"mutation_cap_per_session"`
+	MutationCapPerDay       int        `json:"mutation_cap_per_day"`
+	BackupFreshnessWindow   string     `json:"backup_freshness_window"`
+	AllowlistMode           string     `json:"allowlist_mode"`
+	CheckpointSmokeCommands [][]string `json:"checkpoint_smoke_commands"`
 }
 
 // Defaults returns the built-in configuration applied whenever
@@ -87,6 +89,47 @@ func Load(projectPath string) Config {
 	if raw.AllowlistMode != "" {
 		cfg.AllowlistMode = raw.AllowlistMode
 	}
-
 	return cfg
+}
+
+// CheckpointSmokeCommands returns only configured argv vectors with a
+// narrow, read-only/test allowlist. It is separate from Config so Config
+// remains comparable for callers which use its defaults as a value contract.
+func CheckpointSmokeCommands(projectPath string) [][]string {
+	data, err := os.ReadFile(filepath.Join(projectPath, ".drup", "config.json"))
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	var raw rawConfig
+	if json.Unmarshal(data, &raw) != nil {
+		return nil
+	}
+	var result [][]string
+	for _, command := range raw.CheckpointSmokeCommands {
+		if allowedCheckpointSmokeCommand(command) {
+			result = append(result, append([]string(nil), command...))
+		}
+	}
+	return result
+}
+
+func allowedCheckpointSmokeCommand(command []string) bool {
+	if len(command) == 0 {
+		return false
+	}
+	for _, arg := range command {
+		if arg == "" || strings.ContainsAny(arg, ";|&$`\r\n") {
+			return false
+		}
+	}
+	switch command[0] {
+	case "vendor/bin/phpunit", "phpunit":
+		return true
+	case "composer":
+		return len(command) >= 2 && command[1] == "test"
+	case "drush":
+		return len(command) >= 2 && (command[1] == "status" || command[1] == "core:status")
+	default:
+		return false
+	}
 }

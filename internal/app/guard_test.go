@@ -48,13 +48,41 @@ func createRunAtReportPhase(t *testing.T, root string) string {
 		t.Fatal(err)
 	}
 	for run.Phase != runstate.PhaseReport {
-		action := run.AllowedActions[0]
-		run, err = store.Record(run.ID, runstate.RecordInput{Action: action, Kind: "test", Summary: "checkpoint"})
+		run, err = advanceGuardRunForCheckpointTest(store, run)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 	return run.ID
+}
+
+func advanceGuardRunForCheckpointTest(store *runstate.Store, run runstate.Run) (runstate.Run, error) {
+	if !isOperationalCheckpointPhaseForTest(run.Phase) {
+		return store.Record(run.ID, runstate.RecordInput{Action: run.AllowedActions[0], Kind: "test", Summary: "checkpoint"})
+	}
+	planRun, err := store.BeginCheckpointPlan(run.ID, runstate.CheckpointPlanInput{Phase: run.Phase, TargetMajor: run.TargetMajor, Targets: []string{"drupal/example"}, Paths: []string{"composer.json"}, RequireConfigExport: true})
+	if err != nil {
+		return runstate.Run{}, err
+	}
+	candidate := "guard-candidate-" + string(run.Phase)
+	for _, step := range planRun.CheckpointPlan.Steps {
+		if _, err = store.RecordCheckpointStep(run.ID, step.Name, runstate.CheckpointStepRunning, nil); err != nil {
+			return runstate.Run{}, err
+		}
+		if step.Name == runstate.CheckpointStepBackup {
+			if _, err = store.BindCheckpointBackup(run.ID, "guard-backup-"+string(run.Phase)); err != nil {
+				return runstate.Run{}, err
+			}
+		}
+		evidence := &runstate.CheckpointStepEvidence{CommandHash: "command-" + string(step.Name), OutputHash: "output-" + string(step.Name), CandidateHash: candidate, Paths: []string{"composer.json"}}
+		if _, err = store.RecordCheckpointStep(run.ID, step.Name, runstate.CheckpointStepSucceeded, evidence); err != nil {
+			return runstate.Run{}, err
+		}
+	}
+	if _, err = store.CompleteCheckpointPlan(run.ID, candidate); err != nil {
+		return runstate.Run{}, err
+	}
+	return store.Record(run.ID, runstate.RecordInput{Action: run.AllowedActions[0], Kind: "validation", Summary: "independent", ValidationHash: "guard-validation-" + string(run.Phase), CandidateHash: candidate, Paths: []string{"composer.json"}, Target: "11"})
 }
 
 func TestGuardedCall_ConfirmedRequestIsDeduplicatedWithoutSecondAuditOrCapUse(t *testing.T) {

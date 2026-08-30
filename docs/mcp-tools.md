@@ -1,8 +1,8 @@
 # drup MCP Tools — Agent Reference
 
-This document is an **agent-facing reference** for the 39 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
+This document is an **agent-facing reference** for the 41 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
 
-**Tooling totals at runtime:** the `ToolSpec` catalog derives 35 stub entries (including `session_open`, `pipeline_status`, `operation_reconcile`, and the six `run_*` workflow tools) plus 4 reverse-asymmetric backup tools = **39 total**. See [§1.1](#11-response-envelope-uniform-contract) for the uniform envelope that wraps every response.
+**Tooling totals at runtime:** the `ToolSpec` catalog derives 37 stub entries (including `session_open`, `pipeline_status`, `operation_reconcile`, `checkpoint_execute`, and the six `run_*` workflow tools) plus 4 reverse-asymmetric backup tools = **41 total**. See [§1.1](#11-response-envelope-uniform-contract) for the uniform envelope that wraps every response.
 
 For tool **schemas** (JSON Schema, required fields, types) call `tools/list` — do not hardcode them here. For tool **internals** (Go package, test coverage) read `internal/app/mcp_tools.go`.
 
@@ -63,6 +63,7 @@ Only descriptor-marked read-only tools retry transient errors, up to 2 times wit
 | Bump Drupal core, with rollback checkpoint | `core_upgrade_apply` (`dry_run` first) | `composer_require drupal/core*` (bypasses checkpoint) |
 | What's the next core major and a composer.json preview? | `core_upgrade_check` (read-only) | `core_upgrade_apply` (mutates) |
 | Generate JSON + Markdown upgrade report | `generate_report` | manual report writing |
+| Run a resumable operational checkpoint after a scoped change | `checkpoint_execute`, then independent validator evidence and `checkpoint_commit` | shelling out to Composer/Drush in a prompt |
 | After final validation, uninstall dev modules and revert temp patches | `cleanup` (with `validate_passed:true`) | shell `drush pm:uninstall` + `git revert` (no env awareness) |
 | Declare the target Drupal major in your own modules and themes | `custom_compat_fix` | hand-editing every `.info.yml`, or missing them entirely |
 
@@ -83,13 +84,13 @@ phase gates.
 4. test_backup_create (database + selected filesystem snapshot)
 5. install Drush if missing, then install/enable upgrade_status and Rector tooling
 6. upgrade_scan (baseline findings and inventory)
-7. custom_compat_fix dry_run → apply → validate → config export → checkpoint_commit
-8. autofix existing custom modules/themes only → validate → manual fixes → checkpoint_commit
-9. contrib patch-level phase: backup → update → drush updb → validate/smoke → config export → checkpoint_commit
-10. contrib minor-level phase: same checkpoint sequence
-11. contrib major-level phase: one package at a time with the same checkpoint sequence
+7. custom_compat_fix dry_run → apply → checkpoint_execute → independent validation evidence → checkpoint_commit
+8. autofix existing custom modules/themes only → manual fixes → checkpoint_execute → independent validation evidence → checkpoint_commit
+9. contrib patch-level phase: batch scoped targets in checkpoint_execute → independent validation evidence → checkpoint_commit
+10. contrib minor-level phase: batch scoped targets in checkpoint_execute → independent validation evidence → checkpoint_commit
+11. contrib major-level phase: exactly one package target in checkpoint_execute → independent validation evidence → checkpoint_commit
 12. core_upgrade_check for the immediate next major
-13. core_upgrade_apply dry_run → user gate → apply → drush updb → validate/smoke → config export → checkpoint_commit
+13. core_upgrade_apply dry_run → user gate → apply → checkpoint_execute → independent validation evidence → checkpoint_commit
 14. repeat steps 9–13 for every remaining major; never skip a major
 15. final upgrade_status validation, tests, cache rebuild, and status checks
 16. remove temporary tooling when explicitly configured → validate → config export → checkpoint_commit
@@ -345,6 +346,14 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 - **Red flag**: staging or committing from `apply_patch`, `core_upgrade_apply`, or `cleanup` bypasses this evidence binding.
 
 > The wiring invariant above is enforced by MCP catalog tests. Every tool must remain present in `defaultTools()`, `toolRegistry`, and `WireMCPTools`.
+
+### 5.23 `checkpoint_execute`
+
+- **Purpose**: Persist and execute one operational checkpoint with explicit argv-only adapters: fresh backup, `drush updatedb`, cache rebuild, status, independent validation, and `drush config:export` when `config/sync` is managed. Composer package update is included only for contrib patch/minor/major phases; custom/theme, core-loop, and cleanup never repeat it.
+- **Inputs**: `project_path`, `run_id`, active `phase`, exact `target_major`, scoped `targets`, and complete candidate `paths`.
+- **Safety**: phase and target identity must match the durable run; `contrib_major` accepts exactly one target while patch/minor targets may be batched. Every step persists sanitized hashes, exit code, duration, and paths. A failed step is terminal. An unavailable step may be explicitly retried with `resume:true` and a fresh `request_id`; the executor never blindly resumes either state.
+- **Backup and validation**: the backup ID is bound to this plan rather than inferred from the newest manifest. Validation is re-run and candidate identity is recomputed from Git after it succeeds; no fixer-provided success assertion is accepted.
+- **Publication**: this tool never commits. Pass independently recorded validation evidence and the recomputed candidate to `checkpoint_commit` as the only publication boundary.
 
 ### 5.23 `custom_compat_fix`
 

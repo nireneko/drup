@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -123,6 +124,230 @@ func TestStoreBlockPersistsRecoveryAndRootValidation(t *testing.T) {
 	}
 }
 
+func TestCheckpointPlanPersistsIdentityAndMajorCardinality(t *testing.T) {
+	store := NewStore(t.TempDir())
+	run, err := store.Create(CreateInput{ID: "checkpoint", TargetMajor: 11, Scope: []string{"all"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for run.Phase != PhaseContribMajor {
+		run, err = advanceRunForCheckpointTest(store, run)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = store.BeginCheckpointPlan(run.ID, CheckpointPlanInput{Phase: PhaseContribMajor, TargetMajor: 11, Targets: []string{"drupal/a", "drupal/b"}, Paths: []string{"composer.lock"}})
+	if err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("multi-target contrib major plan error = %v, want cardinality refusal", err)
+	}
+	run, err = store.BeginCheckpointPlan(run.ID, CheckpointPlanInput{Phase: PhaseContribMajor, TargetMajor: 11, Targets: []string{"drupal/a"}, Paths: []string{"composer.lock"}, RequireConfigExport: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.CheckpointPlan == nil || run.CheckpointPlan.RequireConfigExport != true {
+		t.Fatalf("persisted plan = %+v, want required config export", run.CheckpointPlan)
+	}
+	if _, err := store.BeginCheckpointPlan(run.ID, CheckpointPlanInput{Phase: PhaseContribMajor, TargetMajor: 11, Targets: []string{"drupal/b"}, Paths: []string{"composer.lock"}, RequireConfigExport: true}); err == nil {
+		t.Fatal("replacing checkpoint target unexpectedly succeeded")
+	}
+}
+
+func TestCheckpointPlanCanonicalizesEvidencePathsBeforeAnyEffect(t *testing.T) {
+	store := NewStore(t.TempDir())
+	run, err := store.Create(CreateInput{ID: "canonical-paths", TargetMajor: 11})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for run.Phase != PhaseContribPatch {
+		run, err = advanceRunForCheckpointTest(store, run)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	run, err = store.BeginCheckpointPlan(run.ID, CheckpointPlanInput{Phase: run.Phase, TargetMajor: 11, Targets: []string{"drupal/example"}, Paths: []string{" z.txt", "a.txt "}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := run.CheckpointPlan.Paths, []string{"a.txt", "z.txt"}; !sameStrings(got, want) {
+		t.Fatalf("checkpoint evidence paths = %v, want deterministic %v", got, want)
+	}
+	duplicateStore := NewStore(t.TempDir())
+	duplicateRun, err := duplicateStore.Create(CreateInput{ID: "duplicate-paths", TargetMajor: 11})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for duplicateRun.Phase != PhaseContribPatch {
+		duplicateRun, err = advanceRunForCheckpointTest(duplicateStore, duplicateRun)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := duplicateStore.BeginCheckpointPlan(duplicateRun.ID, CheckpointPlanInput{Phase: duplicateRun.Phase, TargetMajor: 11, Targets: []string{"drupal/example"}, Paths: []string{"a.txt", " a.txt "}}); err == nil {
+		t.Fatal("duplicate canonical checkpoint paths unexpectedly accepted")
+	}
+}
+
+func TestCheckpointPlanOnlyResumesUnavailableSteps(t *testing.T) {
+	store := NewStore(t.TempDir())
+	run, err := store.Create(CreateInput{ID: "resume", TargetMajor: 11})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for run.Phase != PhaseContribPatch {
+		run, err = advanceRunForCheckpointTest(store, run)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	run, err = store.BeginCheckpointPlan(run.ID, CheckpointPlanInput{Phase: run.Phase, TargetMajor: 11, Targets: []string{"drupal/example"}, Paths: []string{"composer.lock"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.RecordCheckpointStep(run.ID, CheckpointStepUpdate, CheckpointStepRunning, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.RecordCheckpointStep(run.ID, CheckpointStepUpdate, CheckpointStepUnavailable, &CheckpointStepEvidence{ExitCode: -1}); err != nil {
+		t.Fatal(err)
+	}
+	run, err = store.ResumeUnavailableCheckpoint(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range run.CheckpointPlan.Steps {
+		if step.Name == CheckpointStepUpdate && step.Status != CheckpointStepPending {
+			t.Fatalf("resumed update = %s, want pending", step.Status)
+		}
+	}
+	if _, err := store.ResumeUnavailableCheckpoint(run.ID); err == nil {
+		t.Fatal("second resume without unavailable step unexpectedly succeeded")
+	}
+}
+
+func TestCheckpointStepsCannotValidateBeforeEarlierMutations(t *testing.T) {
+	store := NewStore(t.TempDir())
+	run, err := store.Create(CreateInput{ID: "ordered-steps", TargetMajor: 11})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for run.Phase != PhaseContribPatch {
+		run, err = advanceRunForCheckpointTest(store, run)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	run, err = store.BeginCheckpointPlan(run.ID, CheckpointPlanInput{Phase: run.Phase, TargetMajor: 11, Targets: []string{"drupal/example"}, Paths: []string{"composer.lock"}, RequireConfigExport: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.RecordCheckpointStep(run.ID, CheckpointStepValidation, CheckpointStepRunning, nil)
+	if err == nil || !strings.Contains(err.Error(), "prior") {
+		t.Fatalf("out-of-order validation error = %v, want mutation-order refusal", err)
+	}
+}
+
+func TestOperationalPhaseProgressRequiresCompletedMatchingCheckpoint(t *testing.T) {
+	store := NewStore(t.TempDir())
+	run, err := store.Create(CreateInput{ID: "closed-gate", TargetMajor: 11})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for run.Phase != PhaseCustomTheme {
+		run, err = store.Record(run.ID, RecordInput{Action: run.AllowedActions[0], Kind: "check", Summary: "passed"})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = store.Record(run.ID, RecordInput{Action: ActionRecordCustomTheme, Kind: "validation", Summary: "unbound", ValidationHash: "v", CandidateHash: "candidate", Paths: []string{"composer.lock"}, Target: "11"})
+	if err == nil || !strings.Contains(err.Error(), "completed checkpoint") {
+		t.Fatalf("direct phase progress error = %v, want fail-closed checkpoint refusal", err)
+	}
+}
+
+func TestOperationalPhaseProgressRequiresIndependentValidationEvidence(t *testing.T) {
+	store := NewStore(t.TempDir())
+	run, err := store.Create(CreateInput{ID: "validation-evidence", TargetMajor: 11})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for run.Phase != PhaseCustomTheme {
+		run, err = store.Record(run.ID, RecordInput{Action: run.AllowedActions[0], Kind: "check", Summary: "passed"})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	run, err = store.BeginCheckpointPlan(run.ID, CheckpointPlanInput{Phase: run.Phase, TargetMajor: 11, Targets: []string{"custom"}, Paths: []string{"composer.lock"}, RequireConfigExport: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range run.CheckpointPlan.Steps {
+		if _, err = store.RecordCheckpointStep(run.ID, step.Name, CheckpointStepRunning, nil); err != nil {
+			t.Fatal(err)
+		}
+		if step.Name == CheckpointStepBackup {
+			if _, err = store.BindCheckpointBackup(run.ID, "backup-evidence"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err = store.RecordCheckpointStep(run.ID, step.Name, CheckpointStepSucceeded, &CheckpointStepEvidence{Paths: []string{"composer.lock"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = store.CompleteCheckpointPlan(run.ID, "candidate")
+	if err == nil || !strings.Contains(err.Error(), "independent validation") {
+		t.Fatalf("checkpoint completion with missing validator evidence = %v, want refusal", err)
+	}
+}
+
+func TestCheckpointPlanUpdatesOnlyContribPhases(t *testing.T) {
+	for _, tt := range []struct {
+		phase      Phase
+		wantUpdate bool
+	}{
+		{PhaseCustomTheme, false}, {PhaseContribPatch, true}, {PhaseContribMinor, true}, {PhaseContribMajor, true}, {PhaseCoreLoop, false}, {PhaseCleanup, false},
+	} {
+		t.Run(string(tt.phase), func(t *testing.T) {
+			plan := checkpointPlanFromInput(CheckpointPlanInput{Phase: tt.phase, TargetMajor: 11, Targets: []string{"drupal/example"}, Paths: []string{"composer.lock"}})
+			gotUpdate := false
+			for _, step := range plan.Steps {
+				gotUpdate = gotUpdate || step.Name == CheckpointStepUpdate
+			}
+			if gotUpdate != tt.wantUpdate {
+				t.Fatalf("update step = %v, want %v", gotUpdate, tt.wantUpdate)
+			}
+		})
+	}
+}
+
+func advanceRunForCheckpointTest(store *Store, run Run) (Run, error) {
+	if !checkpointPhase(run.Phase) {
+		return store.Record(run.ID, RecordInput{Action: run.AllowedActions[0], Kind: "check", Summary: "passed"})
+	}
+	targets := []string{"drupal/example"}
+	planRun, err := store.BeginCheckpointPlan(run.ID, CheckpointPlanInput{Phase: run.Phase, TargetMajor: run.TargetMajor, Targets: targets, Paths: []string{"composer.lock"}, RequireConfigExport: true})
+	if err != nil {
+		return Run{}, err
+	}
+	candidate := "candidate-" + string(run.Phase)
+	for _, step := range planRun.CheckpointPlan.Steps {
+		if _, err = store.RecordCheckpointStep(run.ID, step.Name, CheckpointStepRunning, nil); err != nil {
+			return Run{}, err
+		}
+		if step.Name == CheckpointStepBackup {
+			if _, err = store.BindCheckpointBackup(run.ID, "backup-"+string(run.Phase)); err != nil {
+				return Run{}, err
+			}
+		}
+		evidence := &CheckpointStepEvidence{CommandHash: "command-" + string(step.Name), OutputHash: "output-" + string(step.Name), CandidateHash: candidate, Paths: []string{"composer.lock"}}
+		if _, err = store.RecordCheckpointStep(run.ID, step.Name, CheckpointStepSucceeded, evidence); err != nil {
+			return Run{}, err
+		}
+	}
+	if _, err = store.CompleteCheckpointPlan(run.ID, candidate); err != nil {
+		return Run{}, err
+	}
+	return store.Record(run.ID, RecordInput{Action: run.AllowedActions[0], Kind: "validation", Summary: "independent validation", ValidationHash: "validation-" + string(run.Phase), CandidateHash: candidate, Paths: []string{"composer.lock"}, Target: strconv.Itoa(run.TargetMajor)})
+}
+
 func TestStoreCompletesAndAllowsANewRun(t *testing.T) {
 	store := NewStore(t.TempDir())
 	run, err := store.Create(CreateInput{ID: "run-1", TargetMajor: 11})
@@ -130,7 +355,7 @@ func TestStoreCompletesAndAllowsANewRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	for run.Status == StatusActive {
-		run, err = store.Record(run.ID, RecordInput{Action: run.AllowedActions[0], Kind: "checkpoint", Summary: "passed"})
+		run, err = advanceRunForCheckpointTest(store, run)
 		if err != nil {
 			t.Fatal(err)
 		}

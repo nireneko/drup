@@ -416,6 +416,19 @@ var toolRegistry = map[string]toolSchema{
 		},
 		Required: []string{"project_path", "run_id", "commit_strategy", "scope", "paths", "validation_hash", "target"},
 	},
+	"checkpoint_execute": {
+		Description: "Execute and persist a deterministic operational checkpoint: backup, package update, database updates, cache rebuild, status, independent validation, and managed configuration export. It never publishes a commit; checkpoint_commit remains the only publication boundary",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+			"run_id":       {Type: "string", Description: "Persisted run ID authorizing this checkpoint"},
+			"phase":        {Type: "string", Description: "Active run phase: custom_theme, contrib_patch, contrib_minor, contrib_major, core_loop, or cleanup"},
+			"target_major": {Type: "integer", Description: "Must exactly match the run target major"},
+			"targets":      {Type: "array", Description: "Composer/package targets; contrib_major accepts exactly one"},
+			"paths":        {Type: "array", Description: "Complete candidate paths whose identity is recomputed after validation"},
+			"resume":       {Type: "boolean", Description: "Explicitly retry only a previously unavailable step; requires a fresh request_id"},
+		},
+		Required: []string{"project_path", "run_id", "phase", "target_major", "targets", "paths"},
+	},
 	"run_create": {
 		Description: "Create the persisted upgrade run authority for a canonical Drupal project root",
 		Properties: map[string]jsonSchemaProperty{
@@ -518,6 +531,7 @@ func init() {
 		"composer_require", "drush_exec", "patch_rollback", "core_upgrade_apply",
 		"cleanup", "custom_compat_fix", "contrib_allow_lenient", "contrib_compat_patch", "generate_report",
 		"test_backup_create", "test_backup_restore", "test_backup_delete", "checkpoint_commit",
+		"checkpoint_execute",
 	} {
 		spec := toolRegistry[name]
 		spec.Effect = EffectMutating
@@ -534,6 +548,7 @@ func init() {
 		"composer_require", "drush_exec", "patch_rollback", "core_upgrade_apply",
 		"cleanup", "custom_compat_fix", "contrib_allow_lenient", "contrib_compat_patch", "generate_report",
 		"test_backup_create", "test_backup_restore", "test_backup_delete", "checkpoint_commit",
+		"checkpoint_execute",
 	} {
 		spec := toolRegistry[name]
 		spec.RequiresRun = true
@@ -584,6 +599,13 @@ func init() {
 	spec.Preconditions = []string{"session", "mutation_cap"}
 	spec.RequiresBackup = false
 	toolRegistry["test_backup_create"] = spec
+	// checkpoint_execute creates and binds its own fresh backup as the first
+	// persisted step, so requiring a prior backup would make the transaction
+	// impossible to start and encourage callers to reuse a stale one.
+	spec = toolRegistry["checkpoint_execute"]
+	spec.Preconditions = []string{"session", "mutation_cap"}
+	spec.RequiresBackup = false
+	toolRegistry["checkpoint_execute"] = spec
 }
 
 // NewServer creates a new MCP server writing to out.
