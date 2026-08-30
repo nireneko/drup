@@ -33,6 +33,7 @@ func defaultTools() map[string]ToolHandler {
 		"create_patch":           handleCreatePatch,
 		// Foundation tools.
 		"restore_check":    handleRestoreCheck,
+		"restore_recover":  handleRestoreRecover,
 		"detect_env":       handleDetectEnv,
 		"composer_require": handleComposerRequire,
 		"drush_exec":       handleDrushExec,
@@ -103,6 +104,9 @@ func unavailableRunHandler(args json.RawMessage) (json.RawMessage, error) {
 	})
 }
 
+func handleRestoreRecover(args json.RawMessage) (json.RawMessage, error) {
+	return unavailableRunHandler(args)
+}
 func handleRestoreCheck(args json.RawMessage) (json.RawMessage, error) {
 	return unavailableRunHandler(args)
 }

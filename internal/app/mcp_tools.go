@@ -137,6 +137,7 @@ func WireMCPTools(s *mcp.Server) {
 		"contrib_allow_lenient":  realHandleContribAllowLenient,
 		"contrib_compat_patch":   realHandleContribCompatPatch,
 		"restore_check":          realHandleRestoreCheck,
+		"restore_recover":        realHandleRestoreRecover,
 		"test_backup_create":     realHandleTestBackupCreate,
 		"test_backup_list":       realHandleTestBackupList,
 		"test_backup_restore":    realHandleTestBackupRestore,
@@ -316,6 +317,24 @@ func backupParams(args json.RawMessage) (string, error) {
 	}
 	return p.ProjectPath, nil
 }
+func realHandleRestoreRecover(args json.RawMessage) (json.RawMessage, error) {
+	var p struct {
+		ProjectPath string `json:"project_path"`
+		JournalID   string `json:"journal_id"`
+		Confirm     bool   `json:"confirm"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return nil, err
+	}
+	if p.ProjectPath == "" || p.JournalID == "" {
+		return nil, fmt.Errorf("project_path and journal_id are required")
+	}
+	if err := backup.NewManager(p.ProjectPath).Recover(p.ProjectPath, p.JournalID, p.Confirm); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]interface{}{"journal_id": p.JournalID, "filesystem_recovered": true})
+}
+
 func realHandleRestoreCheck(args json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		ProjectPath string `json:"project_path"`

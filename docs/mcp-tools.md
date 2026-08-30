@@ -485,6 +485,10 @@ Each fixer sub-agent should self-verify before declaring done:
 
 A sub-agent that fails this checklist must report `status: blocked` and surface the violated item in `risks[]`.
 
+### `restore_recover`
+
+MCP wrapper for the explicit persisted filesystem recovery procedure. It requires `project_path`, `journal_id`, and `confirm:true`; it fails closed on ambiguous evidence and keeps DB reconciliation blocked.
+
 ### `restore_check`
 
 Read-only preflight for a confirmed `RestorePlan`. It validates backup integrity, canonical paths, environment detection, conservative permissions, and same-volume staging space before any rescue backup, database import, or filesystem change. Its `database_mode: "non_atomic"` requires the journal recovery procedure if a restore later fails.
