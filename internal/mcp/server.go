@@ -382,8 +382,9 @@ var toolRegistry = map[string]toolSchema{
 			"project_path": {Type: "string", Description: "Absolute Drupal project path"},
 			"backup_id":    {Type: "string", Description: "Backup ID"},
 			"confirm":      {Type: "boolean", Description: "Explicitly confirm destructive restore"},
+			"plan_id":      {Type: "string", Description: "Confirmed RestorePlan identifier returned by restore_check"},
 		},
-		Required: []string{"project_path", "backup_id", "confirm"},
+		Required: []string{"project_path", "backup_id", "confirm", "plan_id"},
 	},
 	"test_backup_delete": {
 		Description: "Delete a local testing backup",

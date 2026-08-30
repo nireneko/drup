@@ -75,6 +75,21 @@ func (m *Manager) RestoreCheck(project, id string) (RestorePlan, error) {
 	return RestorePlan{PlanID: hex.EncodeToString(h[:]), BackupID: id, ProjectPath: project, StageParent: parent, RequiredBytes: needed, DatabaseMode: "non_atomic", Confirmed: true}, nil
 }
 
+// RestoreWithPlan binds an effect to the exact read-only plan returned by RestoreCheck.
+func (m *Manager) RestoreWithPlan(project, id, planID string, confirm bool) error {
+	if !confirm {
+		return fmt.Errorf("restore confirmation missing")
+	}
+	plan, err := m.RestoreCheck(project, id)
+	if err != nil {
+		return err
+	}
+	if planID == "" || planID != plan.PlanID {
+		return fmt.Errorf("restore plan is missing or does not match current preflight")
+	}
+	return m.restoreTransactional(plan.ProjectPath, id)
+}
+
 // RestoreState is persisted before every external restore boundary. A state
 // other than completed is intentionally a recovery stop, never a retry hint.
 type RestoreState string
@@ -287,6 +302,9 @@ func (m *Manager) restoreTransactional(project, id string) (err error) {
 	if cause = swapProject(project, stage, journal.PreviousPath); cause != nil {
 		return fail(recovery(journal, fmt.Errorf("filesystem restore failure: %w", cause)))
 	}
+	if cause = verifyPostRestore(project); cause != nil {
+		return fail(recovery(journal, fmt.Errorf("post-restore verification failure: %w", cause)))
+	}
 	journal.State = RestoreCompleted
 	journal.Continuation = "restore completed; rescue backup and previous tree are retained for explicit operator cleanup"
 	journal.Error = ""
@@ -343,4 +361,16 @@ func rollbackInstalled(project, stage, previous string, installed, moved []strin
 		_ = movePath(filepath.Join(project, installed[i]), filepath.Join(stage, installed[i]))
 	}
 	rollbackSwap(project, previous, moved)
+}
+
+func verifyPostRestore(project string) error {
+	if _, err := os.Stat(project); err != nil {
+		return err
+	}
+	// drush status verifies that the restored database/filesystem environment is usable.
+	_, stderr, code, err := run(project, nil, "drush", "status", "--root="+project)
+	if err != nil || code != 0 {
+		return fmt.Errorf("status: %s", commandError(err, stderr, code))
+	}
+	return nil
 }

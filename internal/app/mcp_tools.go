@@ -361,6 +361,7 @@ func realHandleTestBackupRestore(args json.RawMessage) (json.RawMessage, error) 
 		ProjectPath string `json:"project_path"`
 		BackupID    string `json:"backup_id"`
 		Confirm     bool   `json:"confirm"`
+		PlanID      string `json:"plan_id"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, err
@@ -368,7 +369,7 @@ func realHandleTestBackupRestore(args json.RawMessage) (json.RawMessage, error) 
 	if p.ProjectPath == "" || p.BackupID == "" {
 		return nil, fmt.Errorf("project_path and backup_id are required")
 	}
-	if err := backup.NewManager(p.ProjectPath).Restore(p.ProjectPath, p.BackupID, p.Confirm); err != nil {
+	if err := backup.NewManager(p.ProjectPath).RestoreWithPlan(p.ProjectPath, p.BackupID, p.PlanID, p.Confirm); err != nil {
 		return nil, err
 	}
 	journals, err := backup.ListRestoreJournals(p.ProjectPath)
