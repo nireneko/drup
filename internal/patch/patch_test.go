@@ -2,6 +2,7 @@ package patch
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,70 @@ func initGitRepo(t *testing.T, dir string) {
 	run(t, dir, "git", "add", ".")
 	run(t, dir, "git", "commit", "-m", "initial")
 }
+
+func TestDownloadPatch_RejectsUnsafeRedirectBeforeBody(t *testing.T) {
+	unsafeHits := 0
+	const redirectURL = "https://www.drupal.org/patch"
+	const unsafeURL = "https://evil.example/patch"
+	origClient := httpClient
+	httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() == unsafeURL {
+			unsafeHits++
+		}
+		return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": []string{unsafeURL}}, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+	})}
+	defer func() { httpClient = origClient }()
+
+	origCheck := checkAllowedURL
+	checkAllowedURL = func(raw string) bool { return raw != unsafeURL }
+	defer func() { checkAllowedURL = origCheck }()
+	if _, _, err := downloadPatch(redirectURL); err == nil {
+		t.Fatal("unsafe redirect was accepted")
+	}
+	if unsafeHits != 0 {
+		t.Fatalf("unsafe redirect body was requested %d times", unsafeHits)
+	}
+}
+
+func TestDownloadPatch_RejectsOversizedBodyAndCleansTemporaryFile(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	origClient := httpClient
+	httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, ContentLength: -1, Body: io.NopCloser(strings.NewReader(strings.Repeat("x", int(maxPatchBytes+1)))), Request: req}, nil
+	})}
+	defer func() { httpClient = origClient }()
+	origCheck := checkAllowedURL
+	checkAllowedURL = func(string) bool { return true }
+	defer func() { checkAllowedURL = origCheck }()
+	if _, _, err := downloadPatch("https://www.drupal.org/large.patch"); err == nil {
+		t.Fatal("oversized patch was accepted")
+	}
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary patch leaked: %v", entries)
+	}
+}
+
+func TestApply_RecordsCryptographicProvenanceAndRejectsEscapingPatch(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"extra":{"patches":{}}}`), 0o644)
+	patchFile := filepath.Join(dir, "patch.patch")
+	content := "--- a/../outside.txt\n+++ b/../outside.txt\n@@ -0,0 +1 @@\n+no\n"
+	os.WriteFile(patchFile, []byte(content), 0o644)
+	_, err := Apply(patchFile, dir, "drupal/example", "escape")
+	if err == nil || !strings.Contains(err.Error(), "outside declared package") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func run(t *testing.T, dir string, name string, args ...string) {
 	t.Helper()
@@ -82,6 +147,9 @@ index 5626abf..f9c9a4a 100644
 	if len(result.ChangedFiles) == 0 {
 		t.Error("expected changed files report, got none")
 	}
+	if result.PatchEvidence.SHA256 == "" || result.PatchEvidence.Size != int64(len(patchContent)) || result.PatchEvidence.FinalURL != srv.URL+"/test.patch" {
+		t.Errorf("patch evidence = %+v", result.PatchEvidence)
+	}
 
 	// Verify the file was patched.
 	content, _ := os.ReadFile(filepath.Join(dir, "test.txt"))
@@ -97,6 +165,11 @@ index 5626abf..f9c9a4a 100644
 	patches := extra["patches"].(map[string]interface{})
 	if _, ok := patches["drupal/test"]; !ok {
 		t.Error("composer.json not updated with patch entry")
+	}
+	drup := extra["drup"].(map[string]interface{})
+	evidence := drup["patch_evidence"].(map[string]interface{})["drupal/test"].(map[string]interface{})["Test patch"].(map[string]interface{})
+	if evidence["sha256"] != result.PatchEvidence.SHA256 {
+		t.Errorf("persisted SHA-256 = %v, want %s", evidence["sha256"], result.PatchEvidence.SHA256)
 	}
 }
 

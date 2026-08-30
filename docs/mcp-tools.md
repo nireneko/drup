@@ -221,11 +221,11 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 
 ### 5.9 `apply_patch`
 
-- **Purpose**: Download a `.patch` from drupal.org, validate URL allowlist, `git apply`, and register it under `composer.json → extra.patches`.
-- **Returns**: `{ applied: <bool>, changed_files: [<path>…], error: <str> }`; it never commits.
+- **Purpose**: Download a `.patch` from drupal.org with the URL allowlist enforced on the initial request and every redirect, cap the body at 10 MiB, preflight it with `git apply --check`, then register it under `composer.json → extra.patches`.
+- **Returns**: `{ applied: <bool>, changed_files: [<path>…], patch_evidence: { sha256, size, initial_url, final_url, recorded_at }, error: <str> }`; it never commits. Successful provenance is also retained at `composer.json → extra.drup.patch_evidence`.
 - **Prerequisites**: clean working tree; absolute `project_path`; `patch_url` from `*.drupal.org`.
 - **Side-effects**: mutates the working tree and `composer.json`; it never stages or commits. If registration fails, it reverts the applied patch.
-- **Error signals**: each failure mode (`URL not allowed`, `download fails`, `git apply conflict`, `composer.json malformed`) has a distinct message.
+- **Error signals**: each failure mode (`URL/redirect not allowed`, oversized body, unsafe patch path/type, `git apply --check` conflict, `composer.json` malformed) has a distinct message. Download failures remove their temporary file.
 - **Red flag**: retrying on conflict without first running `patch_rollback`.
 
 ### 5.10 `patch_status`

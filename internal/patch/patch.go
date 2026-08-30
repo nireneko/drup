@@ -1,6 +1,7 @@
 package patch
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,9 @@ import (
 // httpClient is the HTTP client for patch downloads.
 // Package-level var for testability.
 var httpClient = &http.Client{Timeout: 60 * time.Second}
+
+// maxPatchBytes bounds downloaded patch bodies before they reach disk.
+const maxPatchBytes int64 = 10 << 20
 
 // runCommand executes subprocess commands. Package-level var for testability.
 var runCommand = drupexec.Run
@@ -77,9 +81,20 @@ func localPatchPath(patchRef, projectPath string) (string, bool, error) {
 
 // ApplyResult contains the result of a patch apply operation.
 type ApplyResult struct {
-	Applied      bool     `json:"applied"`
-	ChangedFiles []string `json:"changed_files,omitempty"`
-	Error        string   `json:"error,omitempty"`
+	Applied       bool          `json:"applied"`
+	ChangedFiles  []string      `json:"changed_files,omitempty"`
+	PatchEvidence PatchEvidence `json:"patch_evidence,omitempty"`
+	Error         string        `json:"error,omitempty"`
+}
+
+// PatchEvidence is the immutable provenance retained alongside a Composer
+// patch registration. It deliberately records hashes rather than patch bytes.
+type PatchEvidence struct {
+	SHA256     string    `json:"sha256"`
+	Size       int64     `json:"size"`
+	InitialURL string    `json:"initial_url"`
+	FinalURL   string    `json:"final_url"`
+	RecordedAt time.Time `json:"recorded_at"`
 }
 
 // Apply downloads a patch from patchURL, applies it via git apply, and
@@ -95,17 +110,20 @@ func Apply(patchURL, projectPath, composerPackage, description string) (*ApplyRe
 	}
 
 	tmpFile := local
+	var evidence PatchEvidence
 	if !isLocal {
 		if !checkAllowedURL(patchURL) {
 			return nil, fmt.Errorf("patch URL not in allowlist: %s", patchURL)
 		}
 
 		// Download patch to temp file.
-		tmpFile, err = downloadPatch(patchURL)
+		tmpFile, evidence, err = downloadPatch(patchURL)
 		if err != nil {
 			return nil, fmt.Errorf("download patch: %w", err)
 		}
 		defer os.Remove(tmpFile)
+	} else if evidence, err = evidenceForLocalPatch(tmpFile, patchURL); err != nil {
+		return nil, err
 	}
 
 	// Module patches are written relative to the package root, which is where
@@ -114,6 +132,15 @@ func Apply(patchURL, projectPath, composerPackage, description string) (*ApplyRe
 	applyArgs := []string{"-C", projectPath, "apply"}
 	if rel := packageRelDir(projectPath, composerPackage); rel != "" {
 		applyArgs = append(applyArgs, "--directory="+rel)
+	}
+	if err := validatePatchPaths(tmpFile); err != nil {
+		return nil, err
+	}
+	if _, stderr, exitCode, err := runCommand("git", append(append([]string{}, applyArgs...), "--check", tmpFile)...); err != nil || exitCode != 0 {
+		if err != nil {
+			return &ApplyResult{Applied: false, Error: err.Error()}, nil
+		}
+		return &ApplyResult{Applied: false, Error: "git apply --check: " + stderr}, nil
 	}
 	revertArgs := append(append([]string{}, applyArgs...), "-R", tmpFile)
 
@@ -143,7 +170,7 @@ func Apply(patchURL, projectPath, composerPackage, description string) (*ApplyRe
 			reference = rel
 		}
 	}
-	if err := registerPatch(projectPath, composerPackage, reference, description); err != nil {
+	if err := registerPatchWithEvidence(projectPath, composerPackage, reference, description, evidence); err != nil {
 		runCommand("git", revertArgs...)
 		return &ApplyResult{Applied: false, Error: "composer.json update failed: " + err.Error()}, nil
 	}
@@ -152,7 +179,7 @@ func Apply(patchURL, projectPath, composerPackage, description string) (*ApplyRe
 	if rel := packageRelDir(projectPath, composerPackage); rel != "" {
 		changed = append(changed, rel)
 	}
-	return &ApplyResult{Applied: true, ChangedFiles: changed}, nil
+	return &ApplyResult{Applied: true, ChangedFiles: changed, PatchEvidence: evidence}, nil
 }
 
 // LocalPatchPath exposes local patch resolution to callers that need to read
@@ -222,32 +249,95 @@ func packageDir(projectPath, composerPackage string) string {
 	return projectPath
 }
 
-func downloadPatch(url string) (string, error) {
-	resp, err := httpClient.Get(url)
+func downloadPatch(rawURL string) (string, PatchEvidence, error) {
+	client := *httpClient
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
+		}
+		if !checkAllowedURL(req.URL.String()) {
+			return fmt.Errorf("redirect URL not in allowlist: %s", req.URL)
+		}
+		return nil
+	}
+	resp, err := client.Get(rawURL)
 	if err != nil {
-		return "", err
+		return "", PatchEvidence{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+		return "", PatchEvidence{}, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	if resp.ContentLength > maxPatchBytes {
+		return "", PatchEvidence{}, fmt.Errorf("patch body exceeds %d bytes", maxPatchBytes)
 	}
 
 	tmpFile, err := os.CreateTemp("", "drup-patch-*.patch")
 	if err != nil {
-		return "", err
+		return "", PatchEvidence{}, err
 	}
-	defer tmpFile.Close()
+	name := tmpFile.Name()
+	defer func() { _ = tmpFile.Close() }()
 
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		os.Remove(tmpFile.Name())
-		return "", err
+	written, err := io.Copy(tmpFile, io.LimitReader(resp.Body, maxPatchBytes+1))
+	if err != nil || written > maxPatchBytes {
+		_ = os.Remove(name)
+		if err != nil {
+			return "", PatchEvidence{}, err
+		}
+		return "", PatchEvidence{}, fmt.Errorf("patch body exceeds %d bytes", maxPatchBytes)
 	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", PatchEvidence{}, err
+	}
+	evidence, err := evidenceForLocalPatch(name, rawURL)
+	if err != nil {
+		_ = os.Remove(name)
+		return "", PatchEvidence{}, err
+	}
+	evidence.FinalURL = resp.Request.URL.String()
+	return name, evidence, nil
+}
 
-	return tmpFile.Name(), nil
+func evidenceForLocalPatch(path, source string) (PatchEvidence, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return PatchEvidence{}, err
+	}
+	digest := sha256.Sum256(data)
+	return PatchEvidence{SHA256: fmt.Sprintf("%x", digest), Size: int64(len(data)), InitialURL: source, FinalURL: source, RecordedAt: time.Now().UTC()}, nil
+}
+
+func validatePatchPaths(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "new file mode 120000") || strings.HasPrefix(line, "new mode 120000") {
+			return fmt.Errorf("patch creates or changes a symbolic link")
+		}
+		if strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ") {
+			name := strings.Fields(strings.TrimSpace(line[4:]))
+			if len(name) == 0 || name[0] == "/dev/null" {
+				continue
+			}
+			candidate := strings.TrimPrefix(strings.TrimPrefix(name[0], "a/"), "b/")
+			if filepath.IsAbs(candidate) || candidate == ".." || strings.HasPrefix(filepath.Clean(candidate), ".."+string(filepath.Separator)) {
+				return fmt.Errorf("patch path outside declared package: %s", name[0])
+			}
+		}
+	}
+	return nil
 }
 
 func registerPatch(projectPath, composerPackage, patchURL, description string) error {
+	return registerPatchWithEvidence(projectPath, composerPackage, patchURL, description, PatchEvidence{})
+}
+
+func registerPatchWithEvidence(projectPath, composerPackage, patchURL, description string, evidence PatchEvidence) error {
 	composerFile := filepath.Join(projectPath, "composer.json")
 	data, err := os.ReadFile(composerFile)
 	if err != nil {
@@ -303,6 +393,24 @@ func registerPatch(projectPath, composerPackage, patchURL, description string) e
 	}
 	modulePatches[key] = patchURL
 	patches[composerPackage] = modulePatches
+	if evidence.SHA256 != "" {
+		drup, ok := extra["drup"].(map[string]interface{})
+		if !ok {
+			drup = make(map[string]interface{})
+			extra["drup"] = drup
+		}
+		allEvidence, ok := drup["patch_evidence"].(map[string]interface{})
+		if !ok {
+			allEvidence = make(map[string]interface{})
+			drup["patch_evidence"] = allEvidence
+		}
+		packageEvidence, ok := allEvidence[composerPackage].(map[string]interface{})
+		if !ok {
+			packageEvidence = make(map[string]interface{})
+			allEvidence[composerPackage] = packageEvidence
+		}
+		packageEvidence[key] = evidence
+	}
 
 	// Write back.
 	data, err = json.MarshalIndent(composer, "", "  ")

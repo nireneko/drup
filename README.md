@@ -312,7 +312,7 @@ Codex ─────────┘
 | `autofix` | `project_path` | Rector summary + remaining errors | Runs `drupal-rector` on custom code |
 | `contrib_check` | `module_machine_name` | `{ has_d11_release, latest_version, compatible_branches }` | Checks Drupal.org releases for a module |
 | `issue_patches` | `issue_nid` or `module_name` | `[{ url, status, date, is_patch }]` | Searches Drupal.org issues for patches |
-| `apply_patch` | `patch_url, project_path` | `{ applied, commit_hash, error }` | Downloads and applies a .patch safely |
+| `apply_patch` | `patch_url, project_path` | `{ applied, changed_files, patch_evidence, error }` | Downloads, preflights, and applies a provenance-bound .patch safely |
 | `validate` | `project_path, scope, module, file` | `{ total_errors, errors[] }` | Re-runs analysis with scope filtering |
 | `create_patch` | `module_name, deprecation_details` | `{ patch_path, applied }` | Generates a .patch from deprecation analysis |
 
