@@ -456,3 +456,38 @@ func TestRestoreFilesystemSwapFailureRollsBackCurrentTree(t *testing.T) {
 		t.Fatalf("backups = %d, err = %v; rescue must remain", len(backups), err)
 	}
 }
+
+func TestRestoreCheckRejectsIncompleteJournalAndReportsPlan(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "settings.php"), []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalRun, originalDetect := run, detectEnv
+	defer func() { run, detectEnv = originalRun, originalDetect }()
+	detectEnv = func(string) (*envdetect.Detection, error) { return &envdetect.Detection{}, nil }
+	run = testDumpRun(t)
+	m := NewManager(project)
+	manifest, err := m.Create(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := m.RestoreCheck(project, manifest.BackupID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Confirmed || plan.DatabaseMode != "non_atomic" || plan.PlanID == "" {
+		t.Fatalf("plan = %+v", plan)
+	}
+	if err := os.MkdirAll(filepath.Join(project, ".drup", "restores"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, ".drup", "restores", "blocked.json"), []byte(`{"version":1,"id":"blocked","backup_id":"x","state":"recovery_required","database_mode":"non_atomic","continuation":"recover","updated_at":"2026-01-01T00:00:00Z"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.RestoreCheck(project, manifest.BackupID); err == nil {
+		t.Fatal("restore check accepted incomplete journal")
+	}
+	if err := m.Restore(project, manifest.BackupID, true); err == nil {
+		t.Fatal("restore retried despite incomplete journal")
+	}
+}

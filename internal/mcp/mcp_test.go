@@ -185,8 +185,8 @@ func TestServer_ListTools(t *testing.T) {
 	if !ok {
 		t.Fatal("missing tools array in result")
 	}
-	if len(tools) != 39 {
-		t.Errorf("len(tools) = %d, want 39", len(tools))
+	if len(tools) != 40 {
+		t.Errorf("len(tools) = %d, want 40", len(tools))
 	}
 }
 
@@ -515,8 +515,8 @@ func TestServer_PostWireUpCountIs43(t *testing.T) {
 	if !ok {
 		t.Fatal("missing tools array in result")
 	}
-	if len(tools) != 43 {
-		t.Errorf("post-wire-up tool count = %d, want 43 (39 default + 4 backup)", len(tools))
+	if len(tools) != 44 {
+		t.Errorf("post-wire-up tool count = %d, want 44 (40 default + 4 backup)", len(tools))
 	}
 }
 
@@ -538,8 +538,8 @@ func TestServer_ListTools_ProjectPathAwareToolsAdvertiseIt(t *testing.T) {
 func TestServer_ToolCount(t *testing.T) {
 	var buf bytes.Buffer
 	server := NewServer(&buf, "test")
-	if got := server.ToolCount(); got != 39 {
-		t.Errorf("default ToolCount() = %d, want 39", got)
+	if got := server.ToolCount(); got != 40 {
+		t.Errorf("default ToolCount() = %d, want 40", got)
 	}
 
 	// Register 2 more tools.
@@ -548,8 +548,8 @@ func TestServer_ToolCount(t *testing.T) {
 	}
 	server.RegisterTool("extra_tool_1", dummy)
 	server.RegisterTool("extra_tool_2", dummy)
-	if got := server.ToolCount(); got != 41 {
-		t.Errorf("after adding 2 tools, ToolCount() = %d, want 41", got)
+	if got := server.ToolCount(); got != 42 {
+		t.Errorf("after adding 2 tools, ToolCount() = %d, want 42", got)
 	}
 }
 

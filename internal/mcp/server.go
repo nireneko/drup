@@ -362,6 +362,10 @@ var toolRegistry = map[string]toolSchema{
 		},
 		Required: []string{"project_path", "validate_passed"},
 	},
+	"restore_check": {
+		Description: "Read-only restore preflight returning a confirmed RestorePlan; validates integrity, paths, environment, permissions and space",
+		Properties:  map[string]jsonSchemaProperty{"project_path": {Type: "string", Description: "Absolute Drupal project path"}, "backup_id": {Type: "string", Description: "Backup ID"}}, Required: []string{"project_path", "backup_id"},
+	},
 	"test_backup_create": {
 		Description: "Create a local testing backup of a Drupal project",
 		Properties:  map[string]jsonSchemaProperty{"project_path": {Type: "string", Description: "Absolute Drupal project path"}},

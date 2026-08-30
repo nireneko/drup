@@ -1,14 +1,79 @@
 package backup
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
+
+// RestorePlan is the read-only restore preflight contract.
+type RestorePlan struct {
+	PlanID        string `json:"plan_id"`
+	BackupID      string `json:"backup_id"`
+	ProjectPath   string `json:"project_path"`
+	StageParent   string `json:"stage_parent"`
+	RequiredBytes int64  `json:"required_bytes"`
+	DatabaseMode  string `json:"database_mode"`
+	Confirmed     bool   `json:"confirmed"`
+}
+
+func (m *Manager) RestoreCheck(project, id string) (RestorePlan, error) {
+	project, err := validateProject(project)
+	if err != nil {
+		return RestorePlan{}, err
+	}
+	if !safeID(id) {
+		return RestorePlan{}, fmt.Errorf("backup not found")
+	}
+	if HasIncompleteRestore(project) {
+		return RestorePlan{}, fmt.Errorf("incomplete restore journal requires recovery")
+	}
+	dir := filepath.Join(project, ".drup", "backups", id)
+	data, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		return RestorePlan{}, fmt.Errorf("backup not found: %s", id)
+	}
+	var mfest Manifest
+	if json.Unmarshal(data, &mfest) != nil || mfest.BackupID != id {
+		return RestorePlan{}, fmt.Errorf("checksum failure: invalid manifest")
+	}
+	files, db := filepath.Join(dir, "files.tar.gz"), filepath.Join(dir, "database.sql.gz")
+	if mfest.FilesChecksum == "" || mfest.DatabaseChecksum == "" || checksum(files) != mfest.FilesChecksum || checksum(db) != mfest.DatabaseChecksum {
+		return RestorePlan{}, fmt.Errorf("checksum failure")
+	}
+	if _, err := detectEnv(project); err != nil {
+		return RestorePlan{}, fmt.Errorf("restore environment preflight: %w", err)
+	}
+	parent := filepath.Dir(project)
+	var fs syscall.Statfs_t
+	if err := syscall.Statfs(parent, &fs); err != nil {
+		return RestorePlan{}, fmt.Errorf("restore space preflight: %w", err)
+	}
+	info, err := os.Stat(project)
+	if err != nil || info.Mode().Perm()&0200 == 0 {
+		return RestorePlan{}, fmt.Errorf("restore permission preflight: project is not writable")
+	}
+	needed := int64(0)
+	for _, p := range []string{files, db} {
+		i, e := os.Stat(p)
+		if e != nil {
+			return RestorePlan{}, e
+		}
+		needed += i.Size() * 2
+	}
+	if int64(fs.Bavail)*int64(fs.Bsize) < needed {
+		return RestorePlan{}, fmt.Errorf("restore space preflight: insufficient space")
+	}
+	h := sha256.Sum256([]byte(project + "\x00" + id + "\x00" + mfest.FilesChecksum + "\x00" + mfest.DatabaseChecksum))
+	return RestorePlan{PlanID: hex.EncodeToString(h[:]), BackupID: id, ProjectPath: project, StageParent: parent, RequiredBytes: needed, DatabaseMode: "non_atomic", Confirmed: true}, nil
+}
 
 // RestoreState is persisted before every external restore boundary. A state
 // other than completed is intentionally a recovery stop, never a retry hint.

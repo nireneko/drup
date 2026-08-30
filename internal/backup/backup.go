@@ -204,6 +204,9 @@ func (m *Manager) Restore(project, id string, confirm bool) error {
 	if !safeID(id) {
 		return fmt.Errorf("backup not found")
 	}
+	if _, err := m.RestoreCheck(project, id); err != nil {
+		return err
+	}
 	return m.restoreTransactional(project, id)
 }
 

@@ -136,6 +136,7 @@ func WireMCPTools(s *mcp.Server) {
 		"custom_compat_fix":      realHandleCustomCompatFix,
 		"contrib_allow_lenient":  realHandleContribAllowLenient,
 		"contrib_compat_patch":   realHandleContribCompatPatch,
+		"restore_check":          realHandleRestoreCheck,
 		"test_backup_create":     realHandleTestBackupCreate,
 		"test_backup_list":       realHandleTestBackupList,
 		"test_backup_restore":    realHandleTestBackupRestore,
@@ -315,6 +316,24 @@ func backupParams(args json.RawMessage) (string, error) {
 	}
 	return p.ProjectPath, nil
 }
+func realHandleRestoreCheck(args json.RawMessage) (json.RawMessage, error) {
+	var p struct {
+		ProjectPath string `json:"project_path"`
+		BackupID    string `json:"backup_id"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return nil, err
+	}
+	if p.ProjectPath == "" || p.BackupID == "" {
+		return nil, fmt.Errorf("project_path and backup_id are required")
+	}
+	plan, err := backup.NewManager(p.ProjectPath).RestoreCheck(p.ProjectPath, p.BackupID)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(plan)
+}
+
 func realHandleTestBackupCreate(args json.RawMessage) (json.RawMessage, error) {
 	p, err := backupParams(args)
 	if err != nil {
