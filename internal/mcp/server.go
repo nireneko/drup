@@ -373,7 +373,7 @@ var toolRegistry = map[string]toolSchema{
 		Required:    []string{"project_path"},
 	},
 	"test_backup_restore": {
-		Description: "Restore a confirmed local testing backup",
+		Description: "Restore a confirmed local testing backup transactionally; response reports the non-atomic database recovery journal",
 		Properties: map[string]jsonSchemaProperty{
 			"project_path": {Type: "string", Description: "Absolute Drupal project path"},
 			"backup_id":    {Type: "string", Description: "Backup ID"},

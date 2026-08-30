@@ -33,7 +33,11 @@ func RunTestBackupRestore(projectPath, backupID string) error {
 	if err := backup.NewManager(projectPath).Restore(projectPath, backupID, true); err != nil {
 		return fmt.Errorf("restore testing backup: %w", err)
 	}
-	return printBackupJSON(map[string]interface{}{"backup_id": backupID, "restored": true})
+	journals, err := backup.ListRestoreJournals(projectPath)
+	if err != nil || len(journals) == 0 {
+		return fmt.Errorf("read restore journal: %w", err)
+	}
+	return printBackupJSON(map[string]interface{}{"backup_id": backupID, "restored": true, "restore_journal": journals[0]})
 }
 
 func RunTestBackupDelete(projectPath, backupID string) error {

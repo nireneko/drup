@@ -434,7 +434,9 @@ Not part of the 28 categorized tools in §5, but mandatory in the pipeline.
 
 - All four accept `project_path`. Restore also needs `backup_id` and `confirm: true`. Delete needs `backup_id`.
 - Restore refuses without `confirm:true` — this is a second-line defense against accidental deletion.
-- **NEVER DELETE A BACKUP AUTOMATICALLY.** Retain for the user to delete explicitly via `test_backup_delete` with `confirm`. Phase 0 backup is preserved across successful final stages and reused on failed runs.
+- Restore writes an atomic journal in `.drup/restores/` before each destructive boundary, creates an independent rescue backup, and preserves the pre-swap filesystem tree. Any non-completed journal blocks later run mutations until an operator explicitly reconciles it.
+- Database imports are declared **non-atomic**: after an import failure or interrupted filesystem swap, inspect the journal's `rescue_backup_id` and `previous_path`, reconcile the database deliberately, and only then resume. Never blind-retry a journaled restore.
+- **NEVER DELETE A BACKUP AUTOMATICALLY.** Retain the original and rescue backups for the user to delete explicitly via `test_backup_delete` with `confirm`. Phase 0 backup is preserved across successful final stages and reused on failed runs.
 
 ---
 

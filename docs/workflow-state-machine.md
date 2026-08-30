@@ -104,6 +104,7 @@ The transition layer, not the agent, enforces these rules:
 - A major contrib checkpoint accepts exactly one package target.
 - `core_upgrade_apply` requires `run_confirm(action="core_upgrade")` and a
   target equal to the recorded immediate next major.
+- An incomplete `.drup/restores/` journal blocks every run-authorized mutation. A restore has a non-atomic database window; operators reconcile the journal's rescue backup and preserved previous filesystem tree before resolving the run.
 - `test_backup_restore` requires `run_confirm(action="restore")`; automatic
   restore and automatic backup deletion remain forbidden.
 - A failed validator, Composer conflict, patch conflict, or unavailable

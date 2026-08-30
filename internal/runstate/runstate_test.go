@@ -437,3 +437,28 @@ func TestInventorySnapshots_PersistAtomicallyAndRejectIncompleteReport(t *testin
 		t.Fatalf("stable delta = %#v", got.Delta)
 	}
 }
+
+func TestValidateMutationBlocksIncompleteRestoreJournal(t *testing.T) {
+	root := t.TempDir()
+	store := NewStore(root)
+	run, err := store.Create(CreateInput{ID: "restore-interlock", TargetMajor: 11})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []Action{ActionRecordGitSafety, ActionRecordEnvironment} {
+		run, err = store.Record(run.ID, RecordInput{Action: action, Kind: "check", Summary: "ok"})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".drup", "restores"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journal := `{"version":1,"id":"restore-1","backup_id":"backup-1","state":"recovery_required","database_mode":"non_atomic","continuation":"reconcile","updated_at":"2026-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(root, ".drup", "restores", "restore-1.json"), []byte(journal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ValidateMutation(run.ID, root, "composer_require"); !errors.Is(err, ErrMutationNotAllowed) || !strings.Contains(err.Error(), "incomplete restore") {
+		t.Fatalf("ValidateMutation() error = %v, want incomplete restore interlock", err)
+	}
+}

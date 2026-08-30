@@ -125,7 +125,7 @@ func (m *Manager) Create(project string) (Manifest, error) {
 	}
 
 	filesPath := filepath.Join(dir, "files.tar.gz")
-	if err = archive(project, filesPath, filepath.Join(project, ".drup", "backups")); err != nil {
+	if err = archive(project, filesPath, filepath.Join(project, ".drup")); err != nil {
 		return Manifest{}, fmt.Errorf("filesystem backup failure: %w", err)
 	}
 	dbPath := filepath.Join(dir, "database.sql.gz")
@@ -204,47 +204,7 @@ func (m *Manager) Restore(project, id string, confirm bool) error {
 	if !safeID(id) {
 		return fmt.Errorf("backup not found")
 	}
-	dir := filepath.Join(project, ".drup", "backups", id)
-	var mfest Manifest
-	data, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
-	if os.IsNotExist(err) {
-		return fmt.Errorf("backup not found: %s", id)
-	}
-	if err != nil {
-		return err
-	}
-	if json.Unmarshal(data, &mfest) != nil {
-		return fmt.Errorf("checksum failure: invalid manifest")
-	}
-	files, db := filepath.Join(dir, "files.tar.gz"), filepath.Join(dir, "database.sql.gz")
-	if mfest.FilesChecksum == "" || mfest.DatabaseChecksum == "" || checksum(files) != mfest.FilesChecksum || checksum(db) != mfest.DatabaseChecksum {
-		return fmt.Errorf("checksum failure")
-	}
-	stage, err := os.MkdirTemp("", "drup-restore-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(stage)
-	if err = extract(files, stage); err != nil {
-		return fmt.Errorf("filesystem restore failure: %w", err)
-	}
-	detection, err := detectEnv(project)
-	if err != nil {
-		return err
-	}
-	in, err := os.Open(db)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	_, stderr, code, runErr := runInput(detection.CommandPrefix, in, "drush", "sql:cli", "--root="+project)
-	if runErr != nil || code != 0 {
-		return fmt.Errorf("database restore failure: %s", commandError(runErr, stderr, code))
-	}
-	if err = replaceProject(project, stage); err != nil {
-		return fmt.Errorf("filesystem restore failure: %w", err)
-	}
-	return nil
+	return m.restoreTransactional(project, id)
 }
 
 func randomID() string { b := make([]byte, 4); _, _ = rand.Read(b); return hex.EncodeToString(b) }

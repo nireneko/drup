@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nireneko/drup/internal/backup"
 	"github.com/nireneko/drup/internal/inventory"
 )
 
@@ -897,6 +898,9 @@ func (s *Store) ValidateMutation(id, root, tool string) (Run, error) {
 	}
 	if run.Status != StatusActive {
 		return Run{}, fmt.Errorf("%w: run is %s", ErrMutationNotAllowed, run.Status)
+	}
+	if backup.HasIncompleteRestore(s.root) {
+		return Run{}, fmt.Errorf("%w: an incomplete restore journal requires explicit recovery", ErrMutationNotAllowed)
 	}
 	if !toolAllowed(run, tool) {
 		return Run{}, fmt.Errorf("%w: %s is not allowed in %s; allowed actions are %v", ErrMutationNotAllowed, tool, run.Phase, run.AllowedActions)

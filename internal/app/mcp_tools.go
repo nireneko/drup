@@ -352,7 +352,11 @@ func realHandleTestBackupRestore(args json.RawMessage) (json.RawMessage, error) 
 	if err := backup.NewManager(p.ProjectPath).Restore(p.ProjectPath, p.BackupID, p.Confirm); err != nil {
 		return nil, err
 	}
-	return json.Marshal(map[string]interface{}{"backup_id": p.BackupID, "restored": true})
+	journals, err := backup.ListRestoreJournals(p.ProjectPath)
+	if err != nil || len(journals) == 0 {
+		return nil, fmt.Errorf("restore completed but its journal could not be read: %w", err)
+	}
+	return json.Marshal(map[string]interface{}{"backup_id": p.BackupID, "restored": true, "restore_journal": journals[0]})
 }
 func realHandleTestBackupDelete(args json.RawMessage) (json.RawMessage, error) {
 	var p struct {

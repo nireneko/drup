@@ -80,8 +80,15 @@ func TestManagerCreateRestoreListDelete(t *testing.T) {
 		t.Fatalf("restored settings = %q, err = %v", data, err)
 	}
 	backups, err := NewManager(project).List(project)
-	if err != nil || len(backups) != 1 || backups[0].BackupID != manifest.BackupID {
-		t.Fatalf("backups = %+v, err = %v", backups, err)
+	if err != nil || len(backups) != 2 {
+		t.Fatalf("backups = %+v, err = %v; expected original plus independent rescue", backups, err)
+	}
+	foundOriginal := false
+	for _, candidate := range backups {
+		foundOriginal = foundOriginal || candidate.BackupID == manifest.BackupID
+	}
+	if !foundOriginal {
+		t.Fatalf("original backup %s disappeared", manifest.BackupID)
 	}
 	if err := NewManager(project).Delete(project, manifest.BackupID); err != nil {
 		t.Fatal(err)
@@ -319,5 +326,133 @@ func TestDumpTarget_FailsWhenTheRootCannotBeResolved(t *testing.T) {
 
 	if _, err := dumpTarget("/home/dev/site", []string{"ddev", "exec"}, "d.sql"); err == nil {
 		t.Error("an unresolvable Drupal root was accepted; the dump would go somewhere unknown")
+	}
+}
+
+func TestRestoreFailureKeepsOriginalAndRescueWithJournal(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "settings.php"), []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalRun, originalInput, originalDetect := run, runInput, detectEnv
+	defer func() { run, runInput, detectEnv = originalRun, originalInput, originalDetect }()
+	detectEnv = func(string) (*envdetect.Detection, error) { return &envdetect.Detection{}, nil }
+	run = testDumpRun(t)
+	runInput = func([]string, io.Reader, string, ...string) (string, string, int, error) {
+		return "", "database unavailable", 1, nil
+	}
+	m := NewManager(project)
+	manifest, err := m.Create(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "settings.php"), []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Restore(project, manifest.BackupID, true); err == nil {
+		t.Fatal("restore unexpectedly succeeded")
+	}
+	data, err := os.ReadFile(filepath.Join(project, "settings.php"))
+	if err != nil || string(data) != "changed" {
+		t.Fatalf("current tree = %q, err = %v", data, err)
+	}
+	if !HasIncompleteRestore(project) {
+		t.Fatal("failed restore did not leave a recoverable journal")
+	}
+	backups, err := m.List(project)
+	if err != nil || len(backups) != 2 {
+		t.Fatalf("backups = %d, err = %v; original and rescue must remain", len(backups), err)
+	}
+}
+
+func TestRestoreSuccessCompletesJournalAndPreservesPriorTree(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "settings.php"), []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalRun, originalInput, originalDetect := run, runInput, detectEnv
+	defer func() { run, runInput, detectEnv = originalRun, originalInput, originalDetect }()
+	detectEnv = func(string) (*envdetect.Detection, error) { return &envdetect.Detection{}, nil }
+	run = testDumpRun(t)
+	runInput = func([]string, io.Reader, string, ...string) (string, string, int, error) { return "", "", 0, nil }
+	m := NewManager(project)
+	manifest, err := m.Create(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "settings.php"), []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Restore(project, manifest.BackupID, true); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(project, "settings.php"))
+	if err != nil || string(data) != "original" {
+		t.Fatalf("restored tree = %q, err = %v", data, err)
+	}
+	if HasIncompleteRestore(project) {
+		t.Fatal("completed restore is still blocking")
+	}
+	journals, err := ListRestoreJournals(project)
+	if err != nil || len(journals) != 1 || journals[0].State != RestoreCompleted {
+		t.Fatalf("journals = %+v, err = %v", journals, err)
+	}
+	prior, err := os.ReadFile(filepath.Join(journals[0].PreviousPath, "settings.php"))
+	if err != nil || string(prior) != "changed" {
+		t.Fatalf("preserved tree = %q, err = %v", prior, err)
+	}
+}
+
+func testDumpRun(t *testing.T) func(string, []string, string, ...string) (string, string, int, error) {
+	t.Helper()
+	return func(dir string, _ []string, _ string, args ...string) (string, string, int, error) {
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "--result-file=") {
+				if err := os.WriteFile(filepath.Join(dir, filepath.Base(strings.TrimPrefix(arg, "--result-file="))), []byte("-- dump\nCREATE TABLE x;"), 0o600); err != nil {
+					return "", "", -1, err
+				}
+			}
+		}
+		return "", "", 0, nil
+	}
+}
+
+func TestRestoreFilesystemSwapFailureRollsBackCurrentTree(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "settings.php"), []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalRun, originalInput, originalDetect, originalMove := run, runInput, detectEnv, movePath
+	defer func() { run, runInput, detectEnv, movePath = originalRun, originalInput, originalDetect, originalMove }()
+	detectEnv = func(string) (*envdetect.Detection, error) { return &envdetect.Detection{}, nil }
+	run = testDumpRun(t)
+	runInput = func([]string, io.Reader, string, ...string) (string, string, int, error) { return "", "", 0, nil }
+	m := NewManager(project)
+	manifest, err := m.Create(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "settings.php"), []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	movePath = func(source, destination string) error {
+		if strings.Contains(source, ".drup-restore-stage-") && destination == filepath.Join(project, "settings.php") {
+			return os.ErrPermission
+		}
+		return originalMove(source, destination)
+	}
+	if err := m.Restore(project, manifest.BackupID, true); err == nil {
+		t.Fatal("restore unexpectedly succeeded")
+	}
+	data, err := os.ReadFile(filepath.Join(project, "settings.php"))
+	if err != nil || string(data) != "changed" {
+		t.Fatalf("rollback tree = %q, err = %v", data, err)
+	}
+	if !HasIncompleteRestore(project) {
+		t.Fatal("swap failure did not block follow-up mutations")
+	}
+	backups, err := m.List(project)
+	if err != nil || len(backups) != 2 {
+		t.Fatalf("backups = %d, err = %v; rescue must remain", len(backups), err)
 	}
 }
