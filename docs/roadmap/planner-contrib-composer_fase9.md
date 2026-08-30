@@ -4,7 +4,7 @@
 
 ## Estado verificado
 
-Pendiente. `drupalorg.UpgradePath` aporta releases, pero no analiza `composer.lock`, `show --outdated`, `prohibits` o `why-not`; clasificación y orden continúan en el agente.
+Implementado. `contrib_plan` analiza `composer.lock`, consulta `show --outdated --direct --format=json` y `prohibits` en modo read-only, persiste un ledger recalculable por run y evita delegar la clasificación u orden al agente.
 
 No se debe reimplementar ninguna capacidad indicada como existente: debe reutilizarse y probarse en integración. El estado se basa en `MEJORAS-PROPUESTAS.md`, el árbol actual y los cambios locales visibles; no presupone que esos cambios estén entregados.
 
@@ -58,10 +58,10 @@ Cada work unit incluye comportamiento, pruebas y documentación asociada; debe p
 
 ## Criterios de aceptación
 
-- [ ] Conflictos se detectan antes de modificar json/lock.
-- [ ] Cada bloqueo identifica raíz y restricción.
-- [ ] Lock idéntico produce plan idéntico.
-- [ ] Un grupo major contiene exactamente un paquete.
+- [x] Conflictos se detectan antes de modificar json/lock.
+- [x] Cada bloqueo identifica raíz y restricción.
+- [x] Lock idéntico produce plan idéntico.
+- [x] Un grupo major contiene exactamente un paquete.
 
 
 ## Verificación prevista
@@ -82,11 +82,11 @@ Estos comandos son el plan de evidencia, no resultados ejecutados. En sandbox o 
 
 ## Definición de terminado
 
-- [ ] Todos los criterios tienen prueba enfocada y evidencia registrada.
-- [ ] Suite aplicable y `git diff --check` ejecutados con resultado explícito.
-- [ ] Contratos, docs y tres superficies MCP permanecen coherentes.
-- [ ] Migración y rollback han sido ensayados o declarados no aplicables con razón.
-- [ ] No quedan decisiones del workflow confiadas únicamente al prompt.
+- [x] Todos los criterios tienen prueba enfocada y evidencia registrada.
+- [x] Suite aplicable y `git diff --check` ejecutados con resultado explícito.
+- [x] Contratos, docs y tres superficies MCP permanecen coherentes.
+- [x] Migración y rollback no aplicables: el ledger es reemplazable y read-only; se conserva en runs existentes.
+- [x] No quedan decisiones del workflow confiadas únicamente al prompt.
 
 ## Siguiente fase
 

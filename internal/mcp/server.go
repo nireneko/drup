@@ -227,6 +227,14 @@ var toolRegistry = map[string]toolSchema{
 		},
 		Required: []string{"module_machine_name", "current_drupal_version", "target_drupal_version"},
 	},
+	"contrib_plan": {
+		Description: "Build and persist a deterministic read-only Composer contrib update plan for the current immediate-major cycle",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+			"run_id":       {Type: "string", Description: "Persisted run identifier for the current cycle"},
+		},
+		Required: []string{"project_path", "run_id"}, Effect: EffectWorkflow,
+	},
 	"upgrade_scan": {
 		Description: "Run read-only upgrade scan on a prepared project",
 		Properties: map[string]jsonSchemaProperty{
@@ -577,7 +585,7 @@ func init() {
 	spec.Properties["run_id"] = jsonSchemaProperty{Type: "string", Description: "Persisted upgrade run ID authorizing this reconciliation"}
 	spec.Required = append(spec.Required, "run_id")
 	toolRegistry["operation_reconcile"] = spec
-	for _, name := range []string{"run_create", "run_status", "run_record", "run_confirm", "run_block", "run_abandon", "inventory_capture"} {
+	for _, name := range []string{"run_create", "run_status", "run_record", "run_confirm", "run_block", "run_abandon", "inventory_capture", "contrib_plan"} {
 		spec := toolRegistry[name]
 		spec.Effect = EffectWorkflow
 		spec.Role = "workflow_authority"

@@ -1,8 +1,8 @@
 # drup MCP Tools — Agent Reference
 
-This document is an **agent-facing reference** for the 41 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
+This document is an **agent-facing reference** for the 43 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
 
-**Tooling totals at runtime:** the `ToolSpec` catalog derives 37 stub entries (including `session_open`, `pipeline_status`, `operation_reconcile`, `checkpoint_execute`, and the six `run_*` workflow tools) plus 4 reverse-asymmetric backup tools = **41 total**. See [§1.1](#11-response-envelope-uniform-contract) for the uniform envelope that wraps every response.
+**Tooling totals at runtime:** the `ToolSpec` catalog derives 39 stub entries (including `session_open`, `pipeline_status`, `operation_reconcile`, `checkpoint_execute`, `contrib_plan`, and the six `run_*` workflow tools) plus 4 reverse-asymmetric backup tools = **43 total**. See [§1.1](#11-response-envelope-uniform-contract) for the uniform envelope that wraps every response.
 
 For tool **schemas** (JSON Schema, required fields, types) call `tools/list` — do not hardcode them here. For tool **internals** (Go package, test coverage) read `internal/app/mcp_tools.go`.
 
@@ -54,6 +54,7 @@ Only descriptor-marked read-only tools retry transient errors, up to 2 times wit
 | Validate just one module or one file | `validate` (with `module` or `file`) | `scan` (no filter) |
 | "Will this contrib work on the target Drupal major?" | `contrib_check` | `contrib_upgrade_path` (different question) |
 | "Which exact version should I **install** for the target major?" | `contrib_upgrade_path` | `contrib_check` (only reports compatibility branch availability) |
+| Build safe contrib update batches before touching Composer | `contrib_plan` | asking an agent to infer dependency order |
 | Find a patch for an issue or module | `issue_patches` | curl + grep d.o HTML |
 | Download and apply a .patch + register in composer.json | `apply_patch` | curl + git apply manually |
 | Reverse a failed patch cleanly | `patch_rollback` | git revert + manual composer edit |
@@ -328,14 +329,21 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 - **Inputs**: `project_path`, `run_id`, `stage` (`baseline` or `final`).
 - **Safety**: refuses unknown stages and incomplete captures. Reports with `run_id` use only these persisted snapshots and fail closed when either snapshot or typed evidence is absent.
 
-### 5.20 `generate_report`
+### 5.20 `contrib_plan`
+
+- **Purpose**: Read `composer.lock`, query Composer's read-only direct-outdated and prohibitions views, and persist a deterministic contrib ledger for the active run.
+- **Returns**: `{ success, project_path, run_id, plan: {items, groups} }`; blockers include their causal root and the conflicting constraint.
+- **Safety**: never changes `composer.json` or `composer.lock`. Patch/minor groups may batch targets; every major group has exactly one target. Invalid JSON, an unavailable lock, or an unresolved Composer query fails closed before replacing the prior plan.
+- **Red flag**: treating a Drupal.org release recommendation as installable without this plan — root and transitive Composer constraints can still forbid it.
+
+### 5.21 `generate_report`
 
 - **Purpose**: Wrap `internal/report` to write deterministic JSON/Markdown from a persisted run snapshot when `run_id` is supplied; legacy no-run calls retain live report behavior.
 - **Returns**: `{ success, json_report_path, markdown_report_path, summary: {total_modules_checked, patches_applied, custom_files_fixed, errors_remaining, pending_human_review} }`
 - **Side-effects**: writes files in `project_path` root.
 - **Red flag**: assuming it's read-only — it creates artifacts.
 
-### 5.21 `cleanup`
+### 5.22 `cleanup`
 
 - **Purpose**: Post-pipeline cleanup. Uninstalls dev modules (`upgrade_status`, `drupal-rector`) and reverts any temporary patches created during rector. Only runs when `validate_passed=true`.
 - **Returns**: `{ success, uninstalled: [<module>…], reverted_patches: [<url>…], stderr }`
@@ -343,7 +351,7 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 - **Side-effects**: modifies the Drupal site (uninstalls modules) and the working tree (reverts temp patches).
 - **Red flag**: calling it on a failing pipeline to "clean anyway" — it is designed to skip on failure. If you want to clean after a failed run, restore from `test_backup` instead.
 
-### 5.22 `checkpoint_commit`
+### 5.23 `checkpoint_commit`
 
 - **Purpose**: Publish exactly the current candidate previously approved by independent validation evidence.
 - **Inputs**: `project_path`, `run_id`, `commit_strategy`, `scope`, complete `paths`, `validation_hash`, and `target`; optional `commit_message`.
@@ -353,7 +361,7 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 
 > The wiring invariant above is enforced by MCP catalog tests. Every tool must remain present in `defaultTools()`, `toolRegistry`, and `WireMCPTools`.
 
-### 5.23 `checkpoint_execute`
+### 5.24 `checkpoint_execute`
 
 - **Purpose**: Persist and execute one operational checkpoint with explicit argv-only adapters: fresh backup, `drush updatedb`, cache rebuild, status, independent validation, and `drush config:export` when `config/sync` is managed. Composer package update is included only for contrib patch/minor/major phases; custom/theme, core-loop, and cleanup never repeat it.
 - **Inputs**: `project_path`, `run_id`, active `phase`, exact `target_major`, scoped `targets`, and complete candidate `paths`.
@@ -361,7 +369,7 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 - **Backup and validation**: the backup ID is bound to this plan rather than inferred from the newest manifest. Validation is re-run and candidate identity is recomputed from Git after it succeeds; no fixer-provided success assertion is accepted.
 - **Publication**: this tool never commits. Pass independently recorded validation evidence and the recomputed candidate to `checkpoint_commit` as the only publication boundary.
 
-### 5.23 `custom_compat_fix`
+### 5.25 `custom_compat_fix`
 
 - **Purpose**: Declares support for the target Drupal major in the project's own modules, themes and profiles by widening `core_version_requirement`. These declarations are what `preflight` reports as `core_module_compat` blockers, and no other stage rewrites them.
 - **Returns**: `{ project_path, target_version, dry_run, updated, already_compatible, needs_attention, changes: [{ name, file, before, after, changed, note }] }`

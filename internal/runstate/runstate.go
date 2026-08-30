@@ -146,8 +146,11 @@ type Run struct {
 	// to regenerate reports without re-scanning a changed project.
 	InventoryBaseline *inventory.Inventory `json:"inventory_baseline,omitempty"`
 	InventoryFinal    *inventory.Inventory `json:"inventory_final,omitempty"`
-	CreatedAt         time.Time            `json:"created_at"`
-	UpdatedAt         time.Time            `json:"updated_at"`
+	// ContribPlan is the sanitized, read-only Composer plan for the current
+	// immediate core-major cycle. It is evidence, not transition authority.
+	ContribPlan json.RawMessage `json:"contrib_plan,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
 // CheckpointStepName is a fixed command boundary. Callers cannot invent an
@@ -1174,6 +1177,31 @@ func (s *Store) RecordInventoryBaseline(id string, snapshot inventory.Inventory)
 func (s *Store) RecordInventoryFinal(id string, snapshot inventory.Inventory) (Run, error) {
 	return s.recordInventory(id, snapshot, false)
 }
+
+// RecordContribPlan atomically replaces the plan evidence for the current
+// immediate-major cycle. It does not advance a run: callers must still use
+// the existing phase actions to authorize mutations.
+func (s *Store) RecordContribPlan(id string, plan json.RawMessage) (Run, error) {
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	if len(plan) == 0 || !json.Valid(plan) {
+		return Run{}, fmt.Errorf("invalid contrib plan")
+	}
+	run, err := s.getLocked(id)
+	if err != nil {
+		return Run{}, err
+	}
+	if run.Status != StatusActive {
+		return Run{}, fmt.Errorf("%w: contrib plan is not allowed in %s", ErrInvalidTransition, run.Phase)
+	}
+	run.ContribPlan = append(json.RawMessage(nil), plan...)
+	run.UpdatedAt = time.Now().UTC()
+	if err := s.writeLocked(run); err != nil {
+		return Run{}, err
+	}
+	return run, nil
+}
+
 func (s *Store) recordInventory(id string, snapshot inventory.Inventory, baseline bool) (Run, error) {
 	storeMu.Lock()
 	defer storeMu.Unlock()

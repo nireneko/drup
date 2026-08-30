@@ -37,6 +37,7 @@ func defaultTools() map[string]ToolHandler {
 		"drush_exec":       handleDrushExec,
 		// Upgrade intelligence.
 		"contrib_upgrade_path": handleContribUpgradePath,
+		"contrib_plan":         handleContribPlan,
 		"upgrade_scan":         handleUpgradeScan,
 		// Patch lifecycle.
 		"patch_status":   handlePatchStatus,
@@ -102,6 +103,9 @@ func unavailableRunHandler(args json.RawMessage) (json.RawMessage, error) {
 }
 
 func handleInventoryCapture(args json.RawMessage) (json.RawMessage, error) {
+	return unavailableRunHandler(args)
+}
+func handleContribPlan(args json.RawMessage) (json.RawMessage, error) {
 	return unavailableRunHandler(args)
 }
 func handleRunCreate(args json.RawMessage) (json.RawMessage, error) {

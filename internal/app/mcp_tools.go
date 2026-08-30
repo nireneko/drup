@@ -121,6 +121,7 @@ func WireMCPTools(s *mcp.Server) {
 		"composer_require":       realHandleComposerRequire,
 		"drush_exec":             realHandleDrushExec,
 		"contrib_upgrade_path":   realHandleContribUpgradePath,
+		"contrib_plan":           realHandleContribPlan,
 		"upgrade_scan":           realHandleUpgradeScan,
 		"patch_status":           realHandlePatchStatus,
 		"patch_rollback":         realHandlePatchRollback,
