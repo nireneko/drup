@@ -100,7 +100,7 @@ When running `drup install`, the binary detects which agents you have installed 
 | | `~/.claude/agents/drup-custom.md` | Custom code: refactor with retry and escalation |
 | | `~/.claude/agents/drup-theme.md` | Themes: twig/.theme deprecations |
 | | `~/.claude/agents/drup-validator.md` | Validator: owns every `scan`/`validate`/`upgrade_scan` call — the only agent allowed to confirm a gate; generates the final report |
-| **MCP server** | `~/.claude.json` | Registers `drup mcp` as a user-scoped MCP server with 31 tools |
+| **MCP server** | `~/.claude.json` | Registers `drup mcp` as a user-scoped MCP server with its generated ToolSpec catalog |
 
 **Usage**: open Claude Code in the Drupal project and run:
 
@@ -147,7 +147,7 @@ All 3 agents share the same MCP configuration. The `.mcp.json` (or `mcp.json`) f
 }
 ```
 
-The MCP server communicates over **stdio** (JSON-RPC 2.0). No port needed, no network needed — the agent launches the `drup mcp` process and communicates via stdin/stdout. The 31 exposed tools are documented in [MCP Tools](#mcp-tools) and in [`docs/mcp-tools.md`](docs/mcp-tools.md).
+The MCP server communicates over **stdio** (JSON-RPC 2.0). No port needed, no network needed — the agent launches the `drup mcp` process and communicates via stdin/stdout. The generated catalog tools are documented in [MCP Tools](#mcp-tools) and in [`docs/mcp-tools.md`](docs/mcp-tools.md).
 
 ### Verifying the installation
 
@@ -292,7 +292,7 @@ The binary only does deterministic work. The full flow is executed by an **AI ag
 
 ### The bridge (MCP)
 
-`drup`'s MCP server exposes 31 tools with JSON types and schemas. It's the standard protocol that connects the binary with any compatible agent:
+`drup`'s MCP server exposes a generated ToolSpec catalog with JSON types and schemas. It's the standard protocol that connects the binary with any compatible agent:
 
 ```
 Claude Code ───┐
@@ -304,51 +304,65 @@ Codex ─────────┘
 
 ## MCP Tools
 
-### Core Tools (7 original)
+<!-- BEGIN GENERATED MCP CATALOG -->
 
-| Tool | Input | Output | Purpose |
-|---|---|---|---|
-| `scan` | `project_path` | Classified errors | Initial deprecation analysis via `upgrade_status:analyze` |
-| `autofix` | `project_path` | Rector summary + remaining errors | Runs `drupal-rector` on custom code |
-| `contrib_check` | `module_machine_name` | `{ has_d11_release, latest_version, compatible_branches }` | Checks Drupal.org releases for a module |
-| `issue_patches` | `issue_nid` or `module_name` | `[{ url, status, date, is_patch }]` | Searches Drupal.org issues for patches |
-| `apply_patch` | `patch_url, project_path` | `{ applied, changed_files, patch_evidence, error }` | Downloads, preflights, and applies a provenance-bound .patch safely |
-| `validate` | `project_path, scope, module, file` | `{ total_errors, errors[] }` | Re-runs analysis with scope filtering |
-| `create_patch` | `module_name, deprecation_details` | `{ patch_path, applied }` | Generates a .patch from deprecation analysis |
+## MCP catalog (generated)
 
-### New Tools (10 added)
+`ToolSpec` is the only source for these 45 implemented MCP contracts: schemas, effects, guards, and stub visibility. Regenerate with `go generate ./...`; CI rejects byte drift. 41 tools are available as transport stubs. Planned or obsolete tools are intentionally absent from this runtime catalog.
 
-| Tool | Input | Output | Purpose |
-|---|---|---|---|
-| `detect_env` | `project_path, force_detect?` | `{ environment, command_prefix, detected_at }` | Detects ddev/lando/docker/direct env |
-| `composer_require` | `project_path, package, dev?, no_update?` | `{ success, installed_version, stdout, stderr }` | Safe `composer require` with dry-run |
-| `drush_exec` | `project_path, command, args?, format?` | `{ success, output, stderr, exit_code }` | Safe drush execution with blocklist |
-| `upgrade_scan` | `project_path, scope?, module?` | `{ total_errors, modules[], install_status }` | Atomic install→enable→analyze→filter |
-| `contrib_upgrade_path` | `module, current_drupal, target_drupal` | `{ recommended_upgrade, alternative_versions[] }` | Finds recommended version for next major |
-| `patch_status` | `project_path, patch_url?, package?` | `{ is_applied, commit_hash, registered_in_composer }` | Checks if a patch is already applied |
-| `patch_rollback` | `project_path, patch_url, package` | `{ success, reverted_commit, error }` | Reverts a patch cleanly |
-| `generate_report` | `project_path, report_type?, include_*?` | `{ json_path, markdown_path, summary }` | Generates JSON + Markdown upgrade report |
-| `module_info` | `module, include_maintainers?, include_deps?` | `{ title, downloads, last_release, maintainers, deps }` | Module metadata from Drupal.org |
-| `drupal_version_matrix` | `drupal_version?, php_version?` | `{ php_requirements, supported_until, upgrade_path }` | Drupal/PHP compatibility lookup |
+| Tool | Required input | Effect | Guard contract | Stub |
+|---|---|---|---|---|
+| `apply_patch` | `patch_url, project_path, composer_package, description, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `autofix` | `project_path, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `checkpoint_commit` | `project_path, run_id, commit_strategy, scope, paths, validation_hash, target, request_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `checkpoint_execute` | `project_path, run_id, phase, target_major, targets, paths, request_id` | `mutating` | session + mutation_cap + run | yes |
+| `cleanup` | `project_path, validate_passed, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `composer_require` | `project_path, package, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `contrib_allow_lenient` | `project_path, packages, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `contrib_check` | `module_machine_name` | `read_only` | none | yes |
+| `contrib_compat_patch` | `project_path, module_machine_name, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `contrib_plan` | `project_path, run_id` | `workflow` | none | yes |
+| `contrib_upgrade_path` | `module_machine_name, current_drupal_version, target_drupal_version` | `read_only` | none | yes |
+| `core_upgrade_apply` | `project_path, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `core_upgrade_check` | `project_path` | `read_only` | none | yes |
+| `create_patch` | `module_name, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `custom_compat_fix` | `project_path, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `detect_env` | `project_path` | `read_only` | none | yes |
+| `drupal_version_matrix` | `—` | `read_only` | none | yes |
+| `drush_exec` | `project_path, command, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `generate_report` | `project_path, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `inventory_capture` | `project_path, run_id, stage` | `workflow` | none | yes |
+| `issue_patches` | `—` | `read_only` | none | yes |
+| `module_info` | `module_machine_name` | `read_only` | none | yes |
+| `module_release_info` | `module_machine_name` | `read_only` | none | yes |
+| `operation_reconcile` | `project_path, request_id, evidence_path, run_id` | `mutating` | run | yes |
+| `patch_reconcile` | `module_machine_name, current_patch_url` | `read_only` | none | yes |
+| `patch_rollback` | `project_path, patch_url, composer_package, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `patch_status` | `project_path, patch_url, composer_package` | `read_only` | none | yes |
+| `pipeline_status` | `project_path` | `read_only` | none | yes |
+| `prepare_upgrade_status` | `project_path, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `restore_check` | `project_path, backup_id` | `read_only` | none | yes |
+| `restore_recover` | `project_path, journal_id, confirm, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `run_abandon` | `project_path, run_id, reason` | `workflow` | none | yes |
+| `run_block` | `project_path, run_id, reason` | `workflow` | none | yes |
+| `run_confirm` | `project_path, run_id, action` | `workflow` | none | yes |
+| `run_create` | `project_path, target_major, commit_strategy, scope` | `workflow` | none | yes |
+| `run_record` | `project_path, run_id, action, evidence` | `workflow` | none | yes |
+| `run_status` | `project_path` | `workflow` | none | yes |
+| `scan` | `project_path` | `read_only` | none | yes |
+| `session_open` | `project_path` | `read_only` | none | yes |
+| `test_backup_create` | `project_path, request_id, run_id` | `mutating` | session + mutation_cap + run | no |
+| `test_backup_delete` | `project_path, backup_id, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | no |
+| `test_backup_list` | `project_path` | `read_only` | none | no |
+| `test_backup_restore` | `project_path, backup_id, confirm, plan_id, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | no |
+| `upgrade_scan` | `project_path` | `read_only` | none | yes |
+| `validate` | `project_path` | `read_only` | none | yes |
 
-### Core Upgrade / Patch Reconcile (3 added)
+**Side-effect assertions:** `read_only` changes no project or workflow state; `workflow` changes only persisted run authority; `mutating` requires the listed guard evidence before its handler runs. The manual tool dictionary below is explanatory and must not weaken this contract.
 
-| Tool | Input | Output | Purpose |
-|---|---|---|---|
-| `core_upgrade_check` | `project_path, target_major?` | `{ current_version, next_version, composer_patch_preview, supported }` | Read-only: next major version + composer.json patch preview |
-| `core_upgrade_apply` | `project_path, target_major` (`target_version` legacy), `dry_run` | `{ success, report, rollback_checkpoint, stderr }` | Requires a clean git tree and exact per-step compatibility metadata; missing target metadata blocks the apply |
-| `patch_reconcile` | `module_machine_name, current_patch_url` | `{ newer_patches[], is_still_needed, recommendation }` | Analysis-only: is an already-applied patch obsolete, still needed, or superseded? |
+<!-- END GENERATED MCP CATALOG -->
 
-### Post-pipeline / Backup Lifecycle (6 added)
 
-| Tool | Input | Output | Purpose |
-|---|---|---|---|
-| `custom_compat_fix` | `project_path, target_version, dry_run` | `{ updated, already_compatible, needs_attention, changes[] }` | Widens `core_version_requirement` in the project's own modules, themes and profiles so they declare the target major. Never edits contrib. |
-| `cleanup` | `project_path, validate_passed` | `{ success, uninstalled[], reverted_patches[], stderr }` | Post-pipeline cleanup. Uninstalls `upgrade_status`/`drupal-rector` and reverts temp patches. Refuses when `validate_passed=false` to preserve debugging state. |
-| `test_backup_create` | `project_path` | `backup_id, snapshot` | Creates a local Phase-0 backup. **Required before any mutation tool runs** (`apply_patch`, `core_upgrade_apply`, `patch_rollback`, `composer_require` without dry-run, `create_patch`, `cleanup`). |
-| `test_backup_list` | `project_path` | `[{ backup_id, created_at, ... }]` | Lists existing local backups for a project. |
-| `test_backup_restore` | `project_path, backup_id, confirm` | `{ backup_id, restored }` | Restores a backup. Requires `confirm:true` — refuses silently without it. |
-| `test_backup_delete` | `project_path, backup_id` | `{ backup_id, deleted }` | Deletes a backup. **Never called automatically** — the orchestrator keeps Phase-0 backups intact and only deletes on explicit human request. |
 
 ---
 
@@ -356,7 +370,7 @@ Codex ─────────┘
 
 `drup` splits responsibility strictly along one rule: **all deterministic work happens in the Go binary/MCP tools; the AI agent only orchestrates and talks to the user.**
 
-- **Go/MCP tools** (this binary): version checking, composer.json mutation, patch analysis, git operations, drush/composer execution, report generation — all 31 tools above run without spending a single AI token.
+- **Go/MCP tools** (this binary): version checking, composer.json mutation, patch analysis, git operations, drush/composer execution, report generation — all generated catalog tools run without spending a single AI token.
 - **Agent orchestration** (`SKILL.md` + sub-agents, installed via `drup install`): the `/drup` skill is a pure coordinator with zero execute permission — it never calls Bash or an MCP tool directly. It only dispatches sub-agents (which do call the MCP tools) and relays their structured reports to the user.
 
 This means `/drup <path>` is **not a shell command** — it is a slash command that loads an AI agent skill in Claude Code, OpenCode, or Codex. See [`openspec/changes/drupal-upgrade-orchestrator/specs/`](openspec/changes/drupal-upgrade-orchestrator/specs/) for the requirements this split is built on.

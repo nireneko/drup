@@ -1,0 +1,1681 @@
+{
+  "version": "v1",
+  "tools": [
+    {
+      "name": "apply_patch",
+      "description": "Download and apply a patch to the project",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "composer_package": {
+            "type": "string",
+            "description": "Package the patch belongs to, e.g. drupal/devel. Required for module and theme patches so paths resolve from the package root"
+          },
+          "description": {
+            "type": "string",
+            "description": "Patch description recorded in composer.json extra.patches"
+          },
+          "patch_url": {
+            "type": "string",
+            "description": "URL of the patch file, or a path inside the project"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          }
+        },
+        "required": [
+          "patch_url",
+          "project_path",
+          "composer_package",
+          "description",
+          "request_id",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "backup",
+        "mutation_cap"
+      ],
+      "stub": true,
+      "session_policy": "refuse",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "autofix",
+      "description": "Run drupal-rector on custom modules and themes",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          }
+        },
+        "required": [
+          "project_path",
+          "request_id",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "backup",
+        "mutation_cap"
+      ],
+      "stub": true,
+      "session_policy": "refuse",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "checkpoint_commit",
+      "description": "Commit only the exact current diff previously approved by independent validation evidence",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "commit_message": {
+            "type": "string",
+            "description": "Optional conventional commit message"
+          },
+          "commit_strategy": {
+            "type": "string",
+            "description": "Must exactly match the run strategy: none, single, or per-fix"
+          },
+          "paths": {
+            "type": "array",
+            "description": "Complete set of diff paths reviewed by validation"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          },
+          "scope": {
+            "type": "array",
+            "description": "Must exactly match the run scope"
+          },
+          "target": {
+            "type": "string",
+            "description": "Validated target bound to the evidence"
+          },
+          "validation_hash": {
+            "type": "string",
+            "description": "Independent validation evidence hash"
+          }
+        },
+        "required": [
+          "project_path",
+          "run_id",
+          "commit_strategy",
+          "scope",
+          "paths",
+          "validation_hash",
+          "target",
+          "request_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "backup",
+        "mutation_cap"
+      ],
+      "stub": true,
+      "session_policy": "refuse",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "checkpoint_execute",
+      "description": "Execute and persist a deterministic operational checkpoint: backup, package update, database updates, cache rebuild, status, independent validation, and managed configuration export. It never publishes a commit; checkpoint_commit remains the only publication boundary",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "paths": {
+            "type": "array",
+            "description": "Complete candidate paths whose identity is recomputed after validation"
+          },
+          "phase": {
+            "type": "string",
+            "description": "Active run phase: custom_theme, contrib_patch, contrib_minor, contrib_major, core_loop, or cleanup"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "resume": {
+            "type": "boolean",
+            "description": "Explicitly retry only a previously unavailable step; requires a fresh request_id"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          },
+          "target_major": {
+            "type": "integer",
+            "description": "Must exactly match the run target major"
+          },
+          "targets": {
+            "type": "array",
+            "description": "Composer/package targets; contrib_major accepts exactly one"
+          }
+        },
+        "required": [
+          "project_path",
+          "run_id",
+          "phase",
+          "target_major",
+          "targets",
+          "paths",
+          "request_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "mutation_cap"
+      ],
+      "stub": true,
+      "session_policy": "refuse",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "cleanup",
+      "description": "Post-pipeline cleanup — uninstall dev modules and revert any temporary patches. Only runs when validate_passed=true.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          },
+          "validate_passed": {
+            "type": "boolean",
+            "description": "If false, cleanup is skipped to preserve debugging state"
+          }
+        },
+        "required": [
+          "project_path",
+          "validate_passed",
+          "request_id",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "backup",
+        "mutation_cap"
+      ],
+      "stub": true,
+      "session_policy": "refuse",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "composer_require",
+      "description": "Run composer require with environment awareness",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "dev": {
+            "type": "boolean",
+            "description": "Install as dev dependency"
+          },
+          "no_update": {
+            "type": "boolean",
+            "description": "Skip composer update"
+          },
+          "package": {
+            "type": "string",
+            "description": "Composer package name"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          }
+        },
+        "required": [
+          "project_path",
+          "package",
+          "request_id",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "backup",
+        "mutation_cap"
+      ],
+      "stub": true,
+      "session_policy": "refuse",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "contrib_allow_lenient",
+      "description": "Let a patched contrib module install against a newer core. Composer resolves against a package's released metadata, never its patched files, so a module whose D11 patch already widened its .info.yml is still rejected. Adds the named packages to composer's drupal-lenient allow list, installing the plugin if needed",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "description": "Report the change without writing it"
+          },
+          "packages": {
+            "type": "array",
+            "description": "Composer package names, e.g. drupal/switch_page_theme"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          }
+        },
+        "required": [
+          "project_path",
+          "packages",
+          "request_id",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "backup",
+        "mutation_cap"
+      ],
+      "stub": true,
+      "session_policy": "force_dry_run",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "contrib_check",
+      "description": "Check Drupal.org for D11 compatibility of a module",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "module_machine_name": {
+            "type": "string",
+            "description": "Module machine name"
+          }
+        },
+        "required": [
+          "module_machine_name"
+        ]
+      },
+      "effect": "read_only",
+      "role": "validator",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "contrib_compat_patch",
+      "description": "Make a contributed module work on a newer Drupal major: run drupal-rector and the Drupal coding standards over it, widen its core_version_requirement, save the result as a patch in the project, register it in composer.json and add the package to the lenient allow list. Composer reads published metadata rather than patched files, so the patch alone is not enough",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "declaration_only": {
+            "type": "boolean",
+            "description": "Only widen core_version_requirement, skipping rector and the coding standards pass"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Report the change without writing it"
+          },
+          "module_machine_name": {
+            "type": "string",
+            "description": "Contrib module or theme machine name"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          },
+          "target_version": {
+            "type": "string",
+            "description": "Target Drupal major, e.g. 11 (default 11)"
+          }
+        },
+        "required": [
+          "project_path",
+          "module_machine_name",
+          "request_id",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "backup",
+        "mutation_cap"
+      ],
+      "stub": true,
+      "session_policy": "force_dry_run",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "contrib_plan",
+      "description": "Build and persist a deterministic read-only Composer contrib update plan for the current immediate-major cycle",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted run identifier for the current cycle"
+          }
+        },
+        "required": [
+          "project_path",
+          "run_id"
+        ]
+      },
+      "effect": "workflow",
+      "role": "workflow_authority",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "contrib_upgrade_path",
+      "description": "Get upgrade path for a contrib module",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "current_drupal_version": {
+            "type": "string",
+            "description": "Current Drupal version"
+          },
+          "module_machine_name": {
+            "type": "string",
+            "description": "Module machine name"
+          },
+          "target_drupal_version": {
+            "type": "string",
+            "description": "Target Drupal version"
+          }
+        },
+        "required": [
+          "module_machine_name",
+          "current_drupal_version",
+          "target_drupal_version"
+        ]
+      },
+      "effect": "read_only",
+      "role": "validator",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "core_upgrade_apply",
+      "description": "Apply one planned core upgrade step",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "description": "Dry run mode"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          },
+          "target_major": {
+            "type": "integer",
+            "description": "Target Drupal major with an exact compatibility catalog"
+          },
+          "target_version": {
+            "type": "string",
+            "description": "Deprecated compatibility alias for target_major"
+          }
+        },
+        "required": [
+          "project_path",
+          "request_id",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "backup",
+        "mutation_cap"
+      ],
+      "stub": true,
+      "session_policy": "force_dry_run",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "core_upgrade_check",
+      "description": "Check if core upgrade is available",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "target_major": {
+            "type": "integer",
+            "description": "Optional requested Drupal target major; must have exact compatibility metadata"
+          }
+        },
+        "required": [
+          "project_path"
+        ]
+      },
+      "effect": "read_only",
+      "role": "validator",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "create_patch",
+      "description": "Generate a patch from rector fixes",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "deprecation_details": {
+            "type": "string",
+            "description": "Deprecation details"
+          },
+          "module_name": {
+            "type": "string",
+            "description": "Module machine name"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project root (defaults to the current directory)"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          }
+        },
+        "required": [
+          "module_name",
+          "request_id",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "backup",
+        "mutation_cap"
+      ],
+      "stub": true,
+      "session_policy": "refuse",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "custom_compat_fix",
+      "description": "Declare support for a target Drupal major in the project's own modules, themes and profiles by widening core_version_requirement. Contrib is never edited in place",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "description": "Report the rewrites without writing them"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          },
+          "target_version": {
+            "type": "string",
+            "description": "Target Drupal major, e.g. 11 (default 11)"
+          }
+        },
+        "required": [
+          "project_path",
+          "request_id",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "backup",
+        "mutation_cap"
+      ],
+      "stub": true,
+      "session_policy": "force_dry_run",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "detect_env",
+      "description": "Detect the development environment",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "force_detect": {
+            "type": "boolean",
+            "description": "Force re-detection"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          }
+        },
+        "required": [
+          "project_path"
+        ]
+      },
+      "effect": "read_only",
+      "role": "validator",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "drupal_version_matrix",
+      "description": "Get Drupal/PHP version compatibility matrix",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "drupal_version": {
+            "type": "string",
+            "description": "Drupal version"
+          },
+          "php_version": {
+            "type": "string",
+            "description": "PHP version"
+          }
+        },
+        "required": null
+      },
+      "effect": "read_only",
+      "role": "validator",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "drush_exec",
+      "description": "Execute drush commands with environment awareness",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "args": {
+            "type": "array",
+            "description": "Command arguments"
+          },
+          "command": {
+            "type": "string",
+            "description": "Drush command"
+          },
+          "format": {
+            "type": "string",
+            "description": "Output format (json, table, etc.)"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          }
+        },
+        "required": [
+          "project_path",
+          "command",
+          "request_id",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "backup",
+        "mutation_cap"
+      ],
+      "stub": true,
+      "session_policy": "refuse",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "generate_report",
+      "description": "Generate upgrade report",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "include_patch_list": {
+            "type": "boolean",
+            "description": "Include patch list in report"
+          },
+          "include_scan_data": {
+            "type": "boolean",
+            "description": "Include scan data in report"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "report_type": {
+            "type": "string",
+            "description": "Report type (json, markdown, both)"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          }
+        },
+        "required": [
+          "project_path",
+          "request_id",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "backup",
+        "mutation_cap"
+      ],
+      "stub": true,
+      "session_policy": "refuse",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "inventory_capture",
+      "description": "Capture a read-only versioned inventory into the active run",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted run identifier"
+          },
+          "stage": {
+            "type": "string",
+            "description": "Inventory stage (baseline or final)"
+          }
+        },
+        "required": [
+          "project_path",
+          "run_id",
+          "stage"
+        ]
+      },
+      "effect": "workflow",
+      "role": "workflow_authority",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "issue_patches",
+      "description": "Extract patch/diff/MR links from Drupal.org issues",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "issue_nid": {
+            "type": "string",
+            "description": "Issue node ID"
+          },
+          "module_name": {
+            "type": "string",
+            "description": "Module machine name"
+          }
+        },
+        "required": null
+      },
+      "effect": "read_only",
+      "role": "validator",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "module_info",
+      "description": "Get module metadata from Drupal.org",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "include_dependencies": {
+            "type": "boolean",
+            "description": "Include dependency info"
+          },
+          "include_maintainers": {
+            "type": "boolean",
+            "description": "Include maintainer info"
+          },
+          "module_machine_name": {
+            "type": "string",
+            "description": "Module machine name"
+          }
+        },
+        "required": [
+          "module_machine_name"
+        ]
+      },
+      "effect": "read_only",
+      "role": "validator",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "module_release_info",
+      "description": "Get maintenance status and curated release list for a contrib module",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "core_version": {
+            "type": "string",
+            "description": "Drupal core major to filter by, e.g. 11"
+          },
+          "module_machine_name": {
+            "type": "string",
+            "description": "Module machine name"
+          }
+        },
+        "required": [
+          "module_machine_name"
+        ]
+      },
+      "effect": "read_only",
+      "role": "validator",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "operation_reconcile",
+      "description": "Resolve an unknown mutation only after verifying an observable filesystem artifact",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "evidence_path": {
+            "type": "string",
+            "description": "Project-relative path to the observed artifact"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Request ID of the unknown operation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this reconciliation"
+          }
+        },
+        "required": [
+          "project_path",
+          "request_id",
+          "evidence_path",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "reconciler",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "patch_reconcile",
+      "description": "Reconcile patches with upstream",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "current_patch_url": {
+            "type": "string",
+            "description": "Current patch URL"
+          },
+          "module_machine_name": {
+            "type": "string",
+            "description": "Module machine name"
+          }
+        },
+        "required": [
+          "module_machine_name",
+          "current_patch_url"
+        ]
+      },
+      "effect": "read_only",
+      "role": "validator",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "patch_rollback",
+      "description": "Rollback a patch",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "composer_package": {
+            "type": "string",
+            "description": "Composer package name"
+          },
+          "patch_url": {
+            "type": "string",
+            "description": "URL of the patch"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          }
+        },
+        "required": [
+          "project_path",
+          "patch_url",
+          "composer_package",
+          "request_id",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "backup",
+        "mutation_cap"
+      ],
+      "stub": true,
+      "session_policy": "refuse",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "patch_status",
+      "description": "Check if a patch is applied",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "composer_package": {
+            "type": "string",
+            "description": "Composer package name"
+          },
+          "patch_url": {
+            "type": "string",
+            "description": "URL of the patch"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          }
+        },
+        "required": [
+          "project_path",
+          "patch_url",
+          "composer_package"
+        ]
+      },
+      "effect": "read_only",
+      "role": "validator",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "pipeline_status",
+      "description": "Read-only summary of the project's mutation ledger: per-tool call counts, total mutations, and remaining mutation-cap headroom",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          }
+        },
+        "required": [
+          "project_path"
+        ]
+      },
+      "effect": "read_only",
+      "role": "validator",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "prepare_upgrade_status",
+      "description": "Install and enable Upgrade Status before read-only analysis",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          }
+        },
+        "required": [
+          "project_path",
+          "request_id",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "backup",
+        "mutation_cap"
+      ],
+      "stub": true,
+      "session_policy": "refuse",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "restore_check",
+      "description": "Read-only restore preflight returning a confirmed RestorePlan; validates integrity, paths, environment, permissions and space",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "backup_id": {
+            "type": "string",
+            "description": "Backup ID"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute Drupal project path"
+          }
+        },
+        "required": [
+          "project_path",
+          "backup_id"
+        ]
+      },
+      "effect": "read_only",
+      "role": "validator",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "restore_recover",
+      "description": "Execute the persisted filesystem recovery procedure for an incomplete restore journal",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "confirm": {
+            "type": "boolean",
+            "description": "Explicit recovery confirmation"
+          },
+          "journal_id": {
+            "type": "string",
+            "description": "Restore journal ID"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute Drupal project path"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          }
+        },
+        "required": [
+          "project_path",
+          "journal_id",
+          "confirm",
+          "request_id",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "backup",
+        "mutation_cap"
+      ],
+      "stub": true,
+      "session_policy": "refuse",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "run_abandon",
+      "description": "End a persisted run without deleting its backups or evidence",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Safe reason for abandonment"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted run ID"
+          }
+        },
+        "required": [
+          "project_path",
+          "run_id",
+          "reason"
+        ]
+      },
+      "effect": "workflow",
+      "role": "workflow_authority",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "run_block",
+      "description": "Block a run with a persisted reason and explicit recovery target",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Safe explanation of the blocker"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted run ID"
+          },
+          "target": {
+            "type": "string",
+            "description": "Optional recovery target"
+          }
+        },
+        "required": [
+          "project_path",
+          "run_id",
+          "reason"
+        ]
+      },
+      "effect": "workflow",
+      "role": "workflow_authority",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "run_confirm",
+      "description": "Record explicit confirmation for a persisted run action",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Confirmation action"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted run ID"
+          }
+        },
+        "required": [
+          "project_path",
+          "run_id",
+          "action"
+        ]
+      },
+      "effect": "workflow",
+      "role": "workflow_authority",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "run_create",
+      "description": "Create the persisted upgrade run authority for a canonical Drupal project root",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "commit_strategy": {
+            "type": "string",
+            "description": "Commit strategy selected for this run"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "scope": {
+            "type": "array",
+            "description": "Selected upgrade scope"
+          },
+          "target_major": {
+            "type": "integer",
+            "description": "Target Drupal major version"
+          }
+        },
+        "required": [
+          "project_path",
+          "target_major",
+          "commit_strategy",
+          "scope"
+        ]
+      },
+      "effect": "workflow",
+      "role": "workflow_authority",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "run_record",
+      "description": "Append sanitized checkpoint evidence and advance only through the persisted allowed action",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "One action returned by run_status"
+          },
+          "evidence": {
+            "type": "object",
+            "description": "Structured evidence; validation records must include validation_hash, candidate_hash, paths, and target; raw payload is hash-only at rest"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted run ID"
+          }
+        },
+        "required": [
+          "project_path",
+          "run_id",
+          "action",
+          "evidence"
+        ]
+      },
+      "effect": "workflow",
+      "role": "workflow_authority",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "run_status",
+      "description": "Read the persisted run phase, allowed actions, evidence, and recovery state",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Run ID (defaults to the project's active run)"
+          }
+        },
+        "required": [
+          "project_path"
+        ]
+      },
+      "effect": "workflow",
+      "role": "workflow_authority",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "scan",
+      "description": "Run read-only upgrade_status:analyze on a prepared Drupal project",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          }
+        },
+        "required": [
+          "project_path"
+        ]
+      },
+      "effect": "read_only",
+      "role": "validator",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": true
+    },
+    {
+      "name": "session_open",
+      "description": "Bind an agent session to the canonical root of a Drupal project for the rest of the server process. Every mutating tool call needs a session bound to a matching root, or it is forced into dry-run (where supported) or refused",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          }
+        },
+        "required": [
+          "project_path"
+        ]
+      },
+      "effect": "read_only",
+      "role": "validator",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "test_backup_create",
+      "description": "Create a local testing backup of a Drupal project",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_path": {
+            "type": "string",
+            "description": "Absolute Drupal project path"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          }
+        },
+        "required": [
+          "project_path",
+          "request_id",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "mutation_cap"
+      ],
+      "stub": false,
+      "session_policy": "refuse",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "test_backup_delete",
+      "description": "Delete a local testing backup",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "backup_id": {
+            "type": "string",
+            "description": "Backup ID"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute Drupal project path"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          }
+        },
+        "required": [
+          "project_path",
+          "backup_id",
+          "request_id",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "backup",
+        "mutation_cap"
+      ],
+      "stub": false,
+      "session_policy": "refuse",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "test_backup_list",
+      "description": "List local testing backups",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_path": {
+            "type": "string",
+            "description": "Absolute Drupal project path"
+          }
+        },
+        "required": [
+          "project_path"
+        ]
+      },
+      "effect": "read_only",
+      "role": "validator",
+      "preconditions": null,
+      "stub": false,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": false
+    },
+    {
+      "name": "test_backup_restore",
+      "description": "Restore a confirmed local testing backup transactionally; response reports the non-atomic database recovery journal",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "backup_id": {
+            "type": "string",
+            "description": "Backup ID"
+          },
+          "confirm": {
+            "type": "boolean",
+            "description": "Explicitly confirm destructive restore"
+          },
+          "plan_id": {
+            "type": "string",
+            "description": "Confirmed RestorePlan identifier returned by restore_check"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute Drupal project path"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Stable client-generated ID used to deduplicate this mutation"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Persisted upgrade run ID authorizing this mutation"
+          }
+        },
+        "required": [
+          "project_path",
+          "backup_id",
+          "confirm",
+          "plan_id",
+          "request_id",
+          "run_id"
+        ]
+      },
+      "effect": "mutating",
+      "role": "executor",
+      "preconditions": [
+        "session",
+        "backup",
+        "mutation_cap"
+      ],
+      "stub": false,
+      "session_policy": "refuse",
+      "requires_run": true,
+      "retry_eligible": false
+    },
+    {
+      "name": "upgrade_scan",
+      "description": "Run read-only upgrade scan on a prepared project",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "module": {
+            "type": "string",
+            "description": "Module name filter"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "scope": {
+            "type": "string",
+            "description": "Scope filter: custom, contrib, theme, core or all (default all)"
+          }
+        },
+        "required": [
+          "project_path"
+        ]
+      },
+      "effect": "read_only",
+      "role": "validator",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": true
+    },
+    {
+      "name": "validate",
+      "description": "Re-run scan and return error state",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "File path filter (optional)"
+          },
+          "module_name": {
+            "type": "string",
+            "description": "Module name filter (optional)"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Absolute path to the Drupal project"
+          },
+          "scope": {
+            "type": "string",
+            "description": "Scope filter: custom, contrib, theme, core or all (default all)"
+          }
+        },
+        "required": [
+          "project_path"
+        ]
+      },
+      "effect": "read_only",
+      "role": "validator",
+      "preconditions": null,
+      "stub": true,
+      "session_policy": "none",
+      "requires_run": false,
+      "retry_eligible": true
+    }
+  ]
+}

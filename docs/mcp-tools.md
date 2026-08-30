@@ -8,6 +8,71 @@ For tool **schemas** (JSON Schema, required fields, types) call `tools/list` —
 
 ---
 
+<!-- BEGIN GENERATED MCP CATALOG -->
+
+## MCP catalog contract (generated)
+
+`ToolSpec` is the only source for these 45 implemented MCP contracts: schemas, effects, guards, and stub visibility. Regenerate with `go generate ./...`; CI rejects byte drift. 41 tools are available as transport stubs. Planned or obsolete tools are intentionally absent from this runtime catalog.
+
+| Tool | Required input | Effect | Guard contract | Stub |
+|---|---|---|---|---|
+| `apply_patch` | `patch_url, project_path, composer_package, description, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `autofix` | `project_path, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `checkpoint_commit` | `project_path, run_id, commit_strategy, scope, paths, validation_hash, target, request_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `checkpoint_execute` | `project_path, run_id, phase, target_major, targets, paths, request_id` | `mutating` | session + mutation_cap + run | yes |
+| `cleanup` | `project_path, validate_passed, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `composer_require` | `project_path, package, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `contrib_allow_lenient` | `project_path, packages, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `contrib_check` | `module_machine_name` | `read_only` | none | yes |
+| `contrib_compat_patch` | `project_path, module_machine_name, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `contrib_plan` | `project_path, run_id` | `workflow` | none | yes |
+| `contrib_upgrade_path` | `module_machine_name, current_drupal_version, target_drupal_version` | `read_only` | none | yes |
+| `core_upgrade_apply` | `project_path, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `core_upgrade_check` | `project_path` | `read_only` | none | yes |
+| `create_patch` | `module_name, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `custom_compat_fix` | `project_path, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `detect_env` | `project_path` | `read_only` | none | yes |
+| `drupal_version_matrix` | `—` | `read_only` | none | yes |
+| `drush_exec` | `project_path, command, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `generate_report` | `project_path, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `inventory_capture` | `project_path, run_id, stage` | `workflow` | none | yes |
+| `issue_patches` | `—` | `read_only` | none | yes |
+| `module_info` | `module_machine_name` | `read_only` | none | yes |
+| `module_release_info` | `module_machine_name` | `read_only` | none | yes |
+| `operation_reconcile` | `project_path, request_id, evidence_path, run_id` | `mutating` | run | yes |
+| `patch_reconcile` | `module_machine_name, current_patch_url` | `read_only` | none | yes |
+| `patch_rollback` | `project_path, patch_url, composer_package, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `patch_status` | `project_path, patch_url, composer_package` | `read_only` | none | yes |
+| `pipeline_status` | `project_path` | `read_only` | none | yes |
+| `prepare_upgrade_status` | `project_path, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `restore_check` | `project_path, backup_id` | `read_only` | none | yes |
+| `restore_recover` | `project_path, journal_id, confirm, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | yes |
+| `run_abandon` | `project_path, run_id, reason` | `workflow` | none | yes |
+| `run_block` | `project_path, run_id, reason` | `workflow` | none | yes |
+| `run_confirm` | `project_path, run_id, action` | `workflow` | none | yes |
+| `run_create` | `project_path, target_major, commit_strategy, scope` | `workflow` | none | yes |
+| `run_record` | `project_path, run_id, action, evidence` | `workflow` | none | yes |
+| `run_status` | `project_path` | `workflow` | none | yes |
+| `scan` | `project_path` | `read_only` | none | yes |
+| `session_open` | `project_path` | `read_only` | none | yes |
+| `test_backup_create` | `project_path, request_id, run_id` | `mutating` | session + mutation_cap + run | no |
+| `test_backup_delete` | `project_path, backup_id, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | no |
+| `test_backup_list` | `project_path` | `read_only` | none | no |
+| `test_backup_restore` | `project_path, backup_id, confirm, plan_id, request_id, run_id` | `mutating` | session + backup + mutation_cap + run | no |
+| `upgrade_scan` | `project_path` | `read_only` | none | yes |
+| `validate` | `project_path` | `read_only` | none | yes |
+
+**Side-effect assertions:** `read_only` changes no project or workflow state; `workflow` changes only persisted run authority; `mutating` requires the listed guard evidence before its handler runs. The manual tool dictionary below is explanatory and must not weaken this contract.
+
+<!-- END GENERATED MCP CATALOG -->
+
+## Updating the catalog
+
+1. Define or change the tool once in `internal/mcp.ToolSpec`, including its schema, effect, guard policy, and stub visibility.
+2. Keep the owning stub and production handler, then run its focused behavior tests. A descriptor without either handler fails fast during wiring.
+3. Run `go generate ./...`, inspect `internal/mcp/tool-catalog.generated.json` and these generated tables, then run `go test ./internal/mcp ./internal/packaging`.
+4. CI can run `go run ./cmd/mcp-catalog-gen --check` to compare fresh bytes without writing. Do not hand-edit content between the generated markers; explain behavior and caveats only in the manual tool dictionary.
+
 ## 1. Core Directives
 
 1. **Pick the MCP tool, never shell out.** Every operation in the upgrade pipeline has a deterministic MCP tool. If you find yourself about to run drush, composer, git-apply, curl, or any patch operation via Bash — STOP and pick a tool. The blocker isn't a guideline; the tools do things Bash cannot (env auto-prefix, dry-run pre-check, drush blocklist, git checkpoint).

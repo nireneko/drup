@@ -17,9 +17,9 @@ import (
 )
 
 // defaultTools returns the placeholder handlers exposed before
-// internal/app.WireMCPTools overrides them. Every entry must also be
-// registered as a real handler by WireMCPTools; mirror the list in
-// docs/mcp-tools.md "Tool Dictionary".
+// internal/app.WireMCPTools overrides them. Every descriptor-marked stub must
+// also be registered as a real handler by WireMCPTools; the generated catalog
+// and its drift test keep the documentation in sync with ToolSpecs.
 func defaultTools() map[string]ToolHandler {
 	handlers := map[string]ToolHandler{
 		// Core pipeline tools.

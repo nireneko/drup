@@ -64,8 +64,10 @@ type Server struct {
 // ToolHandler is a function that handles a tool call.
 type ToolHandler func(args json.RawMessage) (json.RawMessage, error)
 
-// jsonSchemaProperty defines a single property in a JSON Schema.
-type jsonSchemaProperty struct {
+// ToolProperty defines a single input property in a ToolSpec JSON Schema.
+// It is exported so generated catalog consumers can use the descriptor
+// without maintaining a second schema representation.
+type ToolProperty struct {
 	Type        string `json:"type"`
 	Description string `json:"description"`
 }
@@ -100,9 +102,9 @@ const (
 // production wiring. Handler implementations remain in their owning package.
 type ToolSpec struct {
 	Name           string
-	Description    string                        `json:"description"`
-	Properties     map[string]jsonSchemaProperty `json:"properties"`
-	Required       []string                      `json:"required"`
+	Description    string                  `json:"description"`
+	Properties     map[string]ToolProperty `json:"properties"`
+	Required       []string                `json:"required"`
 	Effect         ToolEffect
 	Timeout        time.Duration
 	Role           string
@@ -127,35 +129,35 @@ type toolSchema = ToolSpec
 var toolRegistry = map[string]toolSchema{
 	"scan": {
 		Description: "Run read-only upgrade_status:analyze on a prepared Drupal project",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 		},
 		Required: []string{"project_path"},
 	},
 	"prepare_upgrade_status": {
 		Description: "Install and enable Upgrade Status before read-only analysis",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 		},
 		Required: []string{"project_path"},
 	},
 	"autofix": {
 		Description: "Run drupal-rector on custom modules and themes",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 		},
 		Required: []string{"project_path"},
 	},
 	"contrib_check": {
 		Description: "Check Drupal.org for D11 compatibility of a module",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"module_machine_name": {Type: "string", Description: "Module machine name"},
 		},
 		Required: []string{"module_machine_name"},
 	},
 	"issue_patches": {
 		Description: "Extract patch/diff/MR links from Drupal.org issues",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"issue_nid":   {Type: "string", Description: "Issue node ID"},
 			"module_name": {Type: "string", Description: "Module machine name"},
 		},
@@ -163,7 +165,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"apply_patch": {
 		Description: "Download and apply a patch to the project",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"patch_url":        {Type: "string", Description: "URL of the patch file, or a path inside the project"},
 			"project_path":     {Type: "string", Description: "Absolute path to the Drupal project"},
 			"composer_package": {Type: "string", Description: "Package the patch belongs to, e.g. drupal/devel. Required for module and theme patches so paths resolve from the package root"},
@@ -173,7 +175,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"validate": {
 		Description: "Re-run scan and return error state",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"scope":        {Type: "string", Description: "Scope filter: custom, contrib, theme, core or all (default all)"},
 			"module_name":  {Type: "string", Description: "Module name filter (optional)"},
@@ -183,7 +185,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"create_patch": {
 		Description: "Generate a patch from rector fixes",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"module_name":         {Type: "string", Description: "Module machine name"},
 			"deprecation_details": {Type: "string", Description: "Deprecation details"},
 			"project_path":        {Type: "string", Description: "Absolute path to the Drupal project root (defaults to the current directory)"},
@@ -192,7 +194,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"detect_env": {
 		Description: "Detect the development environment",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"force_detect": {Type: "boolean", Description: "Force re-detection"},
 		},
@@ -200,7 +202,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"composer_require": {
 		Description: "Run composer require with environment awareness",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"package":      {Type: "string", Description: "Composer package name"},
 			"dev":          {Type: "boolean", Description: "Install as dev dependency"},
@@ -210,7 +212,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"drush_exec": {
 		Description: "Execute drush commands with environment awareness",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"command":      {Type: "string", Description: "Drush command"},
 			"args":         {Type: "array", Description: "Command arguments"},
@@ -220,7 +222,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"contrib_upgrade_path": {
 		Description: "Get upgrade path for a contrib module",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"module_machine_name":    {Type: "string", Description: "Module machine name"},
 			"current_drupal_version": {Type: "string", Description: "Current Drupal version"},
 			"target_drupal_version":  {Type: "string", Description: "Target Drupal version"},
@@ -229,7 +231,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"contrib_plan": {
 		Description: "Build and persist a deterministic read-only Composer contrib update plan for the current immediate-major cycle",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"run_id":       {Type: "string", Description: "Persisted run identifier for the current cycle"},
 		},
@@ -237,7 +239,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"upgrade_scan": {
 		Description: "Run read-only upgrade scan on a prepared project",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"scope":        {Type: "string", Description: "Scope filter: custom, contrib, theme, core or all (default all)"},
 			"module":       {Type: "string", Description: "Module name filter"},
@@ -246,7 +248,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"patch_status": {
 		Description: "Check if a patch is applied",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path":     {Type: "string", Description: "Absolute path to the Drupal project"},
 			"patch_url":        {Type: "string", Description: "URL of the patch"},
 			"composer_package": {Type: "string", Description: "Composer package name"},
@@ -255,7 +257,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"patch_rollback": {
 		Description: "Rollback a patch",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path":     {Type: "string", Description: "Absolute path to the Drupal project"},
 			"patch_url":        {Type: "string", Description: "URL of the patch"},
 			"composer_package": {Type: "string", Description: "Composer package name"},
@@ -264,7 +266,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"inventory_capture": {
 		Description: "Capture a read-only versioned inventory into the active run",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"run_id":       {Type: "string", Description: "Persisted run identifier"},
 			"stage":        {Type: "string", Description: "Inventory stage (baseline or final)"},
@@ -273,7 +275,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"generate_report": {
 		Description: "Generate upgrade report",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path":       {Type: "string", Description: "Absolute path to the Drupal project"},
 			"report_type":        {Type: "string", Description: "Report type (json, markdown, both)"},
 			"include_scan_data":  {Type: "boolean", Description: "Include scan data in report"},
@@ -284,7 +286,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"module_info": {
 		Description: "Get module metadata from Drupal.org",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"module_machine_name":  {Type: "string", Description: "Module machine name"},
 			"include_maintainers":  {Type: "boolean", Description: "Include maintainer info"},
 			"include_dependencies": {Type: "boolean", Description: "Include dependency info"},
@@ -293,7 +295,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"drupal_version_matrix": {
 		Description: "Get Drupal/PHP version compatibility matrix",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"drupal_version": {Type: "string", Description: "Drupal version"},
 			"php_version":    {Type: "string", Description: "PHP version"},
 		},
@@ -301,7 +303,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"core_upgrade_check": {
 		Description: "Check if core upgrade is available",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"target_major": {Type: "integer", Description: "Optional requested Drupal target major; must have exact compatibility metadata"},
 		},
@@ -309,7 +311,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"core_upgrade_apply": {
 		Description: "Apply one planned core upgrade step",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path":   {Type: "string", Description: "Absolute path to the Drupal project"},
 			"target_version": {Type: "string", Description: "Deprecated compatibility alias for target_major"},
 			"target_major":   {Type: "integer", Description: "Target Drupal major with an exact compatibility catalog"},
@@ -319,7 +321,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"patch_reconcile": {
 		Description: "Reconcile patches with upstream",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"module_machine_name": {Type: "string", Description: "Module machine name"},
 			"current_patch_url":   {Type: "string", Description: "Current patch URL"},
 		},
@@ -327,7 +329,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"contrib_compat_patch": {
 		Description: "Make a contributed module work on a newer Drupal major: run drupal-rector and the Drupal coding standards over it, widen its core_version_requirement, save the result as a patch in the project, register it in composer.json and add the package to the lenient allow list. Composer reads published metadata rather than patched files, so the patch alone is not enough",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path":        {Type: "string", Description: "Absolute path to the Drupal project"},
 			"module_machine_name": {Type: "string", Description: "Contrib module or theme machine name"},
 			"target_version":      {Type: "string", Description: "Target Drupal major, e.g. 11 (default 11)"},
@@ -338,7 +340,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"contrib_allow_lenient": {
 		Description: "Let a patched contrib module install against a newer core. Composer resolves against a package's released metadata, never its patched files, so a module whose D11 patch already widened its .info.yml is still rejected. Adds the named packages to composer's drupal-lenient allow list, installing the plugin if needed",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"packages":     {Type: "array", Description: "Composer package names, e.g. drupal/switch_page_theme"},
 			"dry_run":      {Type: "boolean", Description: "Report the change without writing it"},
@@ -347,7 +349,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"custom_compat_fix": {
 		Description: "Declare support for a target Drupal major in the project's own modules, themes and profiles by widening core_version_requirement. Contrib is never edited in place",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path":   {Type: "string", Description: "Absolute path to the Drupal project"},
 			"target_version": {Type: "string", Description: "Target Drupal major, e.g. 11 (default 11)"},
 			"dry_run":        {Type: "boolean", Description: "Report the rewrites without writing them"},
@@ -356,30 +358,30 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"cleanup": {
 		Description: "Post-pipeline cleanup — uninstall dev modules and revert any temporary patches. Only runs when validate_passed=true.",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path":    {Type: "string", Description: "Absolute path to the Drupal project"},
 			"validate_passed": {Type: "boolean", Description: "If false, cleanup is skipped to preserve debugging state"},
 		},
 		Required: []string{"project_path", "validate_passed"},
 	},
-	"restore_recover": {Description: "Execute the persisted filesystem recovery procedure for an incomplete restore journal", Properties: map[string]jsonSchemaProperty{"project_path": {Type: "string", Description: "Absolute Drupal project path"}, "journal_id": {Type: "string", Description: "Restore journal ID"}, "confirm": {Type: "boolean", Description: "Explicit recovery confirmation"}}, Required: []string{"project_path", "journal_id", "confirm"}},
+	"restore_recover": {Description: "Execute the persisted filesystem recovery procedure for an incomplete restore journal", Properties: map[string]ToolProperty{"project_path": {Type: "string", Description: "Absolute Drupal project path"}, "journal_id": {Type: "string", Description: "Restore journal ID"}, "confirm": {Type: "boolean", Description: "Explicit recovery confirmation"}}, Required: []string{"project_path", "journal_id", "confirm"}},
 	"restore_check": {
 		Description: "Read-only restore preflight returning a confirmed RestorePlan; validates integrity, paths, environment, permissions and space",
-		Properties:  map[string]jsonSchemaProperty{"project_path": {Type: "string", Description: "Absolute Drupal project path"}, "backup_id": {Type: "string", Description: "Backup ID"}}, Required: []string{"project_path", "backup_id"},
+		Properties:  map[string]ToolProperty{"project_path": {Type: "string", Description: "Absolute Drupal project path"}, "backup_id": {Type: "string", Description: "Backup ID"}}, Required: []string{"project_path", "backup_id"},
 	},
 	"test_backup_create": {
 		Description: "Create a local testing backup of a Drupal project",
-		Properties:  map[string]jsonSchemaProperty{"project_path": {Type: "string", Description: "Absolute Drupal project path"}},
+		Properties:  map[string]ToolProperty{"project_path": {Type: "string", Description: "Absolute Drupal project path"}},
 		Required:    []string{"project_path"},
 	},
 	"test_backup_list": {
 		Description: "List local testing backups",
-		Properties:  map[string]jsonSchemaProperty{"project_path": {Type: "string", Description: "Absolute Drupal project path"}},
+		Properties:  map[string]ToolProperty{"project_path": {Type: "string", Description: "Absolute Drupal project path"}},
 		Required:    []string{"project_path"},
 	},
 	"test_backup_restore": {
 		Description: "Restore a confirmed local testing backup transactionally; response reports the non-atomic database recovery journal",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute Drupal project path"},
 			"backup_id":    {Type: "string", Description: "Backup ID"},
 			"confirm":      {Type: "boolean", Description: "Explicitly confirm destructive restore"},
@@ -389,7 +391,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"test_backup_delete": {
 		Description: "Delete a local testing backup",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute Drupal project path"},
 			"backup_id":    {Type: "string", Description: "Backup ID"},
 		},
@@ -397,7 +399,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"module_release_info": {
 		Description: "Get maintenance status and curated release list for a contrib module",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"module_machine_name": {Type: "string", Description: "Module machine name"},
 			"core_version":        {Type: "string", Description: "Drupal core major to filter by, e.g. 11"},
 		},
@@ -405,21 +407,21 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"session_open": {
 		Description: "Bind an agent session to the canonical root of a Drupal project for the rest of the server process. Every mutating tool call needs a session bound to a matching root, or it is forced into dry-run (where supported) or refused",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 		},
 		Required: []string{"project_path"},
 	},
 	"pipeline_status": {
 		Description: "Read-only summary of the project's mutation ledger: per-tool call counts, total mutations, and remaining mutation-cap headroom",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 		},
 		Required: []string{"project_path"},
 	},
 	"operation_reconcile": {
 		Description: "Resolve an unknown mutation only after verifying an observable filesystem artifact",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path":  {Type: "string", Description: "Absolute path to the Drupal project"},
 			"request_id":    {Type: "string", Description: "Request ID of the unknown operation"},
 			"evidence_path": {Type: "string", Description: "Project-relative path to the observed artifact"},
@@ -428,7 +430,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"checkpoint_commit": {
 		Description: "Commit only the exact current diff previously approved by independent validation evidence",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path":    {Type: "string", Description: "Absolute path to the Drupal project"},
 			"run_id":          {Type: "string", Description: "Persisted upgrade run authorizing this checkpoint"},
 			"commit_strategy": {Type: "string", Description: "Must exactly match the run strategy: none, single, or per-fix"},
@@ -442,7 +444,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"checkpoint_execute": {
 		Description: "Execute and persist a deterministic operational checkpoint: backup, package update, database updates, cache rebuild, status, independent validation, and managed configuration export. It never publishes a commit; checkpoint_commit remains the only publication boundary",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"run_id":       {Type: "string", Description: "Persisted run ID authorizing this checkpoint"},
 			"phase":        {Type: "string", Description: "Active run phase: custom_theme, contrib_patch, contrib_minor, contrib_major, core_loop, or cleanup"},
@@ -455,7 +457,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"run_create": {
 		Description: "Create the persisted upgrade run authority for a canonical Drupal project root",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path":    {Type: "string", Description: "Absolute path to the Drupal project"},
 			"target_major":    {Type: "integer", Description: "Target Drupal major version"},
 			"commit_strategy": {Type: "string", Description: "Commit strategy selected for this run"},
@@ -465,7 +467,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"run_status": {
 		Description: "Read the persisted run phase, allowed actions, evidence, and recovery state",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"run_id":       {Type: "string", Description: "Run ID (defaults to the project's active run)"},
 		},
@@ -473,7 +475,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"run_record": {
 		Description: "Append sanitized checkpoint evidence and advance only through the persisted allowed action",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"run_id":       {Type: "string", Description: "Persisted run ID"},
 			"action":       {Type: "string", Description: "One action returned by run_status"},
@@ -483,7 +485,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"run_confirm": {
 		Description: "Record explicit confirmation for a persisted run action",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"run_id":       {Type: "string", Description: "Persisted run ID"},
 			"action":       {Type: "string", Description: "Confirmation action"},
@@ -492,7 +494,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"run_block": {
 		Description: "Block a run with a persisted reason and explicit recovery target",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"run_id":       {Type: "string", Description: "Persisted run ID"},
 			"reason":       {Type: "string", Description: "Safe explanation of the blocker"},
@@ -502,7 +504,7 @@ var toolRegistry = map[string]toolSchema{
 	},
 	"run_abandon": {
 		Description: "End a persisted run without deleting its backups or evidence",
-		Properties: map[string]jsonSchemaProperty{
+		Properties: map[string]ToolProperty{
 			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
 			"run_id":       {Type: "string", Description: "Persisted run ID"},
 			"reason":       {Type: "string", Description: "Safe reason for abandonment"},
@@ -563,8 +565,8 @@ func init() {
 		spec.Preconditions = []string{"session", "backup", "mutation_cap"}
 		spec.SessionPolicy = SessionPolicyRefuse
 		spec.RequiresBackup = true
-		spec.Properties["request_id"] = jsonSchemaProperty{Type: "string", Description: "Stable client-generated ID used to deduplicate this mutation"}
-		spec.Required = append(spec.Required, "request_id")
+		spec.Properties["request_id"] = ToolProperty{Type: "string", Description: "Stable client-generated ID used to deduplicate this mutation"}
+		spec.Required = appendRequired(spec.Required, "request_id")
 		toolRegistry[name] = spec
 	}
 	for _, name := range []string{
@@ -576,8 +578,8 @@ func init() {
 	} {
 		spec := toolRegistry[name]
 		spec.RequiresRun = true
-		spec.Properties["run_id"] = jsonSchemaProperty{Type: "string", Description: "Persisted upgrade run ID authorizing this mutation"}
-		spec.Required = append(spec.Required, "run_id")
+		spec.Properties["run_id"] = ToolProperty{Type: "string", Description: "Persisted upgrade run ID authorizing this mutation"}
+		spec.Required = appendRequired(spec.Required, "run_id")
 		toolRegistry[name] = spec
 	}
 	// Reconciliation changes only the authoritative operation ledger. Its
@@ -588,8 +590,8 @@ func init() {
 	spec.Role = "reconciler"
 	spec.ReconcilesOperation = true
 	spec.RequiresRun = true
-	spec.Properties["run_id"] = jsonSchemaProperty{Type: "string", Description: "Persisted upgrade run ID authorizing this reconciliation"}
-	spec.Required = append(spec.Required, "run_id")
+	spec.Properties["run_id"] = ToolProperty{Type: "string", Description: "Persisted upgrade run ID authorizing this reconciliation"}
+	spec.Required = appendRequired(spec.Required, "run_id")
 	toolRegistry["operation_reconcile"] = spec
 	for _, name := range []string{"run_create", "run_status", "run_record", "run_confirm", "run_block", "run_abandon", "inventory_capture", "contrib_plan"} {
 		spec := toolRegistry[name]
@@ -630,6 +632,15 @@ func init() {
 	spec.Preconditions = []string{"session", "mutation_cap"}
 	spec.RequiresBackup = false
 	toolRegistry["checkpoint_execute"] = spec
+}
+
+func appendRequired(required []string, field string) []string {
+	for _, existing := range required {
+		if existing == field {
+			return required
+		}
+	}
+	return append(required, field)
 }
 
 // NewServer creates a new MCP server writing to out.

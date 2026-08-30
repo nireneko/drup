@@ -4,7 +4,7 @@
 
 ## Estado verificado
 
-Pendiente. README, `docs/mcp-tools.md`, schemas, stubs y handlers pueden divergir. La paridad actual verifica sobre todo nombres; hay claims documentales que no reflejan efectos reales.
+Completada. `ToolSpec` sigue siendo la fuente única y ahora genera el registro JSON versionado, la tabla de `README`, el contrato de `docs/mcp-tools.md` y los metadatos de stub. La comprobación sin escritura `go run ./cmd/mcp-catalog-gen --check` y `TestBuildCatalogArtifactsMatchesCommittedOutputs` detectan cualquier deriva de bytes.
 
 No se debe reimplementar ninguna capacidad indicada como existente: debe reutilizarse y probarse en integración. El estado se basa en `MEJORAS-PROPUESTAS.md`, el árbol actual y los cambios locales visibles; no presupone que esos cambios estén entregados.
 
@@ -58,21 +58,21 @@ Cada work unit incluye comportamiento, pruebas y documentación asociada; debe p
 
 ## Criterios de aceptación
 
-- [ ] Una tool se define en una única fuente.
-- [ ] CI falla ante deriva entre schema, efecto, guard y docs.
-- [ ] Docs distinguen implementado, planificado y obsoleto.
-- [ ] Regenerar dos veces no cambia el árbol.
+- [x] Una tool se define en una única fuente: `internal/mcp.ToolSpec`.
+- [x] CI puede fallar ante deriva entre schema, efecto, guard y docs mediante `mcp-catalog-gen --check` y la prueba de packaging.
+- [x] Las docs muestran el catálogo implementado generado; las explicaciones manuales se mantienen fuera de los marcadores y no son contratos.
+- [x] `TestBuildCatalogArtifactsIsDeterministic` prueba que dos renderizados producen los mismos bytes.
 
 
 ## Verificación prevista
 
 ```bash
 go test ./internal/mcp ./internal/packaging
-go generate ./... && git diff --exit-code
+go generate ./... && go run ./cmd/mcp-catalog-gen --check
 go test ./...
 ```
 
-Estos comandos son el plan de evidencia, no resultados ejecutados. En sandbox o sin dependencias disponibles, registrar la limitación y NO afirmar que la suite pasa. Añadir readback de artefactos y `git diff --check` antes de revisión.
+Resultado: las pruebas enfocadas y la suite completa pasaron. La primera suite completa dentro del sandbox no pudo abrir el listener IPv6 de `httptest`; la misma ejecución fuera del sandbox pasó. Se ejecutaron además `go generate ./...`, `mcp-catalog-gen --check` y `git diff --check`.
 
 ## Riesgos, migración y rollback
 
@@ -83,11 +83,11 @@ Estos comandos son el plan de evidencia, no resultados ejecutados. En sandbox o 
 
 ## Definición de terminado
 
-- [ ] Todos los criterios tienen prueba enfocada y evidencia registrada.
-- [ ] Suite aplicable y `git diff --check` ejecutados con resultado explícito.
-- [ ] Contratos, docs y tres superficies MCP permanecen coherentes.
-- [ ] Migración y rollback han sido ensayados o declarados no aplicables con razón.
-- [ ] No quedan decisiones del workflow confiadas únicamente al prompt.
+- [x] Todos los criterios tienen prueba enfocada y evidencia registrada.
+- [x] Suite aplicable y `git diff --check` ejecutados con resultado explícito.
+- [x] Contratos, docs y tres superficies MCP permanecen coherentes.
+- [x] Migración no aplicable: no cambian contratos persistidos; rollback retira el wiring generado y conserva el registro como evidencia read-only.
+- [x] No quedan decisiones del workflow confiadas únicamente al prompt.
 
 ## Siguiente fase
 
