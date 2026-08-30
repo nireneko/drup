@@ -79,8 +79,8 @@ index 5626abf..f9c9a4a 100644
 	if !result.Applied {
 		t.Errorf("expected Applied=true, got false. Error: %s", result.Error)
 	}
-	if result.CommitHash == "" {
-		t.Error("expected commit hash, got empty")
+	if len(result.ChangedFiles) == 0 {
+		t.Error("expected changed files report, got none")
 	}
 
 	// Verify the file was patched.
@@ -209,9 +209,9 @@ func TestRegisterPatch_PreservesExistingComposerPatches(t *testing.T) {
 	}
 }
 
-// A patch commit must never sweep unrelated work in progress into itself:
-// a later rollback reverts that commit and would delete the user's files.
-func TestApply_CommitsOnlyItsOwnFiles(t *testing.T) {
+// Applying a patch is a mutation, not publication: an independent validator
+// must bind its evidence to the diff before checkpoint_commit can add history.
+func TestApply_LeavesChangesUncommittedForCheckpoint(t *testing.T) {
 	dir := t.TempDir()
 	runGit := func(args ...string) {
 		t.Helper()
@@ -252,18 +252,23 @@ func TestApply_CommitsOnlyItsOwnFiles(t *testing.T) {
 		t.Fatalf("patch not applied: %s", result.Error)
 	}
 
-	out, err := exec.Command("git", "-C", dir, "show", "--name-only", "--format=", "HEAD").Output()
+	out, err := exec.Command("git", "-C", dir, "diff", "--name-only").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	committed := string(out)
-	for _, unrelated := range []string{"tracked.txt", "untracked.md"} {
-		if strings.Contains(committed, unrelated) {
-			t.Errorf("commit swept %s:\n%s", unrelated, committed)
-		}
+	changed := string(out)
+	if !strings.Contains(changed, "tracked.txt") {
+		t.Errorf("expected tracked unrelated work to remain visible in diff: %s", changed)
 	}
-	if !strings.Contains(committed, "composer.json") {
-		t.Errorf("composer.json not committed:\n%s", committed)
+	status, statusErr := exec.Command("git", "-C", dir, "status", "--porcelain", "untracked.md").Output()
+	if statusErr != nil || !strings.Contains(string(status), "untracked.md") {
+		t.Errorf("expected untracked unrelated work to remain uncommitted: %q (%v)", status, statusErr)
+	}
+	if !strings.Contains(changed, "composer.json") {
+		t.Errorf("composer.json missing from pending diff:\n%s", changed)
+	}
+	if result.ChangedFiles[0] != "composer.json" {
+		t.Errorf("changed files = %v, want composer.json first", result.ChangedFiles)
 	}
 
 	// The work in progress must still be on disk, uncommitted.

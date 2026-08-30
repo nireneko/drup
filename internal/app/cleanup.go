@@ -7,12 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/nireneko/drup/internal/gitops"
 )
 
 // RunCleanup executes the post-validation cleanup stage (Stage 8).
-// It uninstalls upgrade_status, removes it from composer.json, and commits.
+// It uninstalls upgrade_status and removes it from composer.json. Publication
+// is deliberately deferred to checkpoint_commit after independent validation.
 // Output is written to w instead of os.Stdout so callers that need to
 // capture it (like the MCP cleanup handler) can pass an in-memory buffer
 // directly, instead of swapping the process-global os.Stdout through an
@@ -73,24 +72,11 @@ func RunCleanup(w io.Writer, args []string) error {
 		return fmt.Errorf("composer remove failed (exit %d): %s", exitCode, stderr)
 	}
 
-	// Step 3: scoped commit. Only composer.json/composer.lock are ever
-	// modified by the steps above (drush pm:uninstall and composer remove) —
-	// declaring exactly that set instead of `git add -A` means any other
-	// uncommitted change already sitting in the working tree is left alone.
-	commitMsg := "chore(cleanup): remove upgrade_status post D11 migration"
-	declaredPaths := []string{"composer.json", "composer.lock"}
-	if _, commitErr := gitops.Commit(projectPath, commitMsg, declaredPaths); commitErr != nil {
-		// Nothing to commit is not a hard error — composer/drush may have
-		// left composer.json/composer.lock unchanged (e.g. already removed).
-		if !strings.Contains(commitErr.Error(), "nothing to commit") {
-			return fmt.Errorf("git commit failed: %w", commitErr)
-		}
-	}
-
 	output := map[string]interface{}{
-		"success": true,
-		"skipped": false,
-		"message": "cleanup complete: upgrade_status removed",
+		"success":       true,
+		"skipped":       false,
+		"changed_files": []string{"composer.json", "composer.lock"},
+		"message":       "cleanup complete: upgrade_status removed; checkpoint commit required after validation",
 	}
 	data, _ := json.MarshalIndent(output, "", "  ")
 	fmt.Fprintln(w, string(data))

@@ -10,16 +10,11 @@ import (
 	"testing"
 
 	drupexec "github.com/nireneko/drup/internal/exec"
-	"github.com/nireneko/drup/internal/gitops"
 )
 
 // initCleanupGitRepo initializes a real git repo in dir with an initial
-// commit. RunCleanup's scoped commit (internal/gitops.Commit) runs real git
-// commands against production logic, so cleanup tests that reach the git
-// step need a real repository rather than a mocked drupexec.Run — see
-// gitops.runCommand, which captures the real drupexec.Run function value at
-// package-init time, before any later test override of the exec package var
-// takes effect.
+// initial state. Cleanup leaves its changes for checkpoint_commit rather than
+// publishing history itself.
 func initCleanupGitRepo(t *testing.T, dir string) {
 	t.Helper()
 	cleanupGit(t, dir, "init")
@@ -104,30 +99,13 @@ func TestRunCleanup_ValidatePass_RunsCleanup(t *testing.T) {
 		t.Errorf("composer remove drupal/upgrade_status was not called, got: %v", composerCalls)
 	}
 
-	// Verify a real commit was created via the scoped gitops.Commit path,
-	// and that it covers exactly composer.json and composer.lock.
-	logOut, logErr := exec.Command("git", "-C", dir, "log", "--oneline", "-1").CombinedOutput()
-	if logErr != nil {
-		t.Fatalf("git log: %v\n%s", logErr, logOut)
+	diffOut, diffErr := exec.Command("git", "-C", dir, "status", "--porcelain").CombinedOutput()
+	if diffErr != nil {
+		t.Fatalf("git status: %v\n%s", diffErr, diffOut)
 	}
-	if !strings.Contains(string(logOut), "cleanup") {
-		t.Errorf("git log = %q, want it to mention the cleanup commit message", logOut)
-	}
-	showOut, showErr := exec.Command("git", "-C", dir, "show", "--name-only", "--pretty=format:", "HEAD").CombinedOutput()
-	if showErr != nil {
-		t.Fatalf("git show: %v\n%s", showErr, showOut)
-	}
-	committed := strings.TrimSpace(string(showOut))
-	if !strings.Contains(committed, "composer.json") || !strings.Contains(committed, "composer.lock") {
-		t.Errorf("commit files = %q, want composer.json and composer.lock", committed)
-	}
-
-	clean, dirtyFiles, cleanErr := gitops.IsClean(dir)
-	if cleanErr != nil {
-		t.Fatalf("IsClean error: %v", cleanErr)
-	}
-	if !clean {
-		t.Errorf("expected clean tree after cleanup commit, got dirty with files: %v", dirtyFiles)
+	changed := strings.TrimSpace(string(diffOut))
+	if !strings.Contains(changed, "composer.json") || !strings.Contains(changed, "composer.lock") {
+		t.Errorf("pending files = %q, want composer.json and composer.lock", changed)
 	}
 
 	output := buf.String()
@@ -137,6 +115,9 @@ func TestRunCleanup_ValidatePass_RunsCleanup(t *testing.T) {
 	}
 	if result["success"] != true {
 		t.Errorf("success = %v, want true", result["success"])
+	}
+	if got, ok := result["changed_files"].([]interface{}); !ok || len(got) != 2 {
+		t.Errorf("changed_files = %#v, want composer.json and composer.lock", result["changed_files"])
 	}
 }
 
@@ -175,12 +156,12 @@ func TestRunCleanup_UnrelatedDirtyFile_ExcludedFromCommit(t *testing.T) {
 	}
 
 	// The unrelated file must still be uncommitted afterward.
-	showOut, showErr := exec.Command("git", "-C", dir, "show", "--name-only", "--pretty=format:", "HEAD").CombinedOutput()
-	if showErr != nil {
-		t.Fatalf("git show: %v\n%s", showErr, showOut)
+	diffOut, diffErr := exec.Command("git", "-C", dir, "diff", "--name-only").CombinedOutput()
+	if diffErr != nil {
+		t.Fatalf("git diff: %v\n%s", diffErr, diffOut)
 	}
-	if strings.Contains(string(showOut), "notes.txt") {
-		t.Errorf("commit files = %q, want notes.txt excluded", showOut)
+	if strings.Contains(string(diffOut), "notes.txt") {
+		t.Errorf("cleanup changed unrelated notes.txt: %q", diffOut)
 	}
 
 	statusOut, statusErr := exec.Command("git", "-C", dir, "status", "--porcelain", "notes.txt").CombinedOutput()

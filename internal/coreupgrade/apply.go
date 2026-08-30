@@ -41,15 +41,14 @@ func ValidateProjectPath(projectPath string) (string, error) {
 //
 //   - dryRun=true: returns the composer.json diff preview only. No file or git
 //     mutation happens.
-//   - dryRun=false: requires a clean git working tree, creates a checkpoint
-//     commit BEFORE mutating composer.json (so Rollback can restore the prior
-//     state), then writes the new constraint and returns the checkpoint SHA.
+//   - dryRun=false: requires a clean git working tree, records the current
+//     revision as a rollback anchor, then writes the new constraint. It never
+//     creates an empty checkpoint commit; publication belongs to the
+//     evidence-bound checkpoint_commit service.
 //
-// Apply rewrites the core requirement and runs the update. allowDirty lets it
-// proceed over uncommitted work: the checkpoint commit it takes first captures
-// that state, which is exactly what a rollback needs. Without it the command
-// was unusable at the end of a pipeline whose earlier stages leave changes
-// behind by design.
+// Apply rewrites the core requirement and runs the update. allowDirty remains
+// a CLI-only escape hatch for explicitly chosen work-in-progress; the
+// rollback anchor is the existing HEAD and no publication occurs here.
 func Apply(projectPath, targetVersion string, dryRun, allowDirty, force bool) (*ApplyResult, error) {
 	resolvedPath, err := ValidateProjectPath(projectPath)
 	if err != nil {
@@ -145,9 +144,9 @@ func ApplyStep(projectPath string, step upgradeplan.Step, dryRun, allowDirty, fo
 		}
 	}
 
-	checkpointSHA, err := createCheckpoint(projectPath, fmt.Sprintf("checkpoint: before core upgrade to %d", step.To))
+	checkpointSHA, err := currentRevision(projectPath)
 	if err != nil {
-		return nil, fmt.Errorf("create checkpoint commit: %w", err)
+		return nil, fmt.Errorf("read rollback checkpoint: %w", err)
 	}
 
 	updated, err := applyConstraint(data, constraint)
@@ -214,18 +213,9 @@ func composerCoreMajor(composerJSON []byte) (int, error) {
 	return 0, fmt.Errorf("composer.json has no drupal/core requirement")
 }
 
-// createCheckpoint records an empty commit marking the pre-mutation state.
-// Callers MUST have already verified the tree is clean, so no actual content
-// changes are staged — the commit exists purely as a durable rollback anchor.
-func createCheckpoint(projectPath, message string) (string, error) {
-	_, stderr, exitCode, err := drupexec.Run("git", "-C", projectPath, "commit", "--allow-empty", "-m", message)
-	if err != nil {
-		return "", fmt.Errorf("git commit --allow-empty: %w", err)
-	}
-	if exitCode != 0 {
-		return "", fmt.Errorf("git commit --allow-empty: exit %d: %s", exitCode, stderr)
-	}
-
+// currentRevision returns the existing pre-mutation commit used for rollback.
+// It deliberately has no side effect: a rollback anchor is not publication.
+func currentRevision(projectPath string) (string, error) {
 	stdout, stderr, exitCode, err := drupexec.Run("git", "-C", projectPath, "rev-parse", "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse HEAD: %w", err)

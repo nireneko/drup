@@ -96,7 +96,7 @@ func TestApply_RejectsDirtyTree(t *testing.T) {
 	}
 }
 
-func TestApply_ChecksClean_CreatesCheckpoint_AndMutates(t *testing.T) {
+func TestApply_ChecksClean_UsesExistingRollbackAnchor_AndMutates(t *testing.T) {
 	requireGit(t)
 	dir := t.TempDir()
 	initGitRepo(t, dir)
@@ -104,6 +104,7 @@ func TestApply_ChecksClean_CreatesCheckpoint_AndMutates(t *testing.T) {
 	runGit(t, dir, "add", ".")
 	runGit(t, dir, "commit", "-m", "initial")
 
+	commitsBefore := runGit(t, dir, "rev-list", "--count", "HEAD")
 	result, err := Apply(dir, "11.0.9", false, false, false)
 	if err != nil {
 		t.Fatalf("Apply error: %v", err)
@@ -130,9 +131,13 @@ func TestApply_ChecksClean_CreatesCheckpoint_AndMutates(t *testing.T) {
 		t.Errorf("drupal/core-recommended = %q, want %q", doc.Require["drupal/core-recommended"], "^11")
 	}
 
-	// The checkpoint commit must exist and predate the mutation.
+	// The rollback anchor is the existing pre-mutation revision, not a new
+	// empty commit. Publication waits for checkpoint_commit after validation.
 	out := runGit(t, dir, "cat-file", "-e", result.RollbackCheckpoint)
 	_ = out
+	if commitsAfter := runGit(t, dir, "rev-list", "--count", "HEAD"); commitsAfter != commitsBefore {
+		t.Fatalf("core mutation created history: before %s, after %s", commitsBefore, commitsAfter)
+	}
 }
 
 func TestApply_PathTraversalRejected(t *testing.T) {

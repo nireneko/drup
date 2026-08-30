@@ -77,9 +77,9 @@ func localPatchPath(patchRef, projectPath string) (string, bool, error) {
 
 // ApplyResult contains the result of a patch apply operation.
 type ApplyResult struct {
-	Applied    bool   `json:"applied"`
-	CommitHash string `json:"commit_hash,omitempty"`
-	Error      string `json:"error,omitempty"`
+	Applied      bool     `json:"applied"`
+	ChangedFiles []string `json:"changed_files,omitempty"`
+	Error        string   `json:"error,omitempty"`
 }
 
 // Apply downloads a patch from patchURL, applies it via git apply, and
@@ -134,8 +134,9 @@ func Apply(patchURL, projectPath, composerPackage, description string) (*ApplyRe
 		}
 	}
 
-	// Register in composer.json before committing, so the commit carries both
-	// the patch file and its registration.
+	// Register in composer.json as part of the mutation. Publication is a
+	// separate checkpoint_commit operation: applying a patch must never create
+	// history before independent validation binds this exact candidate.
 	reference := patchURL
 	if isLocal {
 		if rel, relErr := filepath.Rel(projectPath, tmpFile); relErr == nil {
@@ -147,46 +148,11 @@ func Apply(patchURL, projectPath, composerPackage, description string) (*ApplyRe
 		return &ApplyResult{Applied: false, Error: "composer.json update failed: " + err.Error()}, nil
 	}
 
-	// Stage only what this patch touched. "git add -A" swept the whole working
-	// tree into the commit, so any unrelated work in progress ended up
-	// committed under a patch message and was destroyed by a later rollback.
-	stagePaths := []string{"composer.json"}
-	if isLocal {
-		if rel, relErr := filepath.Rel(projectPath, tmpFile); relErr == nil {
-			stagePaths = append(stagePaths, rel)
-		}
-	}
+	changed := []string{"composer.json"}
 	if rel := packageRelDir(projectPath, composerPackage); rel != "" {
-		// Only matters for projects that track their contrib code; ignored
-		// otherwise.
-		stagePaths = append(stagePaths, rel)
+		changed = append(changed, rel)
 	}
-	addArgs := append([]string{"-C", projectPath, "add", "--"}, stagePaths...)
-	_, stderr, exitCode, err = runCommand("git", addArgs...)
-	if err != nil || exitCode != 0 {
-		runCommand("git", revertArgs...)
-		return &ApplyResult{Applied: false, Error: "git add failed: " + stderr}, nil
-	}
-
-	// Contrib code is gitignored in composer-based projects, so there may be
-	// nothing staged beyond composer.json; that is success, not failure.
-	staged, _, stagedExit, _ := runCommand("git", "-C", projectPath, "diff", "--cached", "--name-only")
-	if stagedExit != 0 || strings.TrimSpace(staged) == "" {
-		return &ApplyResult{Applied: true}, nil
-	}
-
-	commitMsg := CommitSubject(composerPackage)
-	commitArgs := append([]string{"-C", projectPath, "commit", "-m", commitMsg, "--"}, stagePaths...)
-	_, stderr, exitCode, err = runCommand("git", commitArgs...)
-	if err != nil || exitCode != 0 {
-		return &ApplyResult{Applied: false, Error: "git commit failed: " + stderr}, nil
-	}
-
-	// Get commit hash.
-	stdout, _, _, _ := runCommand("git", "-C", projectPath, "rev-parse", "HEAD")
-	commitHash := strings.TrimSpace(stdout)
-
-	return &ApplyResult{Applied: true, CommitHash: commitHash}, nil
+	return &ApplyResult{Applied: true, ChangedFiles: changed}, nil
 }
 
 // LocalPatchPath exposes local patch resolution to callers that need to read
