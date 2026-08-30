@@ -11,11 +11,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nireneko/drup/internal/inventory"
 )
 
 const schemaVersion = 1
@@ -28,6 +31,7 @@ var (
 	ErrMutationNotAllowed   = errors.New("mutation is not allowed by the active run")
 	ErrCheckpointDenied     = errors.New("checkpoint commit is not authorized")
 	ErrCheckpointPlanDenied = errors.New("checkpoint plan is not authorized")
+	ErrInventoryIncomplete  = errors.New("run inventory snapshots are incomplete")
 )
 
 // CommitStrategy controls when a run may publish its already-validated
@@ -105,6 +109,7 @@ type Evidence struct {
 	CandidateHash  string    `json:"candidate_hash,omitempty"`
 	Paths          []string  `json:"paths,omitempty"`
 	Target         string    `json:"target,omitempty"`
+	CommitHash     string    `json:"commit_hash,omitempty"`
 	RecordedAt     time.Time `json:"recorded_at"`
 }
 
@@ -137,8 +142,12 @@ type Run struct {
 	// into its next phase. It is append-only control evidence, not a second
 	// transition machine.
 	CheckpointHistory []CheckpointPlan `json:"checkpoint_history,omitempty"`
-	CreatedAt         time.Time        `json:"created_at"`
-	UpdatedAt         time.Time        `json:"updated_at"`
+	// InventoryBaseline and InventoryFinal are immutable read-only captures used
+	// to regenerate reports without re-scanning a changed project.
+	InventoryBaseline *inventory.Inventory `json:"inventory_baseline,omitempty"`
+	InventoryFinal    *inventory.Inventory `json:"inventory_final,omitempty"`
+	CreatedAt         time.Time            `json:"created_at"`
+	UpdatedAt         time.Time            `json:"updated_at"`
 }
 
 // CheckpointStepName is a fixed command boundary. Callers cannot invent an
@@ -680,7 +689,7 @@ func (s *Store) RecordCheckpoint(id string, input CheckpointInput, commitHash st
 		Phase: run.Phase, Action: "checkpoint_commit", Kind: "checkpoint_commit",
 		Summary: "validated checkpoint commit", PayloadHash: hashPayload(json.RawMessage(fmt.Sprintf(`{"commit_hash":%q}`, commitHash))),
 		ValidationHash: input.ValidationHash, CandidateHash: input.CandidateHash,
-		Paths: append([]string(nil), input.Paths...), Target: input.Target, RecordedAt: time.Now().UTC(),
+		Paths: append([]string(nil), input.Paths...), Target: input.Target, CommitHash: commitHash, RecordedAt: time.Now().UTC(),
 	})
 	run.UpdatedAt = time.Now().UTC()
 	if err := s.writeLocked(run); err != nil {
@@ -1149,4 +1158,93 @@ func (s *Store) SortedRunIDs() ([]string, error) {
 	}
 	sort.Strings(ids)
 	return ids, nil
+}
+
+// InventoryReport is the durable report input. It refuses partial state so a
+// caller cannot manufacture a before/after report from a later filesystem scan.
+type InventoryReport struct {
+	Baseline inventory.Inventory `json:"baseline"`
+	Final    inventory.Inventory `json:"final"`
+	Delta    []inventory.Change  `json:"delta"`
+}
+
+func (s *Store) RecordInventoryBaseline(id string, snapshot inventory.Inventory) (Run, error) {
+	return s.recordInventory(id, snapshot, true)
+}
+func (s *Store) RecordInventoryFinal(id string, snapshot inventory.Inventory) (Run, error) {
+	return s.recordInventory(id, snapshot, false)
+}
+func (s *Store) recordInventory(id string, snapshot inventory.Inventory, baseline bool) (Run, error) {
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	if err := validInventory(snapshot); err != nil {
+		return Run{}, err
+	}
+	run, err := s.getLocked(id)
+	if err != nil {
+		return Run{}, err
+	}
+	if err := inventoryRecordingAllowed(run, baseline); err != nil {
+		return Run{}, err
+	}
+	copy := snapshot
+	if baseline {
+		if run.InventoryBaseline != nil {
+			return Run{}, fmt.Errorf("%w: baseline already recorded", ErrInvalidTransition)
+		}
+		run.InventoryBaseline = &copy
+	} else {
+		if run.InventoryFinal != nil {
+			if reflect.DeepEqual(*run.InventoryFinal, snapshot) {
+				return run, nil
+			}
+			return Run{}, fmt.Errorf("%w: final inventory already recorded", ErrInvalidTransition)
+		}
+		run.InventoryFinal = &copy
+	}
+	run.UpdatedAt = time.Now().UTC()
+	if err := s.writeLocked(run); err != nil {
+		return Run{}, err
+	}
+	return run, nil
+}
+
+func inventoryRecordingAllowed(run Run, baseline bool) error {
+	if run.Status != StatusActive {
+		return fmt.Errorf("%w: run is %s", ErrInvalidTransition, run.Status)
+	}
+	if baseline {
+		if run.Phase != PhaseBaseline || !containsAction(run.AllowedActions, ActionRecordBaseline) {
+			return fmt.Errorf("%w: baseline inventory is not authorized in %s", ErrInvalidTransition, run.Phase)
+		}
+		return nil
+	}
+	if run.Phase != PhaseReport || !containsAction(run.AllowedActions, ActionRecordReport) {
+		return fmt.Errorf("%w: final inventory is not authorized in %s", ErrInvalidTransition, run.Phase)
+	}
+	return nil
+}
+func validInventory(snapshot inventory.Inventory) error {
+	if snapshot.SchemaVersion != inventory.SchemaVersion || strings.TrimSpace(snapshot.Core.Version) == "" || strings.TrimSpace(snapshot.Core.Source) == "" {
+		return fmt.Errorf("%w: schema version, core version and provenance are required", ErrInventoryIncomplete)
+	}
+	return nil
+}
+func (s *Store) InventoryReport(id string) (InventoryReport, error) {
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	run, err := s.getLocked(id)
+	if err != nil {
+		return InventoryReport{}, err
+	}
+	if run.InventoryBaseline == nil || run.InventoryFinal == nil {
+		return InventoryReport{}, ErrInventoryIncomplete
+	}
+	if err := validInventory(*run.InventoryBaseline); err != nil {
+		return InventoryReport{}, err
+	}
+	if err := validInventory(*run.InventoryFinal); err != nil {
+		return InventoryReport{}, err
+	}
+	return InventoryReport{Baseline: *run.InventoryBaseline, Final: *run.InventoryFinal, Delta: inventory.Delta(*run.InventoryBaseline, *run.InventoryFinal)}, nil
 }

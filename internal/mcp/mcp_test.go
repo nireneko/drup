@@ -185,8 +185,8 @@ func TestServer_ListTools(t *testing.T) {
 	if !ok {
 		t.Fatal("missing tools array in result")
 	}
-	if len(tools) != 37 {
-		t.Errorf("len(tools) = %d, want 37", len(tools))
+	if len(tools) != 38 {
+		t.Errorf("len(tools) = %d, want 38", len(tools))
 	}
 }
 
@@ -477,12 +477,12 @@ var runtimeBackupNames = []string{
 	"test_backup_delete",
 }
 
-// TestServer_PostWireUpCountIs31 asserts that after the production-style
-// registration of the 4 backup tools, tools/list reports 31 tools (the 27
+// TestServer_PostWireUpCountIs42 asserts that after the production-style
+// registration of the 4 backup tools, tools/list reports 32 tools (the 28
 // default stubs — including session_open added in PR4 and pipeline_status
 // added in PR6 — + 4 reverse-asymmetric backup tools). This locks the
 // runtime count that docs/mcp-tools.md §1 advertises.
-func TestServer_PostWireUpCountIs31(t *testing.T) {
+func TestServer_PostWireUpCountIs42(t *testing.T) {
 	req := JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      1,
@@ -515,8 +515,8 @@ func TestServer_PostWireUpCountIs31(t *testing.T) {
 	if !ok {
 		t.Fatal("missing tools array in result")
 	}
-	if len(tools) != 41 {
-		t.Errorf("post-wire-up tool count = %d, want 41 (37 default + 4 backup)", len(tools))
+	if len(tools) != 42 {
+		t.Errorf("post-wire-up tool count = %d, want 42 (38 default + 4 backup)", len(tools))
 	}
 }
 
@@ -538,8 +538,8 @@ func TestServer_ListTools_ProjectPathAwareToolsAdvertiseIt(t *testing.T) {
 func TestServer_ToolCount(t *testing.T) {
 	var buf bytes.Buffer
 	server := NewServer(&buf, "test")
-	if got := server.ToolCount(); got != 37 {
-		t.Errorf("default ToolCount() = %d, want 37", got)
+	if got := server.ToolCount(); got != 38 {
+		t.Errorf("default ToolCount() = %d, want 38", got)
 	}
 
 	// Register 2 more tools.
@@ -548,8 +548,8 @@ func TestServer_ToolCount(t *testing.T) {
 	}
 	server.RegisterTool("extra_tool_1", dummy)
 	server.RegisterTool("extra_tool_2", dummy)
-	if got := server.ToolCount(); got != 39 {
-		t.Errorf("after adding 2 tools, ToolCount() = %d, want 39", got)
+	if got := server.ToolCount(); got != 40 {
+		t.Errorf("after adding 2 tools, ToolCount() = %d, want 40", got)
 	}
 }
 

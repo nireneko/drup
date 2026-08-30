@@ -18,6 +18,7 @@ import (
 	"github.com/nireneko/drup/internal/drupalorg"
 	"github.com/nireneko/drup/internal/envdetect"
 	drupexec "github.com/nireneko/drup/internal/exec"
+	"github.com/nireneko/drup/internal/inventory"
 	"github.com/nireneko/drup/internal/mcp"
 	"github.com/nireneko/drup/internal/runstate"
 	"github.com/nireneko/drup/internal/session"
@@ -36,7 +37,7 @@ func TestWireMCPTools_AllToolsRegistered(t *testing.T) {
 	server := mcp.NewServer(&buf, "test")
 	WireMCPTools(server)
 
-	expected := 41
+	expected := 42
 	actual := server.ToolCount()
 	if actual != expected {
 		t.Errorf("expected %d tools, got %d", expected, actual)
@@ -625,6 +626,41 @@ func TestGenerateReport_WritesFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "drup-report.md")); os.IsNotExist(err) {
 		t.Error("drup-report.md was not created")
+	}
+}
+
+// TestGenerateReport_LegacyPatchListDoesNotAffectTokenAccounting protects the
+// public legacy report path: patches are inventory data, never token usage.
+func TestGenerateReport_LegacyPatchListDoesNotAffectTokenAccounting(t *testing.T) {
+	dir := t.TempDir()
+	writeComposer := func(patches string) int {
+		t.Helper()
+		composer := `{"extra":{"patches":` + patches + `}}`
+		if err := os.WriteFile(filepath.Join(dir, "composer.json"), []byte(composer), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := realHandleGenerateReport(json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"report_type":"json","include_patch_list":true}`)); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, "drup-report.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var generated struct {
+			TokenAccounting struct {
+				Total int `json:"total"`
+			} `json:"token_accounting"`
+		}
+		if err := json.Unmarshal(raw, &generated); err != nil {
+			t.Fatal(err)
+		}
+		return generated.TokenAccounting.Total
+	}
+
+	onePatchTokens := writeComposer(`{"drupal/example":{"one":"https://example.test/one.patch"}}`)
+	manyPatchTokens := writeComposer(`{"drupal/example":{"one":"https://example.test/one.patch","two":"https://example.test/two.patch","three":"https://example.test/three.patch"}}`)
+	if onePatchTokens != manyPatchTokens {
+		t.Fatalf("token total changed with patch count: one=%d many=%d", onePatchTokens, manyPatchTokens)
 	}
 }
 
@@ -2429,5 +2465,111 @@ func TestAutofixDoesNotRescan(t *testing.T) {
 	}
 	if !strings.Contains(string(result), "rector summary") || strings.Contains(string(result), "remaining_errors") {
 		t.Errorf("autofix result = %s, want rector summary without rescan result", result)
+	}
+}
+
+func TestGenerateReport_RunSnapshotRebuildsWithoutRescan(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"name":"example/site","require":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := runstate.NewStore(dir)
+	run, err := store.Create(runstate.CreateInput{ID: "report-snapshot", TargetMajor: 11, Scope: []string{"all"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for run.Phase != runstate.PhaseBaseline {
+		run, err = store.Record(run.ID, runstate.RecordInput{Action: run.AllowedActions[0], Kind: "test", Summary: "advance inventory fixture"})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := inventory.Inventory{SchemaVersion: inventory.SchemaVersion, Core: inventory.Version{Version: "10.3", Source: "composer.lock"}}
+	after := inventory.Inventory{SchemaVersion: inventory.SchemaVersion, Core: inventory.Version{Version: "11.0", Source: "composer.lock"}}
+	run, err = store.RecordInventoryBaseline(run.ID, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The report fixture models the already-authorized final capture without
+	// re-running unrelated checkpoint execution in a report readback test.
+	run.Phase = runstate.PhaseReport
+	run.AllowedActions = []runstate.Action{runstate.ActionRecordReport}
+	raw, err := json.Marshal(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".drup", "runs", run.ID+".json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordInventoryFinal(run.ID, after); err != nil {
+		t.Fatal(err)
+	}
+	// Persisted evidence is intentionally the only report provenance.
+	run, err = store.Get(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Evidence = []runstate.Evidence{
+		{Kind: "checkpoint_commit", Summary: "published", CommitHash: "abcdef", CandidateHash: "candidate", Paths: []string{"composer.lock"}},
+		{Kind: "validation", Summary: "validated", ValidationHash: "validation", CandidateHash: "candidate", Target: "11", Paths: []string{"composer.lock"}},
+	}
+	run.CheckpointHistory = []runstate.CheckpointPlan{{
+		Paths: []string{"composer.lock"}, BackupID: "backup-1", CandidateHash: "candidate",
+		Steps: []runstate.CheckpointStep{
+			{Name: runstate.CheckpointStepBackup, Status: runstate.CheckpointStepSucceeded, Evidence: &runstate.CheckpointStepEvidence{CommandHash: "backup-command", OutputHash: "backup-output", Paths: []string{"composer.lock"}}},
+			{Name: runstate.CheckpointStepValidation, Status: runstate.CheckpointStepSucceeded, Evidence: &runstate.CheckpointStepEvidence{CommandHash: "command", OutputHash: "output", CandidateHash: "candidate", Paths: []string{"composer.lock"}}},
+		},
+	}}
+	run.UpdatedAt = time.Now()
+	raw, _ = json.Marshal(run)
+	if err := os.WriteFile(filepath.Join(dir, ".drup", "runs", run.ID+".json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := realHandleGenerateReport(json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"run_id":"report-snapshot","report_type":"json"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "drup-report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := realHandleGenerateReport(json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"run_id":"report-snapshot","report_type":"json"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content2, _ := os.ReadFile(filepath.Join(dir, "drup-report.json"))
+	if string(content) != string(content2) || string(first) != string(second) {
+		t.Fatal("report changed after restart")
+	}
+}
+
+func TestInventoryCapture_PersistsReadOnlyBaseline(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{"config":{"platform":{"php":"8.3"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "composer.lock"), []byte(`{"packages":[{"name":"drupal/core-recommended","version":"11.0"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := runstate.NewStore(dir)
+	run, err := store.Create(runstate.CreateInput{ID: "capture", TargetMajor: 11, Scope: []string{"all"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for run.Phase != runstate.PhaseBaseline {
+		run, err = store.Record(run.ID, runstate.RecordInput{Action: run.AllowedActions[0], Kind: "test", Summary: "advance inventory fixture"})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := realHandleInventoryCapture(json.RawMessage(`{"project_path":` + jsonStr(dir) + `,"run_id":"capture","stage":"baseline"}`)); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := store.Get(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.InventoryBaseline == nil || persisted.InventoryBaseline.Core.Version != "11.0" {
+		t.Fatalf("baseline=%#v", persisted.InventoryBaseline)
 	}
 }

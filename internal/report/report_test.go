@@ -5,7 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nireneko/drup/internal/inventory"
 	"github.com/nireneko/drup/internal/metrics"
+	"github.com/nireneko/drup/internal/runstate"
 )
 
 func sampleReportData() *ReportData {
@@ -185,5 +187,116 @@ func TestGenerateMarkdown_WithMetrics(t *testing.T) {
 	}
 	if !strings.Contains(result, "10") {
 		t.Error("missing commands executed in markdown")
+	}
+}
+
+func TestBuildFromRun_RendersRestartStableSnapshotAndDoesNotCountPatchesAsTokens(t *testing.T) {
+	run := runstate.Run{ID: "run-1", Root: "/project", InventoryBaseline: &inventory.Inventory{SchemaVersion: inventory.SchemaVersion, Core: inventory.Version{Version: "10.3", Source: "composer.lock"}, Patches: []inventory.Patch{{Package: "drupal/token", Description: "fix", URL: "https://example.test/fix", Source: "composer.json"}}}, InventoryFinal: &inventory.Inventory{SchemaVersion: inventory.SchemaVersion, Core: inventory.Version{Version: "11.0", Source: "composer.lock"}, Patches: []inventory.Patch{{Package: "drupal/token", Description: "fix", URL: "https://example.test/fix", Source: "composer.json"}}}, Evidence: []runstate.Evidence{{Kind: "checkpoint_commit", Summary: "commit", CommitHash: "abc123", CandidateHash: "candidate", Paths: []string{"composer.lock"}}, {Kind: "validation", Summary: "validated", ValidationHash: "validation", CandidateHash: "candidate", Target: "11", Paths: []string{"composer.lock"}}}, CheckpointHistory: []runstate.CheckpointPlan{{Paths: []string{"composer.lock"}, BackupID: "backup-1", CandidateHash: "candidate", Steps: []runstate.CheckpointStep{{Name: runstate.CheckpointStepBackup, Status: runstate.CheckpointStepSucceeded, Evidence: &runstate.CheckpointStepEvidence{CommandHash: "backup-command", OutputHash: "backup-output", Paths: []string{"composer.lock"}}}, {Name: runstate.CheckpointStepValidation, Status: runstate.CheckpointStepSucceeded, Evidence: &runstate.CheckpointStepEvidence{CommandHash: "command", OutputHash: "output", CandidateHash: "candidate", Paths: []string{"composer.lock"}}}}}}}
+	data, err := BuildFromRun(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data.TokenAccounting.Total != 0 {
+		t.Fatalf("patches changed tokens: %#v", data.TokenAccounting)
+	}
+	first, _ := GenerateJSON(data)
+	second, _ := GenerateJSON(data)
+	if string(first) != string(second) {
+		t.Fatalf("restart output differs:\n%s\n%s", first, second)
+	}
+	if len(data.Changes) != 1 || len(data.Changes[0].Evidence) != 2 || data.Changes[0].Evidence[0].CommitHash != "abc123" {
+		t.Fatalf("changes lack persisted typed evidence: %#v", data.Changes)
+	}
+	md, err := GenerateMarkdown(data)
+	if err != nil || !strings.Contains(md, "# Before") || !strings.Contains(md, "# Checkpoints") {
+		t.Fatalf("markdown = %q err=%v", md, err)
+	}
+}
+
+func TestBuildFromRun_RejectsChangesWithoutTheirTypedPersistedEvidence(t *testing.T) {
+	baseline := inventory.Inventory{SchemaVersion: inventory.SchemaVersion, Core: inventory.Version{Version: "10.3", Source: "composer.lock"}}
+	final := inventory.Inventory{SchemaVersion: inventory.SchemaVersion, Core: inventory.Version{Version: "11.0", Source: "composer.lock"}}
+	base := runstate.Run{ID: "run-1", Root: "/project", InventoryBaseline: &baseline, InventoryFinal: &final}
+
+	if _, err := BuildFromRun(base); err == nil {
+		t.Fatal("BuildFromRun accepted a changed snapshot without evidence")
+	}
+
+	base.Evidence = []runstate.Evidence{
+		{Kind: "unrelated", Summary: "not provenance", Paths: []string{"composer.lock"}},
+	}
+	if _, err := BuildFromRun(base); err == nil {
+		t.Fatal("BuildFromRun accepted untyped evidence")
+	}
+
+	base.Evidence = []runstate.Evidence{
+		{Kind: "checkpoint_commit", Summary: "commit", CommitHash: "abc123", CandidateHash: "candidate", Paths: []string{"composer.lock"}},
+		{Kind: "validation", Summary: "validated", ValidationHash: "validation", CandidateHash: "candidate", Target: "11", Paths: []string{"composer.lock"}},
+	}
+	base.CheckpointHistory = []runstate.CheckpointPlan{{
+		Paths: []string{"composer.lock"}, BackupID: "backup-1", CandidateHash: "candidate",
+		Steps: []runstate.CheckpointStep{
+			{Name: runstate.CheckpointStepBackup, Status: runstate.CheckpointStepSucceeded, Evidence: &runstate.CheckpointStepEvidence{CommandHash: "backup-command", OutputHash: "backup-output", Paths: []string{"composer.lock"}}},
+			{Name: runstate.CheckpointStepValidation, Status: runstate.CheckpointStepSucceeded, Evidence: &runstate.CheckpointStepEvidence{CommandHash: "command", OutputHash: "output", CandidateHash: "candidate", Paths: []string{"composer.lock"}}},
+		},
+	}}
+	if _, err := BuildFromRun(base); err != nil {
+		t.Fatalf("BuildFromRun rejected complete typed evidence: %v", err)
+	}
+}
+
+func TestBuildFromRun_RequiresPatchEvidenceForPatchDeltas(t *testing.T) {
+	baseline := inventory.Inventory{SchemaVersion: inventory.SchemaVersion, Core: inventory.Version{Version: "11.0", Source: "composer.lock"}}
+	final := baseline
+	final.Patches = []inventory.Patch{{Package: "drupal/token", Description: "D11 fix", URL: "https://example.test/token.patch", Source: "composer.json"}}
+	run := runstate.Run{
+		ID: "patch-run", Root: "/project", InventoryBaseline: &baseline, InventoryFinal: &final,
+		Evidence: []runstate.Evidence{
+			{Kind: "checkpoint_commit", CommitHash: "abc123", CandidateHash: "candidate", Paths: []string{"composer.json"}},
+			{Kind: "validation", ValidationHash: "validation", CandidateHash: "candidate", Target: "11", Paths: []string{"composer.json"}},
+		},
+		CheckpointHistory: []runstate.CheckpointPlan{{TargetMajor: 11, Paths: []string{"composer.json"}, BackupID: "backup-1", CandidateHash: "candidate", Steps: []runstate.CheckpointStep{
+			{Name: runstate.CheckpointStepBackup, Status: runstate.CheckpointStepSucceeded, Evidence: &runstate.CheckpointStepEvidence{CommandHash: "backup-command", OutputHash: "backup-output", Paths: []string{"composer.json"}}},
+			{Name: runstate.CheckpointStepValidation, Status: runstate.CheckpointStepSucceeded, Evidence: &runstate.CheckpointStepEvidence{CommandHash: "command", OutputHash: "output", CandidateHash: "candidate", Paths: []string{"composer.json"}}},
+		}}},
+	}
+	if _, err := BuildFromRun(run); err == nil {
+		t.Fatal("BuildFromRun accepted a patch delta without patch evidence")
+	}
+	run.Evidence = append(run.Evidence, runstate.Evidence{Kind: "patch", Summary: "token D11 fix", Paths: []string{"composer.json"}})
+	if _, err := BuildFromRun(run); err == nil {
+		t.Fatal("BuildFromRun accepted partial patch evidence")
+	}
+	run.Evidence[len(run.Evidence)-1].CandidateHash = "different-candidate"
+	run.Evidence[len(run.Evidence)-1].Target = "11"
+	if _, err := BuildFromRun(run); err == nil {
+		t.Fatal("BuildFromRun accepted discordant patch evidence")
+	}
+	run.Evidence[len(run.Evidence)-1].CandidateHash = "candidate"
+	if _, err := BuildFromRun(run); err != nil {
+		t.Fatalf("BuildFromRun rejected patch evidence bound to the patch delta: %v", err)
+	}
+}
+
+func TestBuildFromRun_ExposesChangesForEveryInventoryCategory(t *testing.T) {
+	baseline := inventory.Inventory{SchemaVersion: inventory.SchemaVersion, Core: inventory.Version{Version: "10.3", Source: "composer.lock"}, PHP: inventory.Version{Version: "8.1", Source: "composer.json"}, Packages: []inventory.Package{{Name: "vendor/package", Version: "1.0", Source: "composer.lock"}}, Extensions: []inventory.Package{{Name: "drupal/token", Version: "1.0", Source: "composer.lock"}}, Patches: []inventory.Patch{{Package: "drupal/token", Description: "old", URL: "https://example.test/old.patch", Source: "composer.json"}}, Config: []inventory.File{{Path: "config/sync/system.site.yml", Digest: "old-config", Source: "filesystem"}}, Tests: []inventory.File{{Path: "tests/src/Unit/ExampleTest.php", Digest: "old-test", Source: "filesystem"}}}
+	final := inventory.Inventory{SchemaVersion: inventory.SchemaVersion, Core: inventory.Version{Version: "11.0", Source: "composer.lock"}, PHP: inventory.Version{Version: "8.3", Source: "composer.json"}, Packages: []inventory.Package{{Name: "vendor/package", Version: "1.1", Source: "composer.lock"}}, Extensions: []inventory.Package{{Name: "drupal/token", Version: "1.1", Source: "composer.lock"}}, Patches: []inventory.Patch{{Package: "drupal/token", Description: "new", URL: "https://example.test/new.patch", Source: "composer.json"}}, Config: []inventory.File{{Path: "config/sync/system.site.yml", Digest: "new-config", Source: "filesystem"}}, Tests: []inventory.File{{Path: "tests/src/Unit/ExampleTest.php", Digest: "new-test", Source: "filesystem"}}}
+	paths := []string{"composer.lock", "composer.json", "config/sync/system.site.yml", "tests/src/Unit/ExampleTest.php"}
+	run := runstate.Run{ID: "all-categories", Root: "/project", InventoryBaseline: &baseline, InventoryFinal: &final, Evidence: []runstate.Evidence{{Kind: "checkpoint_commit", CommitHash: "abc123", CandidateHash: "candidate", Paths: paths}, {Kind: "validation", ValidationHash: "validation", CandidateHash: "candidate", Target: "11", Paths: paths}, {Kind: "patch", CandidateHash: "candidate", Target: "11", Paths: []string{"composer.json"}}}, CheckpointHistory: []runstate.CheckpointPlan{{TargetMajor: 11, Paths: paths, BackupID: "backup-1", CandidateHash: "candidate", Steps: []runstate.CheckpointStep{{Name: runstate.CheckpointStepBackup, Status: runstate.CheckpointStepSucceeded, Evidence: &runstate.CheckpointStepEvidence{CommandHash: "backup-command", OutputHash: "backup-output", Paths: paths}}, {Name: runstate.CheckpointStepValidation, Status: runstate.CheckpointStepSucceeded, Evidence: &runstate.CheckpointStepEvidence{CommandHash: "command", OutputHash: "output", CandidateHash: "candidate", Paths: paths}}}}}}
+	data, err := BuildFromRun(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Changes) != 7 {
+		t.Fatalf("Changes = %#v", data.Changes)
+	}
+	for _, kind := range []string{"core", "php", "package", "extension", "patch", "config", "test"} {
+		found := false
+		for _, change := range data.Changes {
+			found = found || change.Kind == kind && change.Before != "" && change.After != "" && len(change.Evidence) >= 2
+		}
+		if !found {
+			t.Errorf("ReportData.Changes missing %s before/after/evidence: %#v", kind, data.Changes)
+		}
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/nireneko/drup/internal/inventory"
 )
 
 func TestStoreCreatePersistsAllowedActionsAcrossRestart(t *testing.T) {
@@ -365,5 +367,73 @@ func TestStoreCompletesAndAllowsANewRun(t *testing.T) {
 	}
 	if _, err := store.Create(CreateInput{ID: "run-2", TargetMajor: 12}); err != nil {
 		t.Fatalf("Create() after completed run error = %v", err)
+	}
+}
+
+func TestInventorySnapshots_PersistAtomicallyAndRejectIncompleteReport(t *testing.T) {
+	root := t.TempDir()
+	store := NewStore(root)
+	run, err := store.Create(CreateInput{ID: "inventory-run", TargetMajor: 11, Scope: []string{"all"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := inventory.Inventory{SchemaVersion: inventory.SchemaVersion, Core: inventory.Version{Version: "10.3", Source: "composer.lock"}}
+	if _, err := store.RecordInventoryBaseline(run.ID, baseline); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("RecordInventoryBaseline() outside authorized phase error = %v, want ErrInvalidTransition", err)
+	}
+	for run.Phase != PhaseBaseline {
+		run, err = advanceRunForCheckpointTest(store, run)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.RecordInventoryBaseline(run.ID, baseline); err != nil {
+		t.Fatalf("RecordInventoryBaseline() error = %v", err)
+	}
+	loaded, err := store.Get(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.InventoryBaseline == nil || loaded.InventoryBaseline.Core.Version != "10.3" {
+		t.Fatalf("baseline not persisted: %#v", loaded.InventoryBaseline)
+	}
+	if _, err := store.InventoryReport(run.ID); !errors.Is(err, ErrInventoryIncomplete) {
+		t.Fatalf("InventoryReport incomplete error = %v", err)
+	}
+	run, err = advanceRunForCheckpointTest(store, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for run.Phase != PhaseReport {
+		run, err = advanceRunForCheckpointTest(store, run)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	final := inventory.Inventory{SchemaVersion: inventory.SchemaVersion, Core: inventory.Version{Version: "11.0", Source: "composer.lock"}}
+	if _, err := store.RecordInventoryFinal(run.ID, final); err != nil {
+		t.Fatalf("RecordInventoryFinal() error = %v", err)
+	}
+	// A retry after a restart is safe only for the identical immutable snapshot.
+	restarted := NewStore(root)
+	if _, err := restarted.RecordInventoryFinal(run.ID, final); err != nil {
+		t.Fatalf("RecordInventoryFinal() identical retry error = %v", err)
+	}
+	if _, err := restarted.RecordInventoryFinal(run.ID, inventory.Inventory{SchemaVersion: inventory.SchemaVersion, Core: inventory.Version{Version: "11.1", Source: "composer.lock"}}); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("RecordInventoryFinal() overwrite error = %v, want ErrInvalidTransition", err)
+	}
+	persisted, err := restarted.Get(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.InventoryFinal == nil || persisted.InventoryFinal.Core.Version != "11.0" {
+		t.Fatalf("final snapshot was overwritten: %#v", persisted.InventoryFinal)
+	}
+	got, err := store.InventoryReport(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Delta) != 1 || got.Delta[0].Before != "10.3" || got.Delta[0].After != "11.0" {
+		t.Fatalf("stable delta = %#v", got.Delta)
 	}
 }

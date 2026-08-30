@@ -62,6 +62,7 @@ func TestToolSpecs_RunBoundMutationsAndWorkflowToolsHaveDistinctContracts(t *tes
 	workflow := map[string]bool{
 		"run_create": true, "run_status": true, "run_record": true,
 		"run_confirm": true, "run_block": true, "run_abandon": true,
+		"inventory_capture": true,
 	}
 	for _, spec := range ToolSpecs() {
 		if workflow[spec.Name] {

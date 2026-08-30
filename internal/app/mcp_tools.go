@@ -19,6 +19,7 @@ import (
 	"github.com/nireneko/drup/internal/drupalorg"
 	"github.com/nireneko/drup/internal/envdetect"
 	drupexec "github.com/nireneko/drup/internal/exec"
+	"github.com/nireneko/drup/internal/inventory"
 	"github.com/nireneko/drup/internal/mcp"
 	"github.com/nireneko/drup/internal/operation"
 	"github.com/nireneko/drup/internal/patch"
@@ -123,6 +124,7 @@ func WireMCPTools(s *mcp.Server) {
 		"upgrade_scan":           realHandleUpgradeScan,
 		"patch_status":           realHandlePatchStatus,
 		"patch_rollback":         realHandlePatchRollback,
+		"inventory_capture":      realHandleInventoryCapture,
 		"generate_report":        realHandleGenerateReport,
 		"module_info":            realHandleModuleInfo,
 		"drupal_version_matrix":  realHandleDrupalVersionMatrix,
@@ -1590,6 +1592,7 @@ func realHandleGenerateReport(args json.RawMessage) (json.RawMessage, error) {
 		ReportType       string `json:"report_type"`
 		IncludeScanData  bool   `json:"include_scan_data"`
 		IncludePatchList bool   `json:"include_patch_list"`
+		RunID            string `json:"run_id"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, err
@@ -1609,6 +1612,24 @@ func realHandleGenerateReport(args json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("invalid report_type %q: use json, markdown or both", params.ReportType)
 	}
 
+	if params.RunID != "" {
+		store, _, err := canonicalRunStore(params.ProjectPath)
+		if err != nil {
+			return nil, err
+		}
+		run, err := store.Get(params.RunID)
+		if err != nil {
+			return nil, err
+		}
+		data, err := report.BuildFromRun(run)
+		if err != nil {
+			return nil, fmt.Errorf("report snapshot: %w", err)
+		}
+		return writeReportFiles(params.ProjectPath, reportType, data)
+	}
+
+	// Legacy reports remain available for callers without a run snapshot.
+	// Run-bound callers above never reach this scanner path.
 	// Collect report data.
 	data := &report.ReportData{
 		ProjectPath:     params.ProjectPath,
@@ -1640,7 +1661,9 @@ func realHandleGenerateReport(args json.RawMessage) (json.RawMessage, error) {
 		}
 	}
 
-	// Count patches from composer.json.
+	// Count patches from composer.json for the report summary. Patch inventory
+	// is operational data, not model-token usage.
+	patchesApplied := 0
 	if params.IncludePatchList {
 		composerPath := filepath.Join(params.ProjectPath, "composer.json")
 		if composerData, err := os.ReadFile(composerPath); err == nil {
@@ -1652,7 +1675,7 @@ func realHandleGenerateReport(args json.RawMessage) (json.RawMessage, error) {
 			if json.Unmarshal(composerData, &composerJSON) == nil {
 				for _, entries := range composerJSON.Extra.Patches {
 					for range entries {
-						data.TokenAccounting.Total++
+						patchesApplied++
 					}
 				}
 			}
@@ -1665,7 +1688,7 @@ func realHandleGenerateReport(args json.RawMessage) (json.RawMessage, error) {
 		"markdown_report_path": "",
 		"summary": map[string]interface{}{
 			"total_modules_checked": modulesChecked,
-			"patches_applied":       data.TokenAccounting.Total,
+			"patches_applied":       patchesApplied,
 			"errors_remaining":      data.TotalErrors,
 		},
 	}
@@ -1695,6 +1718,68 @@ func realHandleGenerateReport(args json.RawMessage) (json.RawMessage, error) {
 	}
 
 	return json.Marshal(result)
+}
+
+func writeReportFiles(projectPath, reportType string, data *report.ReportData) (json.RawMessage, error) {
+	result := map[string]interface{}{"success": true, "json_report_path": "", "markdown_report_path": "", "summary": map[string]interface{}{"errors_remaining": data.TotalErrors, "patches_applied": len(data.AfterPatches())}}
+	if reportType == "json" || reportType == "both" {
+		raw, err := report.GenerateJSON(data)
+		if err != nil {
+			return nil, err
+		}
+		path := filepath.Join(projectPath, "drup-report.json")
+		if err := os.WriteFile(path, raw, 0o644); err != nil {
+			return nil, err
+		}
+		result["json_report_path"] = path
+	}
+	if reportType == "markdown" || reportType == "both" {
+		raw, err := report.GenerateMarkdown(data)
+		if err != nil {
+			return nil, err
+		}
+		path := filepath.Join(projectPath, "drup-report.md")
+		if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+			return nil, err
+		}
+		result["markdown_report_path"] = path
+	}
+	return json.Marshal(result)
+}
+
+func realHandleInventoryCapture(args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectPath string `json:"project_path"`
+		RunID       string `json:"run_id"`
+		Stage       string `json:"stage"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if params.RunID == "" {
+		return nil, fmt.Errorf("run_id is required")
+	}
+	store, root, err := canonicalRunStore(params.ProjectPath)
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := inventory.Capture(root)
+	if err != nil {
+		return nil, err
+	}
+	var run runstate.Run
+	switch params.Stage {
+	case "baseline":
+		run, err = store.RecordInventoryBaseline(params.RunID, snapshot)
+	case "final":
+		run, err = store.RecordInventoryFinal(params.RunID, snapshot)
+	default:
+		return nil, fmt.Errorf("stage must be baseline or final")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]interface{}{"success": true, "run": run, "inventory": snapshot})
 }
 
 func realHandleCustomCompatFix(args json.RawMessage) (json.RawMessage, error) {

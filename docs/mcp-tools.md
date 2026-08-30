@@ -322,9 +322,15 @@ Every tool below documents: **Purpose · Returns · Prerequisites · Side-effect
 - **Error signals**: distinct messages for dirty tree, invalid `target_version`, path containing `..`.
 - **Red flag**: requesting a real (non-dry-run) apply without `test_backup_create` recorded in run state.
 
+### 5.20 `inventory_capture`
+
+- **Purpose**: Read-only capture of a versioned inventory (`baseline` or `final`) into a persisted run. It records exact core/PHP/package/extension versions, patches, config, and tests without subprocesses or project writes.
+- **Inputs**: `project_path`, `run_id`, `stage` (`baseline` or `final`).
+- **Safety**: refuses unknown stages and incomplete captures. Reports with `run_id` use only these persisted snapshots and fail closed when either snapshot or typed evidence is absent.
+
 ### 5.20 `generate_report`
 
-- **Purpose**: Wrap `internal/report` to write `drup-report.json` and/or `drup-report.md` to the project root.
+- **Purpose**: Wrap `internal/report` to write deterministic JSON/Markdown from a persisted run snapshot when `run_id` is supplied; legacy no-run calls retain live report behavior.
 - **Returns**: `{ success, json_report_path, markdown_report_path, summary: {total_modules_checked, patches_applied, custom_files_fixed, errors_remaining, pending_human_review} }`
 - **Side-effects**: writes files in `project_path` root.
 - **Red flag**: assuming it's read-only — it creates artifacts.

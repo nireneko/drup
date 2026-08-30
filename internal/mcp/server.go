@@ -254,6 +254,15 @@ var toolRegistry = map[string]toolSchema{
 		},
 		Required: []string{"project_path", "patch_url", "composer_package"},
 	},
+	"inventory_capture": {
+		Description: "Capture a read-only versioned inventory into the active run",
+		Properties: map[string]jsonSchemaProperty{
+			"project_path": {Type: "string", Description: "Absolute path to the Drupal project"},
+			"run_id":       {Type: "string", Description: "Persisted run identifier"},
+			"stage":        {Type: "string", Description: "Inventory stage (baseline or final)"},
+		},
+		Required: []string{"project_path", "run_id", "stage"}, Effect: EffectWorkflow,
+	},
 	"generate_report": {
 		Description: "Generate upgrade report",
 		Properties: map[string]jsonSchemaProperty{
@@ -261,6 +270,7 @@ var toolRegistry = map[string]toolSchema{
 			"report_type":        {Type: "string", Description: "Report type (json, markdown, both)"},
 			"include_scan_data":  {Type: "boolean", Description: "Include scan data in report"},
 			"include_patch_list": {Type: "boolean", Description: "Include patch list in report"},
+			"run_id":             {Type: "string", Description: "Optional persisted run snapshot; reports from it never re-scan"},
 		},
 		Required: []string{"project_path"},
 	},
@@ -567,7 +577,7 @@ func init() {
 	spec.Properties["run_id"] = jsonSchemaProperty{Type: "string", Description: "Persisted upgrade run ID authorizing this reconciliation"}
 	spec.Required = append(spec.Required, "run_id")
 	toolRegistry["operation_reconcile"] = spec
-	for _, name := range []string{"run_create", "run_status", "run_record", "run_confirm", "run_block", "run_abandon"} {
+	for _, name := range []string{"run_create", "run_status", "run_record", "run_confirm", "run_block", "run_abandon", "inventory_capture"} {
 		spec := toolRegistry[name]
 		spec.Effect = EffectWorkflow
 		spec.Role = "workflow_authority"

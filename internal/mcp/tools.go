@@ -42,6 +42,7 @@ func defaultTools() map[string]ToolHandler {
 		"patch_status":   handlePatchStatus,
 		"patch_rollback": handlePatchRollback,
 		// Reporting and info.
+		"inventory_capture":     handleInventoryCapture,
 		"generate_report":       handleGenerateReport,
 		"module_info":           handleModuleInfo,
 		"drupal_version_matrix": handleDrupalVersionMatrix,
@@ -100,6 +101,9 @@ func unavailableRunHandler(args json.RawMessage) (json.RawMessage, error) {
 	})
 }
 
+func handleInventoryCapture(args json.RawMessage) (json.RawMessage, error) {
+	return unavailableRunHandler(args)
+}
 func handleRunCreate(args json.RawMessage) (json.RawMessage, error) {
 	return unavailableRunHandler(args)
 }
