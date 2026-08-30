@@ -1,8 +1,8 @@
 # drup MCP Tools — Agent Reference
 
-This document is an **agent-facing reference** for the 43 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
+This document is an **agent-facing reference** for the 45 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
 
-**Tooling totals at runtime:** the `ToolSpec` catalog derives 39 stub entries (including `session_open`, `pipeline_status`, `operation_reconcile`, `checkpoint_execute`, `contrib_plan`, and the six `run_*` workflow tools) plus 4 reverse-asymmetric backup tools = **43 total**. See [§1.1](#11-response-envelope-uniform-contract) for the uniform envelope that wraps every response.
+**Tooling totals at runtime:** the `ToolSpec` catalog derives 41 stub entries (including `restore_check`, `restore_recover`, `session_open`, `pipeline_status`, `operation_reconcile`, `checkpoint_execute`, `contrib_plan`, and the six `run_*` workflow tools) plus 4 reverse-asymmetric `test_backup_*` tools = **45 total**. See [§1.1](#11-response-envelope-uniform-contract) for the uniform envelope that wraps every response.
 
 For tool **schemas** (JSON Schema, required fields, types) call `tools/list` — do not hardcode them here. For tool **internals** (Go package, test coverage) read `internal/app/mcp_tools.go`.
 
