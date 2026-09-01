@@ -1,308 +1,145 @@
-# drup — Drupal Upgrade Automation
+# drup
 
-**CLI + MCP harness that automates Drupal 8/9/10 → 11 migration, combining deterministic analysis with AI agents.**
+**A safety-first operations layer for Drupal major-version upgrades.**
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Go-1.25.10+-00ADD8?logo=go&logoColor=white" alt="Go">
-  <img src="https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey" alt="Platform">
-  <img src="https://img.shields.io/badge/tests-passing-brightgreen" alt="Tests">
-</p>
+`drup` combines a Go CLI, a local MCP server, and installed agent roles to make Drupal upgrade work observable, checkpointed, and recoverable. It automates deterministic tasks—environment detection, Upgrade Status analysis, Rector execution, Drupal.org release and issue lookups, patch handling, backups, and evidence-bound checkpoints—while keeping material decisions and destructive recovery under operator control.
 
----
+It is designed for moving a Composer-managed Drupal project through its **next** supported major version, not for treating a major upgrade as an unreviewed bulk rewrite.
 
-## What it does
+## What drup solves
 
-Migrating a Drupal site to the next major version is a **mechanical but manual** process that repeats project after project:
+- Establishes a reproducible upgrade workspace with preflight checks and structured scan output.
+- Runs Drupal Rector only where it belongs: custom modules and themes.
+- Finds compatible contrib releases and Drupal.org patch candidates.
+- Persists run state, inventories, checkpoint plans, operation records, and reports under the project’s `.drup/` directory.
+- Creates local database-and-files backup manifests before guarded mutations.
+- Exposes the same guarded operations to Claude Code, OpenCode, and Codex over MCP.
 
-1. Install `upgrade_status` and `drupal-rector`
-2. Run deprecation analysis
-3. Check releases for each contrib module on Drupal.org
-4. Look for patches in issues for modules without a compatible release
-5. Refactor custom code (modules and themes)
-6. Validate that everything compiles
-7. Generate a report
+## What it does not promise
 
-`drup` automates all of this. The deterministic parts — environment detection, release lookups, patch generation, compatibility declarations — cost no AI tokens. The rest is handed to an AI agent with validation and retry tooling.
+- It does **not** guarantee that every Upgrade Status finding is automatically fixable. Some findings require project-specific engineering or product decisions.
+- It does **not** skip Drupal majors. Core planning and guarded execution are immediate-major operations.
+- It does **not** make `drup fix` an end-to-end upgrade pipeline. `fix` runs Rector on custom modules/themes and then re-runs the scan; it does not update contrib, upgrade core, commit changes, or restore a backup.
+- It does **not** restore or delete a backup automatically.
 
-How much rector alone resolves depends entirely on the project. On a production Drupal 10.5.10 site with ten custom modules, it changed 35 files and cleared one finding out of 1,913: most of what `upgrade_status` reports is advisory ("Check manually") rather than mechanically fixable. Measure your own project with `drup scan` before assuming a ratio.
+## Install and verify
 
-```bash
-# Full pipeline with a single command:
-drup fix /path/to/drupal-project
-
-# Or step by step from Claude Code:
-/drup /path/to/drupal-project
-```
-
----
-
-## Quick Start
-
-### Installation
+Prerequisites: Go `1.25.10` or newer to build from source, plus a Drupal project with Composer when operating on a site.
 
 ```bash
-# Option 1: Go install
+# Install from the module.
 go install github.com/nireneko/drup/cmd/drup@latest
 
-# Option 2: from source
-git clone git@github.com:nireneko/drup.git
-cd drup && go build -o /usr/local/bin/drup ./cmd/drup
+# Or build a repository checkout.
+git clone https://github.com/nireneko/drup.git
+cd drup
+go build -o drup ./cmd/drup
 
-# Option 3: prebuilt binary (direct download)
-# Available at https://github.com/nireneko/drup/releases (coming soon)
+# Verify the binary and inspect the command surface.
+drup version
+drup help
 ```
 
-### Set up AI agents
+The `version` command reports `dev-version` for a locally built binary unless build metadata supplies a release version.
+
+## Start safely with the CLI
+
+Run the read-oriented checks first from a Drupal project path:
+
+```bash
+PROJECT=/absolute/path/to/drupal-project
+
+drup preflight "$PROJECT"
+drup scan "$PROJECT"
+drup contrib webform
+drup issue 1234567
+```
+
+A typical controlled change sequence is:
+
+```bash
+# Rector only, then a fresh Upgrade Status scan.
+drup fix "$PROJECT"
+
+# Review the changed files and scan output before continuing.
+git -C "$PROJECT" diff
+
+drup compat-fix "$PROJECT" --dry-run
+drup report "$PROJECT"
+```
+
+Use `drup help` before a mutating command. Some commands require a project-local session, a fresh backup, a durable run ID, or an explicit confirmation; the MCP workflow is the intended interface for coordinating those guards. See [the CLI reference](docs/cli-reference.md) and [the upgrade workflow](docs/upgrade-workflow.md).
+
+## Use with an agent
+
+Install the agent assets while the target agent applications are closed, then restart them:
 
 ```bash
 drup install
+# To register a server that refuses mutations:
+drup install --locked
 ```
 
-This detects which agents you have installed (Claude Code, OpenCode, Codex) and writes the skills, sub-agents, and MCP configuration into their native directories.
+The installer detects available Claude Code, OpenCode, and Codex installations; it writes the `drup` skill and specialist agents, merges only drup’s MCP entry, and records installation state. `drup sync` reapplies the rendered assets after an upgrade. `drup uninstall --dry-run` shows removal candidates before uninstalling.
 
-Before overwriting anything, drup backs up each agent's skills directory and MCP config file into `~/.config/drup/backups/` (last 5 versions per item). If one agent fails — a corrupt config, for example — the remaining agents are still installed and the failure is reported as a warning.
+Once installed, describe the Drupal upgrade to the agent and provide the project path. The installed coordinator is responsible for sequencing the specialist roles; the MCP server is stdio-only and has no listening network port. See [Agent integration](docs/getting-started.md#agent-integration) and [the multi-agent contract](docs/multiagent-contracts.md).
 
-Run the install with your agents closed. Registration edits their own config files (`~/.claude.json`, `~/.codex/config.toml`, `~/.config/opencode/opencode.json`), and a running session that rewrites its config afterwards can drop the drup entry. Restart the agent when the install finishes so it loads the MCP server.
+## Safety model
 
-### Update
+`drup` treats a major upgrade as a sequence of durable checkpoints, not one shell command:
 
-```bash
-drup upgrade      # updates the binary
-drup sync         # re-applies skills to agents (after upgrade or template changes)
-```
+- **Canonical project identity:** sessions resolve and bind one absolute, symlink-resolved Drupal root.
+- **Guarded mutation:** mutating operations can require an open session, a fresh backup, mutation-budget evidence, and run-state authority. Locked MCP mode refuses mutating calls.
+- **Independent evidence:** workflow state records sanitized hashes and summaries rather than trusting agent prose or storing raw secret-bearing output.
+- **Recovery without surprise:** backups are retained; restore requires explicit confirmation and uses a transactional filesystem recovery journal. An unresolved restore journal blocks new run-authorized mutations.
+- **Scoped commits:** the checkpoint commit operation binds a candidate diff to independently recorded validation evidence.
 
-### Uninstall
+These guarantees are operational guardrails, not a substitute for testing, reviewing the diff, or making a database recovery plan. Read [Safety and recovery](docs/safety-and-recovery.md) before enabling mutations.
 
-```bash
-drup uninstall --dry-run   # lists everything that would be removed
-drup uninstall             # asks for confirmation, then removes
-drup uninstall --force     # skips confirmation and ignores missing state
-```
+## Architecture in brief
 
-This removes the drup skills, sub-agents, and commands from every installed agent, deletes drup's entry from their MCP configs (leaving other servers untouched), removes `~/.config/drup/`, and finally deletes the binary itself.
+- `cmd/drup` is the process entry point and interruption boundary.
+- `internal/app` composes the CLI and MCP handlers.
+- `internal/mcp` publishes ToolSpec-defined MCP contracts; generated catalog documentation and JSON are checked for drift.
+- `internal/runstate`, `internal/operation`, `internal/session`, and `internal/audit` provide durable workflow authority and mutation controls.
+- `internal/backup`, `internal/inventory`, `internal/report`, and `internal/coreupgrade` provide recovery, evidence, reporting, and immediate-major core operations.
+- `internal/packaging` renders platform-specific agent skills and configuration from repository templates.
 
-The state directory holds the config backups, so an uninstall deletes them too. Copy anything you still want out of `~/.config/drup/backups/` first.
+See [Architecture](docs/architecture.md) for the boundaries and persistence model.
 
----
+## Documentation
 
-## Integration with AI agents
-
-When running `drup install`, the binary detects which agents you have installed and writes the necessary files into their native directories.
-
-### Claude Code
-
-| What gets installed | Path | Purpose |
-|---|---|---|
-| **Orchestrator skill** | `~/.claude/skills/drup/SKILL.md` | 7-stage pipeline. Invoked with `/drup <path>`. Pure coordinator: zero Bash/MCP calls, only dispatches sub-agents and talks to the user |
-| **Sub-agents** | `~/.claude/agents/drup-preflight.md` | Preflight: detects environment, installs dependencies |
-| | `~/.claude/agents/drup-rector.md` | Rector: deterministic auto-fix (`autofix`) on custom modules/themes |
-| | `~/.claude/agents/drup-contrib.md` | Contrib modules: releases, patches, core-version bump, commits |
-| | `~/.claude/agents/drup-custom.md` | Custom code: refactor with retry and escalation |
-| | `~/.claude/agents/drup-theme.md` | Themes: twig/.theme deprecations |
-| | `~/.claude/agents/drup-validator.md` | Validator: owns every `scan`/`validate`/`upgrade_scan` call — the only agent allowed to confirm a gate; generates the final report |
-| **MCP server** | `~/.claude.json` | Registers `drup mcp` as a user-scoped MCP server with its generated ToolSpec catalog |
-
-**Usage**: open Claude Code in the Drupal project and run:
-
-```
-/drup /path/to/project
-```
-
-Claude Code loads SKILL.md, connects to the MCP server, and runs the 7 pipeline phases. Sub-agents isolate work per module/file to avoid saturating the context.
-
-**Default model**: the skill uses the session's active model. To force a specific model, set it in `~/.config/drup/config.yaml` (see [Configuration](#configuration)).
-
-### OpenCode
-
-| What gets installed | Path |
+| Need | Read |
 |---|---|
-| **Orchestrator skill** | `~/.config/opencode/skills/drup/SKILL.md` |
-| **Sub-agents** | `~/.config/opencode/agents/drup-*.md` |
-| **MCP server** | `~/.config/opencode/mcp.json` |
+| First local or agent-backed run | [Getting started](docs/getting-started.md) |
+| Exact CLI commands and side effects | [CLI reference](docs/cli-reference.md) |
+| Controlled major-upgrade lifecycle | [Upgrade workflow](docs/upgrade-workflow.md) |
+| Safety controls, backups, restore and recovery | [Safety and recovery](docs/safety-and-recovery.md) |
+| Global and project configuration | [Configuration](docs/configuration.md) |
+| Packages, persistence, MCP, and agent rendering | [Architecture](docs/architecture.md) |
+| MCP tool catalog | [MCP tools](docs/mcp-tools.md) |
+| Model assignment overrides | [Model configuration](docs/model-configuration.md) |
+| Agent report contracts | [Multi-agent contracts](docs/multiagent-contracts.md) |
+| Building, testing, and maintaining docs | [Development](docs/development.md) |
 
-**Usage**: in OpenCode, run `/drup <path>` or let the skill load automatically when you mention "Drupal upgrade" or "migrate Drupal".
+## Contributing and validating documentation
 
-### Codex
-
-| What gets installed | Path |
-|---|---|
-| **Orchestrator skill** | `~/.codex/skills/drup/SKILL.md` |
-| **Sub-agents** | `~/.codex/agents/drup-*.md` |
-| **MCP server** | `~/.codex/mcp.json` |
-
-**Usage**: in Codex CLI, run `/drup <path>`.
-
-### The MCP server
-
-All 3 agents share the same MCP configuration. The `.mcp.json` (or `mcp.json`) file registers the server:
-
-```json
-{
-  "mcpServers": {
-    "drup": {
-      "command": "/path/to/binary/drup",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-The MCP server communicates over **stdio** (JSON-RPC 2.0). No port needed, no network needed — the agent launches the `drup mcp` process and communicates via stdin/stdout. The generated catalog tools are documented in [MCP Tools](#mcp-tools) and in [`docs/mcp-tools.md`](docs/mcp-tools.md).
-
-### Verifying the installation
+Documentation is part of the product contract. Verify claims against `internal/app/app.go`, command tests, generated MCP artifacts, and rendered packaging templates; do not document a proposed capability as shipped behavior.
 
 ```bash
-# See which agents drup detected
-drup install
-# Output: Installing drup to claude... done
-#         Installing drup to opencode... done
+# Markdown whitespace and patch integrity.
+git diff --check
 
-# Force re-sync (after a binary update)
-drup sync
+# Test the codebase and confirm generated MCP catalog bytes are current.
+GOCACHE=/tmp/drup-go-build go test ./...
+GOCACHE=/tmp/drup-go-build go run ./cmd/mcp-catalog-gen --check
 ```
 
----
+See [Development](docs/development.md) for focused test commands and the generated-catalog workflow.
 
-## Full workflow: from Drupal 10 to Drupal 11
+## MCP catalog
 
-### Step by step with the CLI
-
-```bash
-# 1. Preflight: detects version, installs dependencies
-drup preflight /path/to/project
-
-# 2. Scan: initial deprecation analysis
-drup scan /path/to/project
-
-# 3. Fix: full pipeline
-drup fix /path/to/project
-#    ├── runs drupal-rector (deterministic, effect varies by project)
-#    ├── for each contrib module: looks for D11 release or RTBC patch → applies → commit
-#    ├── for each custom file: shows errors for the agent to resolve
-#    └── final validation → report
-
-# 4. Report: summary of everything done
-drup report /path/to/project
-```
-
-### From Claude Code (orchestrated by skill)
-
-```
-/drup /path/to/project
-```
-
-The `/drup` skill runs the full pipeline in 7 phases with **validation gates**: each phase is validated before moving on. If something fails, it retries with a more powerful model. If it keeps failing, it goes to the pending list for human review.
-
-### Individual commands
-
-```bash
-drup contrib check webform       # does it have a D11-compatible release?
-drup issue patches 3412345       # patches from a Drupal.org issue (clean JSON)
-drup compat-fix /path --dry-run  # which custom extensions still exclude D11?
-drup compat-fix /path            # declare D11 support in your own modules/themes
-drup mcp                         # MCP server (for AI agents)
-```
-
----
-
-## The Pipeline (7 stages)
-
-The orchestrator itself never executes anything — it only reads sub-agent reports, dispatches the next sub-agent, and talks to the user. All the steps below are carried out by dedicated sub-agents calling MCP tools; see [Deterministic work vs. orchestration](#deterministic-work-vs-orchestration).
-
-```
-1. PREFLIGHT   2. DEP CHECK    3. RECTOR       4. CONTRIB LOOP    5. CUSTOM/THEME LOOP   6. FINAL VALIDATION   7. REPORT
-drup-preflight drup-validator  drup-rector     drup-contrib       drup-custom/           drup-validator         drup-validator
-env + core ver  confirms deps  autofix (0 tok)  per module:         drup-theme             total_errors == 0?    generate_report
-                                                 release/patch/      per file:              else re-enter          → UPGRADE-REPORT.md
-                                                 core-upgrade         validate → commit       loop 4/5
-```
-
-### Stage 1 — Preflight
-`drup-preflight` verifies clean git, composer/drush availability, and core version, and installs missing dev dependencies (`upgrade_status`, `drupal-rector`, `phpstan-drupal`). An `unsupported` environment result is a **terminal state** — the pipeline stops and reports to the user; it never proceeds to later stages.
-
-### Stage 2 — Dep Check
-`drup-validator` confirms Stage 1's dependency install actually took effect. `drup-preflight` never confirms its own work.
-
-### Stage 3 — Rector (0 tokens)
-`drup-rector` runs `drupal-rector` with D11 rule sets over custom modules and themes. It resolves the deprecations rector has rules for — return types, removed APIs, renamed services — and leaves `.info.yml` alone. Its measured effect varies widely by project, so treat the before/after scan as the source of truth rather than a headline percentage. `drup-validator` confirms the result before `drup-rector` commits.
-
-### Stage 4 — Contrib Loop
-For each contrib module with errors, `drup-contrib`:
-1. `contrib_check` / `contrib_upgrade_path` → is there a D11-compatible release?
-2. No release? → `issue_patches` + `patch_reconcile` (analysis-only, JSON api-d7) → apply the best patch, or `create_patch` if none exists
-3. Core-version bump needed? → `core_upgrade_check` (preview) then `core_upgrade_apply` (requires clean tree, creates a git checkpoint before mutating `composer.json`; supports `dry_run`)
-4. `drup-validator` confirms `total_errors == 0` for that module before `drup-contrib` commits
-
-### Stage 5 — Custom/Theme Loop
-For each custom PHP file or twig/theme file with deprecations, `drup-custom` / `drup-theme` applies the minimal fix; `drup-validator` confirms per-file before a commit. Failures retry with validator feedback (max 2), then escalate model (haiku → sonnet), then go to the pending human list.
-
-### Stage 6 — Final Validation
-`drup-validator` re-runs a global scan. `total_errors == 0` → Stage 7. Otherwise the remaining errors are classified and routed back into Stage 4 or 5 for just those items.
-
-### Stage 7 — Report
-`drup-validator` calls `generate_report`, producing `UPGRADE-REPORT.md` with a summary, per-module/per-file results, and the pending human list.
-
----
-
-## Validation Gates (strict rules)
-
-The orchestrator NEVER trusts a sub-agent's self-declaration, and it never validates anything itself — only `drup-validator` does:
-
-| Rule | Description |
-|---|---|
-| **External validation** | Only `drup-validator` calls `scan`/`validate`/`upgrade_scan`. No other sub-agent — and never the orchestrator — validates a sub-agent's own work |
-| **No self-approval** | A sub-agent saying "done" means nothing. Only a `drup-validator` report showing `total_errors == 0` counts |
-| **Retry with evidence** | If it fails, the same sub-agent receives the validator's output as feedback |
-| **Max 2 retries** | Per scope on haiku. Then escalates model (haiku → sonnet). Then pending human list |
-| **Phase gate** | No stage advances until ALL items pass validation |
-| **Commit only post-gate** | Each commit runs ONLY after `drup-validator` reports 0 errors for that exact scope/target |
-
-See [`openspec/changes/drupal-upgrade-orchestrator/specs/`](openspec/changes/drupal-upgrade-orchestrator/specs/) for the full spec-driven requirements behind this flow, and [`openspec/changes/drupal-upgrade-orchestrator/design.md`](openspec/changes/drupal-upgrade-orchestrator/design.md) for the architecture decisions.
-
----
-
-## Architecture
-
-### The binary (`drup`)
-
-```
-cmd/drup/main.go              # entrypoint
-internal/
-  app/          # CLI dispatch (11 commands) + MCP tool handlers
-  envdetect/    # Drupal dev environment detection (ddev, lando, docker, direct)
-  exec/         # subprocess runner (composer, drush, rector, phpstan, git)
-  scan/         # upgrade_status:analyze JSON parser
-  drupalorg/    # release-history XML + api-d7 + issue scraper
-  patch/        # .patch download, git apply, composer.json registration
-  gitops/       # git clean check, atomic commits, branches
-  report/       # JSON + Markdown report generation
-  mcp/          # MCP server (JSON-RPC 2.0, stdio)
-  packaging/    # skill/agent/MCP templates (go:embed)
-  installer/    # agent detection, asset writing, backup
-  state/        # state.json with installed agents, pending_sync, models
-  update/       # self-upgrade with checksum + atomic replacement
-```
-
-### The orchestrator (agent skills)
-
-The binary only does deterministic work. The full flow is executed by an **AI agent** (Claude Code, OpenCode, Codex) following the instructions of a `SKILL.md`:
-
-- **`/drup` skill**: 7-phase pipeline with validation gates
-- **Sub-agents**: `drup-preflight`, `drup-contrib`, `drup-custom`, `drup-theme` — isolate context per module/file to avoid saturating the orchestrator's window
-
-### The bridge (MCP)
-
-`drup`'s MCP server exposes a generated ToolSpec catalog with JSON types and schemas. It's the standard protocol that connects the binary with any compatible agent:
-
-```
-Claude Code ───┐
-OpenCode ──────┼── MCP (stdio) ── drup mcp ── deterministic tools
-Codex ─────────┘
-```
-
----
-
-## MCP Tools
+The following generated summary is a compact compatibility surface. For tool-by-tool operating guidance and schemas, use [`docs/mcp-tools.md`](docs/mcp-tools.md) and MCP `tools/list`.
 
 <!-- BEGIN GENERATED MCP CATALOG -->
 
@@ -361,85 +198,3 @@ Codex ─────────┘
 **Side-effect assertions:** `read_only` changes no project or workflow state; `workflow` changes only persisted run authority; `mutating` requires the listed guard evidence before its handler runs. The manual tool dictionary below is explanatory and must not weaken this contract.
 
 <!-- END GENERATED MCP CATALOG -->
-
-
-
----
-
-## Deterministic work vs. orchestration
-
-`drup` splits responsibility strictly along one rule: **all deterministic work happens in the Go binary/MCP tools; the AI agent only orchestrates and talks to the user.**
-
-- **Go/MCP tools** (this binary): version checking, composer.json mutation, patch analysis, git operations, drush/composer execution, report generation — all generated catalog tools run without spending a single AI token.
-- **Agent orchestration** (`SKILL.md` + sub-agents, installed via `drup install`): the `/drup` skill is a pure coordinator with zero execute permission — it never calls Bash or an MCP tool directly. It only dispatches sub-agents (which do call the MCP tools) and relays their structured reports to the user.
-
-This means `/drup <path>` is **not a shell command** — it is a slash command that loads an AI agent skill in Claude Code, OpenCode, or Codex. See [`openspec/changes/drupal-upgrade-orchestrator/specs/`](openspec/changes/drupal-upgrade-orchestrator/specs/) for the requirements this split is built on.
-
----
-
-## Configuration
-
-`~/.config/drup/config.yaml` (optional):
-
-```yaml
-agents:
-  claude-code:
-    skills:
-      drup:
-        model: claude-sonnet-4
-    agents:
-      drup-contrib:
-        model: claude-haiku-3-5
-      drup-custom:
-        model: claude-haiku-3-5
-  opencode:
-    profiles:
-      drup-orchestrator:
-        default: openrouter/qwen/qwen3-30b-a3b:free
-```
-
-If you don't configure anything, `drup` uses sensible defaults (cheap for mechanical work, strong for reasoning).
-
-Per-agent model overrides (default + escalation, per platform) are configured separately, in `~/.config/drup/state.json` under `model_assignments`, and applied by `drup install`/`drup sync`. See [`docs/model-configuration.md`](docs/model-configuration.md) for the shape, examples, and backward-compatibility notes.
-
----
-
-## Commands
-
-| Command | Description |
-|---|---|
-| `drup init` | Generates `drup.yaml` in the current directory |
-| `drup scan <path>` | Initial deprecation analysis (JSON) |
-| `drup fix <path>` | Full pipeline: preflight + rector + contrib + custom + validation |
-| `drup preflight <path>` | Detects version, checks git/composer/drush, installs dependencies |
-| `drup contrib check <module>` | D11 release or patch available? |
-| `drup issue patches <nid>` | Patches from a Drupal.org issue |
-| `drup report <path>` | Current status report vs D11 |
-| `drup mcp` | MCP server over stdio (for AI agents) |
-| `drup install` | Detects agents and writes skills + MCP config |
-| `drup sync` | Re-applies skills to installed agents |
-| `drup upgrade` | Updates the binary + syncs skills |
-| `drup version` | Current version |
-
-Global flags: `--json`, `--force` (dirty git), `--dry-run`.
-
----
-
-## Development
-
-```bash
-git clone git@github.com:nireneko/drup.git
-cd drup
-
-go build ./cmd/drup     # build
-go test ./...           # all tests passing
-go vet ./...            # static analysis
-```
-
-Test structure: table-driven, fixtures in `testdata/`, package-level variables for mocking subprocesses.
-
----
-
-## License
-
-MIT

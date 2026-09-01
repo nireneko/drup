@@ -1,12 +1,8 @@
-# drup MCP Tools — Agent Reference
+# drup MCP tools — agent reference
 
-This document is an **agent-facing reference** for the 45 MCP tools exposed by the `drup` binary over stdio (JSON-RPC 2.0). It exists so the orchestrator and sub-agents pick the right tool fast, sequence calls correctly, and never trip a guardrail.
+`drup mcp` exposes a stdio JSON-RPC MCP server for an agent-coordinated Drupal upgrade. The server is local to the host process: it does not listen on a network port. Start it with `drup mcp --locked` when an integration must inspect tools without being able to mutate a project.
 
-**Tooling totals at runtime:** the `ToolSpec` catalog derives 41 stub entries (including `restore_check`, `restore_recover`, `session_open`, `pipeline_status`, `operation_reconcile`, `checkpoint_execute`, `contrib_plan`, and the six `run_*` workflow tools) plus 4 reverse-asymmetric `test_backup_*` tools = **45 total**. See [§1.1](#11-response-envelope-uniform-contract) for the uniform envelope that wraps every response.
-
-For tool **schemas** (JSON Schema, required fields, types) call `tools/list` — do not hardcode them here. For tool **internals** (Go package, test coverage) read `internal/app/mcp_tools.go`.
-
----
+Tool schemas, effects, guards, and stub visibility are defined once in `internal/mcp.ToolSpec`. The catalog below is generated; agents should obtain exact JSON schemas from `tools/list` rather than copying examples from prose. For operating context, read [Upgrade workflow](upgrade-workflow.md), [Safety and recovery](safety-and-recovery.md), and [Architecture](architecture.md).
 
 <!-- BEGIN GENERATED MCP CATALOG -->
 
