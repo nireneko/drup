@@ -209,6 +209,15 @@ func writeRestoreJournal(project string, journal *RestoreJournal) error {
 	return os.Rename(name, restoreJournalPath(project, journal.ID))
 }
 
+// Restore effect seams keep failure-boundary tests deterministic without
+// exposing test controls through the public API.
+var (
+	createRestoreRescue   = func(manager *Manager, project string) (Manifest, error) { return manager.Create(project) }
+	extractRestoreFiles   = extract
+	persistRestoreJournal = writeRestoreJournal
+	verifyRestoredProject = verifyPostRestore
+)
+
 func recovery(journal *RestoreJournal, err error) error {
 	journal.State = RestoreRecoveryRequired
 	journal.Error = sanitizeRestoreError(err)
@@ -245,20 +254,20 @@ func (m *Manager) restoreTransactional(project, id string) (err error) {
 	}
 
 	journal := &RestoreJournal{Version: 1, ID: time.Now().UTC().Format("20060102T150405.000000000Z") + "-" + randomID(), BackupID: id, State: RestorePreflight, DatabaseMode: "non_atomic", Continuation: "create an independent rescue backup before importing the database"}
-	if err = writeRestoreJournal(project, journal); err != nil {
+	if err = persistRestoreJournal(project, journal); err != nil {
 		return err
 	}
-	fail := func(cause error) error { _ = writeRestoreJournal(project, journal); return cause }
+	fail := func(cause error) error { _ = persistRestoreJournal(project, journal); return cause }
 
-	rescue, cause := m.Create(project)
+	rescue, cause := createRestoreRescue(m, project)
 	if cause != nil {
 		return fail(recovery(journal, fmt.Errorf("rescue backup failure: %w", cause)))
 	}
 	journal.RescueBackup = rescue.BackupID
 	journal.State = RestoreRescueCreated
 	journal.Continuation = "restore files into same-volume staging before database import"
-	if cause = writeRestoreJournal(project, journal); cause != nil {
-		return cause
+	if cause = persistRestoreJournal(project, journal); cause != nil {
+		return fail(recovery(journal, fmt.Errorf("restore journal failure: %w", cause)))
 	}
 
 	stage, cause := os.MkdirTemp(filepath.Dir(project), ".drup-restore-stage-")
@@ -266,13 +275,13 @@ func (m *Manager) restoreTransactional(project, id string) (err error) {
 		return fail(recovery(journal, cause))
 	}
 	defer os.RemoveAll(stage)
-	if cause = extract(files, stage); cause != nil {
+	if cause = extractRestoreFiles(files, stage); cause != nil {
 		return fail(recovery(journal, fmt.Errorf("filesystem restore failure: %w", cause)))
 	}
 	journal.State = RestoreFilesStaged
 	journal.Continuation = "database import is next and is a declared non-atomic recovery window"
-	if cause = writeRestoreJournal(project, journal); cause != nil {
-		return cause
+	if cause = persistRestoreJournal(project, journal); cause != nil {
+		return fail(recovery(journal, fmt.Errorf("restore journal failure: %w", cause)))
 	}
 
 	detection, cause := detectEnv(project)
@@ -290,26 +299,26 @@ func (m *Manager) restoreTransactional(project, id string) (err error) {
 	}
 	journal.State = RestoreDatabaseRestored
 	journal.Continuation = "filesystem swap is next; retain rescue backup and previous tree until verification"
-	if cause = writeRestoreJournal(project, journal); cause != nil {
-		return cause
+	if cause = persistRestoreJournal(project, journal); cause != nil {
+		return fail(recovery(journal, fmt.Errorf("restore journal failure: %w", cause)))
 	}
 
 	journal.State = RestoreFilesystemSwap
 	journal.PreviousPath = filepath.Join(restoreJournalDir(project), journal.ID, "previous")
 	journal.Continuation = "if interrupted, restore the preserved previous tree and reconcile the non-atomic database"
-	if cause = writeRestoreJournal(project, journal); cause != nil {
-		return cause
+	if cause = persistRestoreJournal(project, journal); cause != nil {
+		return fail(recovery(journal, fmt.Errorf("restore journal failure: %w", cause)))
 	}
 	if cause = swapProject(project, stage, journal.PreviousPath); cause != nil {
 		return fail(recovery(journal, fmt.Errorf("filesystem restore failure: %w", cause)))
 	}
-	if cause = verifyPostRestore(project); cause != nil {
+	if cause = verifyRestoredProject(project); cause != nil {
 		return fail(recovery(journal, fmt.Errorf("post-restore verification failure: %w", cause)))
 	}
 	journal.State = RestoreCompleted
 	journal.Continuation = "restore completed; rescue backup and previous tree are retained for explicit operator cleanup"
 	journal.Error = ""
-	return writeRestoreJournal(project, journal)
+	return persistRestoreJournal(project, journal)
 }
 
 var movePath = os.Rename

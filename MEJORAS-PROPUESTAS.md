@@ -1,17 +1,19 @@
-# Mejoras propuestas para `drup`
+# Mejoras implementadas en `drup`
 
 ## Resumen ejecutivo
 
-El proyecto ya dispone de una base sólida para automatizar actualizaciones de Drupal: detección de entorno, ejecución adaptada a DDEV/Lando/docker4drupal, herramientas MCP, copias locales verificadas, sesiones ligadas a una raíz canónica, límites de mutación, auditoría, validación con hash de evidencia y agentes especializados para tres plataformas.
+Las doce mejoras están implementadas y disponen de pruebas enfocadas. El estado persistente vive en `internal/runstate`, las herramientas `run_*` están registradas en el catálogo MCP y los efectos, checkpoints y commits se autorizan mediante evidencia persistida. La restauración conserva un journal recuperable incluso en sus fronteras de fallo inyectadas.
 
-La principal oportunidad no consiste en añadir más instrucciones al LLM, sino en trasladar al código Go las decisiones que hoy solo están expresadas en documentos y plantillas. Las prioridades inmediatas son:
+La tabla de cierre y los documentos de `docs/roadmap/` son la referencia de estado actual. Las descripciones detalladas que siguen se conservan como diagnóstico histórico: explican el problema original y la solución propuesta, pero no describen trabajo pendiente.
 
-1. Garantizar matemáticamente que una actualización nunca salta una versión mayor y eliminar los supuestos fijos sobre Drupal 11.
-2. Implementar el estado persistente de ejecución ya diseñado, pero todavía no presente en el código.
-3. Separar de forma efectiva las operaciones de análisis y mutación.
-4. Hacer que commits, reintentos y checkpoints dependan de evidencia verificable, no de campos booleanos ni de convenciones del prompt.
+## Estado final verificable
 
-`docs/workflow.md` se ha usado como proceso normativo. `docs/workflow-state-machine.md` se ha revisado únicamente como diseño local y trabajo posiblemente planificado: el archivo no está versionado en el estado actual y no existe todavía un paquete `internal/runstate` ni herramientas MCP `run_*`.
+| Fases | Estado | Evidencia de cierre |
+|---|---|---|
+| 1–3 | Terminadas | `internal/upgradeplan`, descriptores `mcp.ToolSpec` e idempotencia persistente |
+| 4–6 | Terminadas | `internal/contracts`, `internal/multiharness`, `internal/runstate` y checkpoints autorizados |
+| 7–9 | Terminadas | ejecutor determinista, inventario/reporte reconstruible y planner Composer |
+| 10–12 | Terminadas | restore recuperable, patches con procedencia criptográfica y catálogo MCP generado |
 
 ## Alcance y método de revisión
 
@@ -43,12 +45,12 @@ Estas propuestas no deben reimplementar mecanismos que ya existen:
 | Allowlist de URL basada en host, no en subcadenas | `patch.defaultCheckAllowedURL` y `TestDefaultCheckAllowedURL` |
 | Normalización y bloqueo de alias peligrosos de Drush | `normalizeDrushCommand`, `drushAliasMap` y `TestDrushExec_BlocklistViaAlias` |
 
-## Estado de los tres hallazgos críticos del informe anterior
+## Estado final de los tres hallazgos críticos del informe anterior
 
 | Hallazgo | Estado actual | Evidencia |
 |---|---|---|
-| Allowlist de parches mediante `strings.Contains` | **Corregido para la URL inicial** | `patch.defaultCheckAllowedURL` usa `url.Parse`, exige HTTPS y compara `Hostname()` por igualdad o sufijo de dominio. Existen pruebas de bypass en `internal/patch/patch_test.go`. La política aún debe aplicarse a redirecciones; véase la propuesta 10. |
-| Comparación lexicográfica de versiones | **Abierto** | `realHandleDrupalVersionMatrix` todavía selecciona con `if ver > latestVersion` sobre claves `"9"`, `"10"` y `"11"`. La prueba `TestDrupalVersionMatrix_LookupByPHPVersion` solo comprueba que el resultado no esté vacío y no detecta una selección incorrecta. |
+| Allowlist de parches mediante `strings.Contains` | **Corregido** | La URL inicial y cada redirect se validan por esquema y hostname; `TestDownloadPatch_RejectsUnsafeRedirectBeforeBody` prueba el límite. |
+| Comparación lexicográfica de versiones | **Corregido** | `internal/upgradeplan` opera con majors numéricos y `TestDrupalVersionMatrix_SelectsHighestNumericMajorForPHP84` comprueba el valor exacto. |
 | Alias de comandos Drush peligrosos | **Corregido** | `drushAliasMap` normaliza `sqlq`, `sql-cli`, `sqlc`, `scr`, `ev`, `exec` y `core:execute`; la blocklist incluye `sql:query` y `php:script`. |
 
 ## Hoja de ruta priorizada

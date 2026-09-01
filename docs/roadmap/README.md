@@ -1,35 +1,29 @@
-# Hoja de ruta de mejoras pendientes
+# Hoja de ruta de mejoras completadas
 
-> Orden de implementación basado en dependencias verificadas. Cada fase enlaza una solución; el índice no sustituye sus criterios de terminado.
+Las doce fases están implementadas. Este índice enlaza el diseño histórico de cada solución y la evidencia que permite verificar su estado final.
 
-## Cómo usarla
+## Estado final
 
-1. Empezar por la primera fase no terminada.
-2. Implementar por work units con Strict TDD.
-3. No avanzar hasta cumplir la definición de terminado y conservar evidencia.
+| Fase | Solución | Estado | Evidencia principal | Commit inicial de implementación |
+|---:|---|---|---|---|
+| 1 | [Planificador numérico y parametrizado de versiones mayores](planificador-majors_fase1.md) | Terminada | `internal/upgradeplan`; pruebas de saltos consecutivos y selección numérica | `a314ac3` |
+| 2 | [Descriptor único y frontera read-only](descriptor-y-frontera-readonly_fase2.md) | Terminada | `mcp.ToolSpec`; pruebas de catálogo único y análisis sin mutación | `b55b55d` |
+| 3 | [Idempotencia y resultado `unknown`](idempotencia-y-resultado-unknown_fase3.md) | Terminada | ledger persistente; deduplicación y reconciliación observable | `f9026a6` |
+| 4 | [Contratos mínimos y escenarios multiagente](contratos-multiagente-minimos_fase4.md) | Terminada | `internal/contracts`, `internal/multiharness`; corpus común para tres plataformas | `cd454d1` |
+| 5 | [Estado persistente y autoridad de transiciones](runstate-persistente_fase5.md) | Terminada | `internal/runstate`; reinicio, exclusión por raíz y guard MCP | `228d4d1`, `2a334f8` |
+| 6 | [Commits y checkpoints autorizados por evidencia](commits-por-evidencia_fase6.md) | Terminada | `internal/app/checkpoint.go`, `internal/gitops`; paridad CLI/MCP | `7d3fee2`, `655a076` |
+| 7 | [Ejecutor determinista de checkpoints](executor-checkpoints_fase7.md) | Terminada | `internal/app/checkpoint_executor.go`; planes y progreso persistente | `6acd8e8` |
+| 8 | [Inventario y reporte reconstruible](inventario-y-reporte_fase8.md) | Terminada | `internal/inventory`, `report.BuildFromRun`; snapshot estable tras reinicio | `b361307` |
+| 9 | [Planificador Composer para contrib](planner-contrib-composer_fase9.md) | Terminada | `internal/contribplan`; conflictos explicables y grupos deterministas | `62024a8` |
+| 10 | [Restauración transaccional y ensayable](restore-transaccional_fase10.md) | Terminada | `internal/backup/restore.go`; journal, rescue, failpoints, recuperación e interlock | `52e7eb2`–`0107b6a` |
+| 11 | [Cadena de suministro verificable para patches](supply-chain-patches_fase11.md) | Terminada | redirects acotados, límite de cuerpo, SHA-256 y validación de paths | `1d0de84` |
+| 12 | [Catálogo MCP generado desde contratos](catalogo-mcp-generado_fase12.md) | Terminada | catálogo JSON/Markdown determinista y check byte a byte | `54306b9` |
 
-## Fases
+## Dependencias implementadas
 
-| Fase | Solución | Estado de partida |
-|---:|---|---|
-| 1 | [Planificador numérico y parametrizado de versiones mayores](planificador-majors_fase1.md) | Parcial |
-| 2 | [Descriptor único y separación real entre análisis y mutación](descriptor-y-frontera-readonly_fase2.md) | Parcial |
-| 3 | [Idempotencia de mutaciones y resultado `unknown`](idempotencia-y-resultado-unknown_fase3.md) | Parcial |
-| 4 | [Contratos mínimos y escenarios multiagente](contratos-multiagente-minimos_fase4.md) | Parcial |
-| 5 | [Estado persistente y autoridad de transiciones](runstate-persistente_fase5.md) | Pendiente |
-| 6 | [Commits y checkpoints autorizados por evidencia](commits-por-evidencia_fase6.md) | Pendiente |
-| 7 | [Ejecutor determinista de checkpoints operativos](executor-checkpoints_fase7.md) | Pendiente |
-| 8 | [Inventario inicial y reporte antes/después reconstruible](inventario-y-reporte_fase8.md) | Pendiente |
-| 9 | [Planificador Composer para contrib](planner-contrib-composer_fase9.md) | Pendiente |
-| 10 | [Restauración transaccional y ensayable](restore-transaccional_fase10.md) | Pendiente |
-| 11 | [Cadena de suministro verificable para patches](supply-chain-patches_fase11.md) | Pendiente |
-| 12 | [Catálogo MCP y documentación generados desde contratos](catalogo-mcp-generado_fase12.md) | Pendiente |
+- Las fases 1–4 fijan reglas de decisión, efectos, idempotencia y contratos mínimos.
+- Las fases 5–6 convierten esas reglas en autoridad persistente y publicación autorizada.
+- Las fases 7–9 aportan ejecución, trazabilidad y planificación de contrib.
+- Las fases 10–12 endurecen recuperación, supply chain y coherencia documental.
 
-## Dependencias principales
-
-- Fases 1–4 cierran reglas de decisión, efectos, idempotencia y contratos mínimos.
-- Fases 5–6 convierten esas reglas en autoridad persistente y commits por evidencia.
-- Fases 7–9 automatizan checkpoints, trazabilidad y planificación de contrib.
-- Fases 10–12 endurecen recuperación, supply chain y eliminación de deriva documental.
-
-El estado “parcial” NO implica que los cambios locales estén entregados ni verificados; cada documento enumera lo que falta.
+Para verificar el cierre completo se ejecuta `go test -count=1 ./...`, seguido de `go generate ./...`, `go run ./cmd/mcp-catalog-gen --check` y `git diff --check`.

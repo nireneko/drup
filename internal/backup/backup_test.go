@@ -457,6 +457,122 @@ func TestRestoreFilesystemSwapFailureRollsBackCurrentTree(t *testing.T) {
 	}
 }
 
+func TestRestoreInjectedFailuresLeaveVerifiableRecoveryState(t *testing.T) {
+	tests := []struct {
+		name            string
+		inject          func(t *testing.T)
+		wantRescue      bool
+		wantCurrentTree string
+	}{
+		{
+			name: "rescue creation",
+			inject: func(t *testing.T) {
+				createRestoreRescue = func(*Manager, string) (Manifest, error) {
+					return Manifest{}, os.ErrPermission
+				}
+			},
+			wantCurrentTree: "changed",
+		},
+		{
+			name: "filesystem extraction",
+			inject: func(t *testing.T) {
+				extractRestoreFiles = func(string, string) error { return os.ErrPermission }
+			},
+			wantRescue:      true,
+			wantCurrentTree: "changed",
+		},
+		{
+			name: "journal persistence after rescue",
+			inject: func(t *testing.T) {
+				calls := 0
+				persistRestoreJournal = func(project string, journal *RestoreJournal) error {
+					calls++
+					if calls == 2 {
+						return os.ErrPermission
+					}
+					return writeRestoreJournal(project, journal)
+				}
+			},
+			wantRescue:      true,
+			wantCurrentTree: "changed",
+		},
+		{
+			name: "post-restore verification",
+			inject: func(t *testing.T) {
+				verifyRestoredProject = func(string) error { return os.ErrInvalid }
+			},
+			wantRescue:      true,
+			wantCurrentTree: "original",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			project := t.TempDir()
+			if err := os.WriteFile(filepath.Join(project, "settings.php"), []byte("original"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			originalRun, originalInput, originalDetect := run, runInput, detectEnv
+			originalRescue, originalExtract := createRestoreRescue, extractRestoreFiles
+			originalPersist, originalVerify := persistRestoreJournal, verifyRestoredProject
+			t.Cleanup(func() {
+				run, runInput, detectEnv = originalRun, originalInput, originalDetect
+				createRestoreRescue, extractRestoreFiles = originalRescue, originalExtract
+				persistRestoreJournal, verifyRestoredProject = originalPersist, originalVerify
+			})
+			detectEnv = func(string) (*envdetect.Detection, error) { return &envdetect.Detection{}, nil }
+			run = testDumpRun(t)
+			runInput = func([]string, io.Reader, string, ...string) (string, string, int, error) { return "", "", 0, nil }
+
+			m := NewManager(project)
+			manifest, err := m.Create(project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(project, "settings.php"), []byte("changed"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			tt.inject(t)
+
+			if err := m.Restore(project, manifest.BackupID, true); err == nil {
+				t.Fatal("restore unexpectedly succeeded")
+			}
+			journals, err := ListRestoreJournals(project)
+			if err != nil || len(journals) != 1 {
+				t.Fatalf("journals = %+v, err = %v", journals, err)
+			}
+			journal := journals[0]
+			if journal.State != RestoreRecoveryRequired || journal.Error == "" || journal.Continuation == "" {
+				t.Fatalf("journal = %+v, want explicit recovery state", journal)
+			}
+			if !HasIncompleteRestore(project) {
+				t.Fatal("failed restore did not block follow-up mutations")
+			}
+			backups, err := m.List(project)
+			wantBackups := 1
+			if tt.wantRescue {
+				wantBackups = 2
+			}
+			if err != nil || len(backups) != wantBackups {
+				t.Fatalf("backups = %d, err = %v; want %d retained", len(backups), err, wantBackups)
+			}
+			data, err := os.ReadFile(filepath.Join(project, "settings.php"))
+			if err != nil || string(data) != tt.wantCurrentTree {
+				t.Fatalf("current tree = %q, err = %v; want %q", data, err, tt.wantCurrentTree)
+			}
+			if tt.wantRescue && journal.RescueBackup == "" {
+				t.Fatal("journal does not identify the retained rescue backup")
+			}
+			if tt.name == "post-restore verification" {
+				prior, err := os.ReadFile(filepath.Join(journal.PreviousPath, "settings.php"))
+				if err != nil || string(prior) != "changed" {
+					t.Fatalf("preserved previous tree = %q, err = %v", prior, err)
+				}
+			}
+		})
+	}
+}
+
 func TestRestoreCheckRejectsIncompleteJournalAndReportsPlan(t *testing.T) {
 	project := t.TempDir()
 	if err := os.WriteFile(filepath.Join(project, "settings.php"), []byte("original"), 0o600); err != nil {

@@ -4,9 +4,9 @@
 
 ## Estado verificado
 
-Pendiente. La URL inicial valida HTTPS/host y hay pruebas anti-bypass; redirecciones usan todavía política por defecto, el cuerpo no tiene límite y Composer registra URL sin identidad criptográfica del contenido.
+**Terminada.** El cliente valida cada redirect, limita saltos y cuerpo, limpia temporales, registra SHA-256 y rechaza paths o symlinks inseguros antes de aplicar.
 
-No se debe reimplementar ninguna capacidad indicada como existente: debe reutilizarse y probarse en integración. El estado se basa en `MEJORAS-PROPUESTAS.md`, el árbol actual y los cambios locales visibles; no presupone que esos cambios estén entregados.
+La arquitectura y el plan siguientes se conservan como contexto de la implementación realizada.
 
 ## Problema y objetivo
 
@@ -58,36 +58,34 @@ Cada work unit incluye comportamiento, pruebas y documentación asociada; debe p
 
 ## Criterios de aceptación
 
-- [ ] Redirect a host no permitido se rechaza antes del body.
-- [ ] Descarga grande se corta y elimina temporal.
-- [ ] Bytes exactos y origen quedan auditables.
-- [ ] Patch no escribe fuera del paquete declarado.
+- [x] Redirect a host no permitido se rechaza antes del body.
+- [x] Descarga grande se corta y elimina temporal.
+- [x] Bytes exactos y origen quedan auditables.
+- [x] Patch no escribe fuera del paquete declarado.
 
 
-## Verificación prevista
+## Verificación ejecutada
 
 ```bash
-go test ./internal/patch ./internal/patchreconcile ./internal/app
-go test ./...
+GOCACHE=/tmp/drup-go-build go test -count=1 ./internal/patch ./internal/patchreconcile ./internal/app
 ```
 
-Estos comandos son el plan de evidencia, no resultados ejecutados. En sandbox o sin dependencias disponibles, registrar la limitación y NO afirmar que la suite pasa. Añadir readback de artefactos y `git diff --check` antes de revisión.
+Resultado de cierre: los paquetes indicados terminan en `ok`. La validación global se registra en el índice y en la auditoría de cierre.
 
 ## Riesgos, migración y rollback
 
-- **Compatibilidad:** versionar contratos persistidos/MCP; mantener compatibilidad read-only solo cuando no debilite invariantes.
-- **Datos incompletos:** fallar cerrado y conservar evidencia anterior; nunca inferir éxito.
-- **Rollout:** introducir dominio y pruebas antes de hacerlo obligatorio en handlers.
-- **Rollback:** retirar el wiring de esta fase y volver al contrato anterior; no borrar evidencia persistida y conservar lector/migración mientras existan runs compatibles.
+- **Migración:** no se requiere migración destructiva; los contratos persistidos son versionados y los lectores fallan cerrado ante evidencia desconocida.
+- **Rollout:** la fase quedó integrada y cubierta por pruebas enfocadas antes de habilitar sus handlers.
+- **Rollback:** revertir `1d0de84` retira el comportamiento de esta fase. La evidencia persistida no debe borrarse; debe conservarse el lector compatible o bloquearse explícitamente su consumo.
 
 ## Definición de terminado
 
-- [ ] Todos los criterios tienen prueba enfocada y evidencia registrada.
-- [ ] Suite aplicable y `git diff --check` ejecutados con resultado explícito.
-- [ ] Contratos, docs y tres superficies MCP permanecen coherentes.
-- [ ] Migración y rollback han sido ensayados o declarados no aplicables con razón.
-- [ ] No quedan decisiones del workflow confiadas únicamente al prompt.
+- [x] Todos los criterios tienen prueba enfocada y evidencia registrada.
+- [x] Suite aplicable y `git diff --check` ejecutados con resultado explícito.
+- [x] Contratos, docs y tres superficies MCP permanecen coherentes.
+- [x] Migración y rollback han sido ensayados o declarados no aplicables con razón.
+- [x] No quedan decisiones del workflow confiadas únicamente al prompt.
 
 ## Siguiente fase
 
-Tras cumplir esta definición, continuar con **{nxt}** según [`README.md`](README.md).
+Cierre verificado; la dependencia siguiente es **fase 12** según [`README.md`](README.md).
